@@ -644,6 +644,19 @@ static void modern_draw_body(Surf *b)
 
     g_nbarred = 0;
     if (modern_on(MOD_HEALTH_BARS)) { each_enemy(health_bar); target_health_bars(); }
+    {   /* a captured enemy vehicle: a green driver in the seat (2026-11-20, user: "just drawing the driver in there") -
+         * head and shoulders, a little behind the vehicle's centre along its hull facing, drawn on top */
+        int vx, vy, f;
+        if (capture_driver_seat(&vx, &vy, &f)) {
+            double fx, fy; controls_facing_vector(f, &fx, &fy);
+            int sx, sy; to_screen(vx + (int)(fx * 2), vy + (int)(fy * 2) - 6, &sx, &sy);   /* the front seats (Wine: Desert 1 jeep) */
+            BYTE dark = (BYTE)nearest(30, 70, 24), mid = (BYTE)nearest(72, 140, 52);
+            for (int y = -3; y <= 3; y++) for (int x = -7; x <= 7; x++)          /* shoulders: a flat oval */
+                if (x * x * 9 + y * y * 49 <= 441) px(sx + x, sy + 4 + y, (x * x * 9 + y * y * 49 > 300) ? dark : mid);
+            for (int y = -4; y <= 4; y++) for (int x = -4; x <= 4; x++)          /* helmet */
+                if (x * x + y * y <= 16) px(sx + x, sy - 2 + y, (x * x + y * y > 10) ? dark : (x + y < -2 ? C_GREEN : mid));
+        }
+    }
     {   /* fire lock / cancel at the pointer (2026-11-20, user: "some indicator would be helpful"): while clicks fire
          * (fire lock after a shot) a shrinking ring + "FIRE"; just cancelled: a red X + "CANCEL" */
         int lock, canc, ppx, ppy;

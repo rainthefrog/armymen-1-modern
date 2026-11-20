@@ -625,6 +625,8 @@ int capture_can_enter(BYTE *vehicle);                             /* Sarge may c
 int capture_hover_ok(BYTE *vehicle);                              /* another army's vehicle: enter pointer near Sarge */
 const char *capture_hover_note(int wx, int wy, int *vx, int *vy);   /* capture.c: why an enemy vehicle cannot be taken */
 BYTE *capture_vehicle(void);
+int capture_driver_seat(int *wx, int *wy, int *facing);           /* capture.c: captured vehicle position + hull facing */
+void controls_facing_vector(int facing, double *dx, double *dy);   /* controls.c: unit vector of a facing */
 int modern_text(Surf *b, int x, int y, const char *s, BYTE c);       /* modern.c: the mod's own 5x7 text */                                      /* the vehicle Sarge took from another army, or NULL */
 /* minimap.c (2026-11-20): minimap blips, contrast, hover details */
 int layout_hud_point(int design_x, int design_y, int *sx, int *sy);   /* layout.c: HUD design point -> finished frame (enlarged), returns scale in 64ths */

@@ -3026,3 +3026,6 @@ int controls_reload(double *frac)
 void __cdecl controls_dispatch(void) { PROF_BEGIN(t); controls_dispatch_body(); PROF_END(t, PR_CONTROLS); }   /* timed (trace) */
 
 void __cdecl controls_camera(void) { PROF_BEGIN(t); controls_camera_body(); PROF_END(t, PR_CAMERA); }   /* timed (trace) */
+
+/* modern.c: unit vector (screen x, y) of a game facing 0..255 */
+void controls_facing_vector(int f, double *dx, double *dy) { if (!g_units_ready) prepare_facings(); f &= FACINGS - 1; *dx = g_units_ready ? g_unit_dx[f] : 0; *dy = g_units_ready ? g_unit_dy[f] : 0; }

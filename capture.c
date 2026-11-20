@@ -151,6 +151,12 @@ static BYTE *veh_anim(BYTE *v, int i)
 /* Captured: draw it with the player's colours (8-bit table; the upscaled art follows the table). */
 static void recolour_to_player(BYTE *v)
 {
+    /* 2026-11-20: off (user: "i don't want the vehicle to fully turn colors - just drawing the driver in there");
+     * modern.c draws a green driver in the seat instead (capture_driver_seat). Kept for [gameplay]
+     * captured_green=1. */
+    static int on = -1;
+    if (on < 0) on = GetPrivateProfileIntA("gameplay", "captured_green", 0, mod_ini_path());
+    if (!on) return;
     BYTE *t = UNIT_COLOR_TABLES[PLAYER_ARMY];
     if (!t) return;
     for (int i = 0; i < VEH_ANIMS; i++) {
@@ -416,4 +422,13 @@ const char *capture_hover_note(int wx, int wy, int *vx, int *vy)
         }
     }
     return NULL;
+}
+
+/* modern.c: the captured vehicle Sarge drives - its world position and hull facing (0..255), for the driver figure */
+int capture_driver_seat(int *wx, int *wy, int *facing)
+{
+    BYTE *v = g_cap.v;
+    if (!v || IsBadReadPtr(v, 0x150)) return 0;
+    *wx = *(short *)(v + 4); *wy = *(short *)(v + 6); *facing = *(short *)(v + 8) & 255;
+    return 1;
 }
