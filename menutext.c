@@ -395,6 +395,17 @@ int menutext_overlay(int dw, int dh, int pw, int ph, const uint32_t **pix, unsig
     SetRectEmpty(dirty);
     if (!g_cfg.menu_text || dw <= 0 || dh <= 0 || pw <= 0 || ph <= 0 || dw > 8192 || dh > 8192) return 0;
     if (!screens_on()) { if (g_n || g_nsl) menutext_clear(); g_nprev = -1; return 0; }
+    /* 2026-11-20 (user: "the menu bleeds over into the mission start"): the mission's loading / briefing pictures are
+     * not menu screens and did not always replace the labels - they stayed until the next label. Every frame: a new
+     * screen state, or a mission in play without one of its option screens up, drops all labels. */
+    {
+        BYTE *sc = SCRN_FULL;
+        int st = sc && !IsBadReadPtr(sc, 8) ? *(int *)(sc + 4) : -1;
+        static int last_st = -1;
+        if (st != last_st) { last_st = st; if (g_n) { lock(); g_n = 0; InterlockedIncrement(&g_ver); unlock(); } }
+        if (game_in_play() && !game_menu_up() && (g_n || g_nsl)) menutext_clear();
+        if (!g_n && !g_nsl) { g_nprev = -1; return 0; }
+    }
     if (!g_n && !g_nsl) { g_nprev = -1; return 0; }
     LONG v = g_ver;
     if (v == built && g_ow == dw && g_oh == dh && g_out && g_nprev >= 0) { *pix = g_out; *ver = (unsigned)v; return 1; }
