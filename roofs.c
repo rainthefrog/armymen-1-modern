@@ -473,7 +473,7 @@ static int floor_cell(const void *flv, BYTE (*cm)[IN_N], int wx0, int wy0, int b
     if (x < 0 || y < 0 || x >= IN_N || y >= IN_N) return 0;
     if (cm[y][x]) return cm[y][x] == 1;
     int ax = wx0 + x, ay = wy0 + y, ok = 0;
-    if (ax >= bx0 && ax <= bx1 && ay >= by0 && ay <= by1 && !building_blocked_w(wx0, wy0, x, y)) {
+    if (ax >= bx0 && ax <= bx1 && ay >= by0 && ay <= by1 && !building_blocked_w(wx0, wy0, x, y) && !cell_blocked(ax, ay)) {   /* 2026-11-20 (user: "it should respect the bounding"): the game's full Sarge hitbox too */
         int e = hdworld_entry_at(ax * IN_CELL + IN_CELL / 2 - sl, ay * IN_CELL + IN_CELL / 2 - st);
         ok = e >= 0 && floor_tex_entry(e);
     }

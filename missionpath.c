@@ -44,7 +44,7 @@ typedef struct { int mission, stage, kind; const char *name; int pad, x, y; cons
  * drive: the leg TO this waypoint is driven in that vehicle (path_find_vehicle with its footprint). */
 static const Way WAYS[] = {
     { 1, 0, W_ITEM, "TanRifle10" },     { 1, 1, W_PAD, 0, 200 },                         /* des1_1:49-51 */
-    { 2, 0, W_ITEM, "BlueRifle102" },   { 2, 1, W_PAD, 0, 200 },                         /* des1_2:66-68, 93-98 */
+    { 2, 0, W_PAD, 0, 15 },             { 2, 1, W_PAD, 0, 200 },                         /* des1_2:28 BlueInside = the courier's end point (porch); 93-98 */
     { 3, 0, W_POINT, 0, 0, 320, 3160 }, { 3, 1, W_PAD, 0, 75, 0, 0, 0, "GreenTank201" }, /* des1_3:45, 77, 81-82 */
     { 4, 0, W_POINT, 0, 0, 618, 395 },  { 4, 0, W_POINT, 0, 0, 524, 546 }, { 4, 0, W_POINT, 0, 0, 306, 541 },   /* TanRifle20-22, des2_1:118-120 */
     { 4, 1, W_PAD, 0, 11 },             { 4, 2, W_PAD, 0, 10 },                          /* des2_1:150-160 */
@@ -119,6 +119,9 @@ static void resolve(int m, int sx, int sy)
         } else {
             int raw = 0, s = objectives_item_ground(w->name, &px, &py, &raw, NULL);
             if (s == -2 || s == -1 || (!px && !py)) { if (g_cfg.log >= 1) mlog("missionpath: mission %d item %s %s", m, w->name, s == -2 ? "not found" : s == -1 ? "already done" : "has no spot"); continue; }
+            /* 2026-11-20 (user: "moving targets shouldn't get the path"): units, troopers, vehicles move - no waypoint
+             * (where a script sends one to a fixed end point, that pad / point is in the table instead) */
+            if (raw == 2 || raw == 3 || raw == 5) { if (g_cfg.log >= 1) mlog("missionpath: mission %d item %s moves - no waypoint", m, w->name); continue; }
         }
         if (px <= 0 || py <= 0 || px >= 4096 || py >= 4096) continue;
         veh[n] = -1;
