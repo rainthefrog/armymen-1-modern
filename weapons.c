@@ -492,6 +492,77 @@ void weapons_note_text(int x, int y, int font, int colour)
     g_ammo_text[best] = (AmmoText){ 1, x - BOX_ICON_X, y - icon_y(best), font, colour };
 }
 
+/* ---------------------------------------------------------------- unlimited ammo
+ * 2026-11-20 (user screenshot, captured jeep in Desert 2: "weapon on jeep missing ammo count"): vehicle weapons
+ * (Sarge +0x2d0 -> vehicle +0x20 -> WEAPON; types 6 = tank cannon, 7 / 8 = machine guns) can carry nAmmo -1 =
+ * unlimited (the Desert jeep: type 7, -1 / -1, Wine log). The game's widget +0x48 (FUN_004402b0 at 0x4405f4)
+ * prints "%d" only for ammo >= 0, otherwise the empty string 0x696ee0 - so the black ammo box that is part of the
+ * vehicle weapon icon (widget +0x44 states 3 / 4) stayed empty: the black square. An infinity mark is drawn into
+ * that box instead, in the colour the game prints its digits with (a solid palette index, FUN_00404660).
+ * The box is found in the game picture from the text position (the black pixels around it), so the mark sits
+ * centred in whatever box art is there; nothing is drawn where no dark box is. */
+#define VEH_WEAPON(v)        (*(BYTE **)((BYTE *)(v) + 0x20))
+#define VTYPE_LARGE_CANNON   6          /* widget +0x44 state 3 */
+#define VTYPE_GUN_LAST       8          /* 7..8: state 4 */
+#define AMMO_TEXT_DX         42         /* the game's ammo text: design 291,402 / 423 / 443 = icon + (42, 2) */
+#define AMMO_TEXT_DY         2
+#define AMMO_COLOUR          250        /* the game's colour for the ammo digits (FUN_0043fd40 -> FUN_0044b760) */
+static const char *const INFINITY_MARK[] = {
+    ".##...##.",
+    "#..#.#..#",
+    "#...#...#",
+    "#..#.#..#",
+    ".##...##.",
+};
+#define MARK_W 9
+#define MARK_H 5
+
+static int dark_index(int i)
+{
+    Pal *p = g_dd ? g_dd->pal : NULL;
+    return p && p->e[i].peRed + p->e[i].peGreen + p->e[i].peBlue < 90;
+}
+
+/* (x, y): game-screen position where the game would print the count. */
+static void draw_unlimited(Surf *back, int x, int y, int colour)
+{
+    int sx = x + 3, sy = y + 3;                   /* inside the box, past the frame */
+    if (!back || !back->bits || sx < 1 || sy < 1 || sx >= back->w - 1 || sy >= back->h - 1) return;
+#define PX(px, py) back->bits[(size_t)(py) * back->pitch + (px)]
+    BYTE k = PX(sx, sy);
+    if (!dark_index(k)) return;
+    int l = sx, r = sx, t = sy, b = sy;
+    while (l > 0 && sx - l < 24 && PX(l - 1, sy) == k) l--;
+    while (r < back->w - 1 && r - sx < 24 && PX(r + 1, sy) == k) r++;
+    while (t > 0 && sy - t < 16 && PX(sx, t - 1) == k) t--;
+    while (b < back->h - 1 && b - sy < 16 && PX(sx, b + 1) == k) b++;
+    int w = r - l + 1, h = b - t + 1;
+    if (w < MARK_W + 2 || h < MARK_H + 2) return;
+    int ox = l + (w - MARK_W) / 2, oy = t + (h - MARK_H) / 2;
+    for (int j = 0; j < MARK_H; j++)
+        for (int i = 0; i < MARK_W; i++)
+            if (INFINITY_MARK[j][i] == '#') PX(ox + i, oy + j) = (BYTE)colour;
+#undef PX
+}
+
+/* Sarge's vehicle weapon with unlimited ammo: the mark in the main (A1) box, where the game draws its icon. */
+static void draw_vehicle_unlimited(Surf *back)
+{
+    BYTE *u = SARGE;
+    if (!u || !back || !HUD_WIDGETS || !layout_view_is_gameplay()) return;
+    BYTE *v = (BYTE *)SARGE_VEHICLE(u);
+    if (!v || IsBadReadPtr(v, 0x24)) return;
+    BYTE *w = VEH_WEAPON(v);
+    if (!w || IsBadReadPtr(w, 0x10)) return;
+    int type = *(int *)w;
+    if (type < VTYPE_LARGE_CANNON || type > VTYPE_GUN_LAST || W_AMMO(w) >= 0) return;
+    int dx, dy;
+    layout_offset(ANCHOR_HUD, &dx, &dy);
+    AmmoText *t = g_ammo_text[1].seen ? &g_ammo_text[1] : g_ammo_text[2].seen ? &g_ammo_text[2] : NULL;
+    int tx = t ? t->dx : AMMO_TEXT_DX, ty = t ? t->dy : AMMO_TEXT_DY, colour = t ? t->colour : AMMO_COLOUR;
+    draw_unlimited(back, column_x(0) + BOX_ICON_X - COL_SRC_X + tx, icon_y(0) + dy + ty, colour);
+}
+
 static void draw_ammo(Surf *back, Weapon w, int b)
 {
     int kind = weapon_kind(w);
@@ -509,6 +580,7 @@ static void draw_ammo(Surf *back, Weapon w, int b)
     int x = column_x(col) + BOX_ICON_X - COL_SRC_X + t->dx, y = icon_y(box_row(b)) + dy + t->dy;
     int clip[2] = { column_x(col) + COL_SRC_W - x, BOX_H };
     if (clip[0] <= 0) return;
+    if (ammo < 0) { draw_unlimited(back, x, y, t->colour); return; }
     hud_draw_string_original(back, x, y, buf, t->font, clip, t->colour);
 }
 
@@ -559,6 +631,7 @@ static void draw_columns(Surf *back, BYTE *u)
 void weapons_draw_markers(Surf *back)
 {
     BYTE *u = SARGE;
+    draw_vehicle_unlimited(back);                 /* also with classic controls / five-weapon HUD */
     if (!six() || !back || !HUD_WIDGETS || !layout_view_is_gameplay()) return;
     int alive = u && SARGE_HEALTH(u) > 0;
     if (alive) { valid(u); sync(u); }
