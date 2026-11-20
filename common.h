@@ -112,6 +112,7 @@ struct Config {
     int pin_objective;              /* [hud] pin_objective: mission objective pinned on screen (objectives.c) */
     int target_sector;              /* [hud] target_sector: blink the target sector on the minimap */
     int target_area;                /* [hud] target_area: faint highlight of the target sector on the battlefield (objectives.c, gpu.c) */
+    int mission_path;               /* [hud] mission_path: route from Sarge's start through the mission's waypoints, painted on the ground (missionpath.c) */
     int crt;                        /* [display] crt: CRT filter (gpu.c); F9 or Gameplay menu */
     int see_through;                /* [display] see_through: Sarge visible through buildings (roofs.c) */
     int see_enemies;                /* [display] see_enemies: enemies under tall cover show while they fire (roofs.c) */
@@ -594,3 +595,10 @@ void guard_enter(Guard *g, const char *what);
 void guard_leave(Guard *g);
 #define GUARD_TRY(g, what) (guard_enter(&(g), (what)), __builtin_setjmp((g).jb) == 0)
 int controls_pointer_world(int *x, int *y);        /* controls.c: world point under the pointer */
+
+/* missionpath.c (2026-11-20): the mission route painted on the ground */
+int objectives_need(const char *need);                             /* objectives.c: briefing contains / lacks a word */
+int objectives_item_ground(const char *name, int *x, int *y, int *raw, BYTE **item);   /* objectives.c: named item on the ground */
+typedef struct { short x, y; BYTE dashed, wp; } MissionPt;   /* dashed: the leg INTO this point was not found (straight); wp: 1.. waypoint number, 0 = bend */
+void missionpath_frame(void);                                      /* missionpath.c: per gameplay frame (game thread): build once per mission */
+int missionpath_points(const MissionPt **pts);                     /* missionpath.c: the route (world px), 0 = none / not built yet */

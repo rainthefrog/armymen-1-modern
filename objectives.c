@@ -595,3 +595,21 @@ int objectives_marks(ObjMark *out, int max)
     }
     return n;
 }
+
+/* ---------------------------------------------------------------- for missionpath.c (2026-11-20)
+ * The briefing "need" test (see TARGETS) and where a named item stands on the GROUND (not the marker point above
+ * its head that item_state gives): 1 = on the map, 0 = not placed / not deployed (x, y may still be its spot),
+ * -1 = done, -2 = no such name. */
+int objectives_need(const char *need) { refresh(); return need_ok(need); }
+int objectives_item_ground(const char *name, int *x, int *y, int *raw, BYTE **item)
+{
+    BYTE *it = named_item(name);
+    if (item) *item = it;
+    if (!it) return -2;
+    int st = item_state(it, x, y), r = RAW_TYPE(it);
+    if (raw) *raw = r;
+    if (r == 5) *y += 24;
+    else if (r == 3) *y += 30;
+    else if (r == 2 && st > 0) *y += *(int *)(it + 0x70) == 2 ? 30 : 24;
+    return st;
+}

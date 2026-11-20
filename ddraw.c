@@ -87,6 +87,7 @@ void config_load(void)
     g_cfg.pin_objective = GetPrivateProfileIntA("hud", "pin_objective", 1, ini);
     g_cfg.target_sector = GetPrivateProfileIntA("hud", "target_sector", 1, ini);
     g_cfg.target_area = GetPrivateProfileIntA("hud", "target_area", 1, ini);
+    g_cfg.mission_path = GetPrivateProfileIntA("hud", "mission_path", 1, ini);
     g_cfg.crt = GetPrivateProfileIntA("display", "crt", 0, ini);
     g_cfg.see_through = GetPrivateProfileIntA("display", "see_through", 1, ini);
     g_cfg.see_enemies = GetPrivateProfileIntA("display", "see_enemies", 1, ini);

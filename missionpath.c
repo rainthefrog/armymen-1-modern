@@ -1,0 +1,201 @@
+/* ============================================================================================
+ * missionpath.c - the mission route: from where Sarge starts through the mission's parts in order
+ *
+ * 2026-11-20, user: "add a toggle to draw a path to the destination. draw it once on mission start and don't
+ * dynamically update it. make sure to path find it from where sarge starts to each part of the mission - ie
+ * mission 3 is sarge to tank to position".
+ *   - WAYPOINTS: per campaign mission id (gpGame +0x74) the places Sarge has to go, in order (stages). Read from
+ *     the mission scripts Army Men\Maps\*.txt (tooling/docs/mission-targets.md; lookup 2026-11-20). Kinds: a NAMED
+ *     item (its spot at mission start), a PAD (padLocations, the pad's tile corner + 8) or a fixed world POINT
+ *     from the script (e.g. des1_3:77 ORDER GreenTank201 GOTO (320,3160) -> the tank waits there). Waypoints of
+ *     one stage are visited nearest first (several kills); stages in order.
+ *   - built ONCE per mission (new mission / scenario number, or after leaving the play state: Play Again): Sarge's
+ *     position on the first play frame is the start; the waypoints are resolved RESOLVE_FRAMES later (the
+ *     startup script has placed its items by then). Then one leg piece per frame: path_find (pathfind.c, 8 px
+ *     cells, ~40 ms bound) from the leg's current end; a partial answer continues from its last point on the next
+ *     frame (long distances), at most LEG_CALLS pieces per leg. A leg "driven" (drive = a vehicle's script name:
+ *     mission 3 tank) asks path_find_vehicle first with that vehicle's footprint. A leg not found (no progress,
+ *     out of pieces, target closed off) is drawn straight and DASHED from where the search ended.
+ *   - never recomputed while things move: only a new mission builds it again.
+ * Drawing: modern.c (on the ground, under objects, like the click-to-walk route marker). [hud] mission_path.
+ * ============================================================================================ */
+#include "common.h"
+#include <stdlib.h>
+
+#define GAME                 (*(BYTE **)0x4b3f70)
+#define GAME_TYPE(g)         (*(int *)((g) + 0x68))          /* 0 = one player */
+#define GAME_SCENARIO(g)     (*(int *)((g) + 0x70))
+#define GAME_MISSION(g)      (*(int *)((g) + 0x74))
+#define SARGE_ITEM           (*(BYTE **)0x697520)
+#define PAD_LOC(p)           ((const short *)(0x4e36a0 + 4 * (p)))   /* padLocations[256]: x, y (tile corner) */
+#define VEH_TYPE(v)          ((*(int *)(v) >> 16) & 0x3f)    /* as controls.c */
+
+#define RESOLVE_FRAMES 15        /* play frames before the waypoints are read (startup script done) */
+#define LEG_CALLS      12        /* path_find pieces per leg (each ~40 ms at most, one per frame) */
+#define MIN_PROGRESS   24        /* px a piece must get closer, else the rest of the leg is straight */
+#define REACHED        14        /* px: a piece ending this close to the leg's target finishes it */
+#define MAX_PTS        600
+#define MAX_WP         16
+
+enum { W_ITEM, W_PAD, W_POINT };
+typedef struct { int mission, stage, kind; const char *name; int pad, x, y; const char *need; const char *drive; } Way;
+/* need: as objectives.c TARGETS ("word" / "!word" in the briefing text; Alpine 1 scripts swapped, open point A).
+ * drive: the leg TO this waypoint is driven in that vehicle (path_find_vehicle with its footprint). */
+static const Way WAYS[] = {
+    { 1, 0, W_ITEM, "TanRifle10" },     { 1, 1, W_PAD, 0, 200 },                         /* des1_1:49-51 */
+    { 2, 0, W_ITEM, "BlueRifle102" },   { 2, 1, W_PAD, 0, 200 },                         /* des1_2:66-68, 93-98 */
+    { 3, 0, W_POINT, 0, 0, 320, 3160 }, { 3, 1, W_PAD, 0, 75, 0, 0, 0, "GreenTank201" }, /* des1_3:45, 77, 81-82 */
+    { 4, 0, W_POINT, 0, 0, 618, 395 },  { 4, 0, W_POINT, 0, 0, 524, 546 }, { 4, 0, W_POINT, 0, 0, 306, 541 },   /* TanRifle20-22, des2_1:118-120 */
+    { 4, 1, W_PAD, 0, 11 },             { 4, 2, W_PAD, 0, 10 },                          /* des2_1:150-160 */
+    { 5, 0, W_ITEM, "BigBase" },        { 5, 1, W_PAD, 0, 10 },                          /* des2_2:63-65, 130-133 (Key1 drops at it) */
+    { 6, 0, W_PAD, 0, 10 },             { 6, 1, W_POINT, 0, 0, 2390, 2700 }, { 6, 2, W_PAD, 0, 11 },   /* des3_1:11-14, 117-133 */
+    { 7, 0, W_ITEM, "Bank" },           { 7, 1, W_PAD, 0, 10 },                          /* des3_2:63-65, 92 */
+    { 8, 0, W_PAD, 0, 55 },             { 8, 1, W_PAD, 0, 0 }, { 8, 2, W_POINT, 0, 0, 3970, 2550 },   /* des4_1: escort to Path55, SargeGoal, end (best reading) */
+    { 9, 0, W_ITEM, "TanMortar3" }, { 9, 0, W_ITEM, "TanMortar4" }, { 9, 0, W_ITEM, "TanRifle33" }, { 9, 0, W_ITEM, "TanRifle34" },
+    { 9, 0, W_ITEM, "TanGrenadier7" }, { 9, 0, W_ITEM, "TanGrenadier9" }, { 9, 0, W_ITEM, "TanRifle35" }, { 9, 1, W_PAD, 0, 99 },   /* des4_2:55-68 */
+    { 10, 0, W_ITEM, "truck", 0, 0, 0, "truck" },                                         /* alp1_2:85-88 */
+    { 10, 0, W_PAD, 0, 33, 0, 0, "!truck" }, { 10, 1, W_PAD, 0, 22, 0, 0, "!truck" }, { 10, 2, W_PAD, 0, 23, 0, 0, "!truck" },   /* alp1_1:158-182, 101-105 */
+    { 11, 0, W_ITEM, "truck", 0, 0, 0, "truck" },
+    { 11, 0, W_PAD, 0, 33, 0, 0, "!truck" }, { 11, 1, W_PAD, 0, 22, 0, 0, "!truck" }, { 11, 2, W_PAD, 0, 23, 0, 0, "!truck" },
+    { 12, 0, W_ITEM, "Spy1" },                                                           /* alp2_1:53-57, 154-156 */
+    { 13, 0, W_ITEM, "TanSpecial101" },                                                  /* alp2_2:44-52 */
+    { 14, 0, W_PAD, 0, 32 },                                                             /* alp3_1:226 */
+    { 15, 0, W_PAD, 0, 14 },            { 15, 1, W_PAD, 0, 0 },                          /* alp3_2:57-68 */
+    { 16, 0, W_ITEM, "radiotower" },                                                     /* alp3_3:41, 87-89 */
+    { 17, 0, W_PAD, 0, 20 },            { 17, 0, W_ITEM, "TanBazooka4" }, { 17, 1, W_PAD, 0, 0 },   /* alp4_1:290-291, 395-403, 161-162 */
+    { 18, 0, W_PAD, 0, 0 },                                                              /* alp4_2:203-216 */
+    { 19, 0, W_PAD, 0, 10 },            { 19, 1, W_PAD, 0, 13 },                         /* bay1_1:137-171 (runner1 to mid1) */
+    { 20, 0, W_ITEM, "GrayBazooka103" }, { 20, 0, W_ITEM, "GrayFlamer102" }, { 20, 0, W_ITEM, "colenel" }, { 20, 1, W_PAD, 0, 20 },   /* bay1_2:14-15, 59-71 */
+    { 21, 0, W_ITEM, "patrol" },                                                         /* bay2_1:36-37, 92-94 */
+    { 22, 0, W_ITEM, "TowerNorth" }, { 22, 0, W_ITEM, "TowerSouth" }, { 22, 0, W_ITEM, "GrayFlamer102" },
+    { 22, 0, W_ITEM, "GrayRifle109" }, { 22, 0, W_ITEM, "GrayRifle108" }, { 22, 0, W_ITEM, "GrayBazooka104" }, { 22, 0, W_ITEM, "key" },   /* bay2_2:8-9, 25, 60 */
+    { 23, 0, W_ITEM, "TanRifle9" }, { 23, 0, W_ITEM, "TanRifle7" }, { 23, 0, W_ITEM, "TanGrenadier1" },     /* bay3_1:103-111, waves */
+    { 23, 1, W_ITEM, "TanGrenadier2" }, { 23, 1, W_ITEM, "TanRifle5" }, { 23, 1, W_ITEM, "TanRifle6" },
+    { 23, 2, W_ITEM, "TanRifle1" }, { 23, 2, W_ITEM, "TanRifle3" }, { 23, 2, W_ITEM, "TanBazooka1" },
+    { 24, 0, W_ITEM, "TanTank101" }, { 24, 0, W_ITEM, "TanTank102" }, { 24, 0, W_ITEM, "TanTank103" }, { 24, 1, W_PAD, 0, 110 },   /* bay3_2:13, 29-33 */
+    { 25, 0, W_PAD, 0, 35, 0, 0, 0, "cargo" },                                           /* bay3_3:34-35, 48 */
+    { 26, 0, W_PAD, 0, 10, 0, 0, 0, "cargo" },                                           /* bay4_1:31, 40-41 */
+    { 27, 0, W_PAD, 0, 15 },                                                             /* bay4_2:21-22 */
+    { 28, 0, W_PAD, 0, 99 },            { 28, 1, W_PAD, 0, 100 },                        /* bay4_3:28, 83-86 */
+};
+#define NWAYS ((int)(sizeof WAYS / sizeof WAYS[0]))
+
+static MissionPt g_pts[MAX_PTS];
+static int g_npts;
+static int g_key = -1, g_frames, g_phase;            /* phase 0 wait, 1 legs, 2 done */
+static int g_wx[MAX_WP], g_wy[MAX_WP], g_wveh[MAX_WP], g_nwp, g_leg, g_leg_calls, g_cx, g_cy;
+static BYTE *g_sarge;
+
+int missionpath_points(const MissionPt **pts)
+{
+    *pts = g_pts;
+    return g_cfg.mission_path && g_phase == 2 ? g_npts : 0;
+}
+
+static void add(int x, int y, int dashed, int wp)
+{
+    if (g_npts >= MAX_PTS) return;
+    if (g_npts && g_pts[g_npts - 1].x == x && g_pts[g_npts - 1].y == y) { if (wp) g_pts[g_npts - 1].wp = (BYTE)wp; return; }
+    g_pts[g_npts++] = (MissionPt){ (short)x, (short)y, (BYTE)dashed, (BYTE)wp };
+}
+
+static int dist2(int ax, int ay, int bx, int by) { int dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
+
+/* the waypoints of this mission in visiting order (stages in order, nearest first inside a stage) */
+static void resolve(int m, int sx, int sy)
+{
+    int x[MAX_WP], y[MAX_WP], st[MAX_WP], veh[MAX_WP], n = 0;
+    for (int i = 0; i < NWAYS && n < MAX_WP; i++) {
+        const Way *w = &WAYS[i];
+        if (w->mission != m || (w->need && !objectives_need(w->need))) continue;
+        int px = 0, py = 0;
+        if (w->kind == W_POINT) { px = w->x; py = w->y; }
+        else if (w->kind == W_PAD) {
+            if (w->pad < 0 || w->pad > 255) continue;
+            const short *p = PAD_LOC(w->pad);
+            if (!p[0] && !p[1]) { if (g_cfg.log >= 1) mlog("missionpath: mission %d pad %d has no location", m, w->pad); continue; }
+            px = p[0] + 8; py = p[1] + 8;
+        } else {
+            int raw = 0, s = objectives_item_ground(w->name, &px, &py, &raw, NULL);
+            if (s == -2 || s == -1 || (!px && !py)) { if (g_cfg.log >= 1) mlog("missionpath: mission %d item %s %s", m, w->name, s == -2 ? "not found" : s == -1 ? "already done" : "has no spot"); continue; }
+        }
+        if (px <= 0 || py <= 0 || px >= 4096 || py >= 4096) continue;
+        veh[n] = -1;
+        if (w->drive) {
+            BYTE *v = NULL; int vx, vy, raw = 0;
+            if (objectives_item_ground(w->drive, &vx, &vy, &raw, &v) != -2 && v && raw == 3) veh[n] = VEH_TYPE(v) - 1;
+        }
+        x[n] = px; y[n] = py; st[n] = w->stage; n++;
+    }
+    /* order: stage by stage, each time the nearest one left of the lowest stage */
+    BYTE used[MAX_WP] = { 0 };
+    int cx = sx, cy = sy;
+    g_nwp = 0;
+    for (int k = 0; k < n; k++) {
+        int best = -1;
+        for (int i = 0; i < n; i++) {
+            if (used[i]) continue;
+            if (best < 0 || st[i] < st[best] || (st[i] == st[best] && dist2(cx, cy, x[i], y[i]) < dist2(cx, cy, x[best], y[best]))) best = i;
+        }
+        used[best] = 1;
+        g_wx[g_nwp] = x[best]; g_wy[g_nwp] = y[best]; g_wveh[g_nwp] = veh[best]; g_nwp++;
+        cx = x[best]; cy = y[best];
+        if (g_cfg.log >= 1) mlog("missionpath: waypoint %d at %d,%d (stage %d%s)", g_nwp, x[best], y[best], st[best], veh[best] >= 0 ? ", driven" : "");
+    }
+}
+
+/* one piece of the current leg (game thread, once per frame) */
+static void leg_step(void)
+{
+    if (g_leg >= g_nwp) { g_phase = 2; if (g_cfg.log >= 1) mlog("missionpath: done, %d points, %d waypoints", g_npts, g_nwp); return; }
+    int tx = g_wx[g_leg], ty = g_wy[g_leg];
+    static POINT out[96];
+    volatile int n = 0;
+    Guard gd;
+    if (GUARD_TRY(gd, "mission path (missionpath.c)")) {
+        if (g_leg_calls == 0 && g_wveh[g_leg] >= 0) {
+            n = path_find_vehicle(g_wveh[g_leg], g_cx, g_cy, tx, ty, out, 96);
+            if (n > 0 && dist2(out[n - 1].x, out[n - 1].y, tx, ty) > 48 * 48) n = 0;   /* not all the way: walk it */
+        }
+        if (n <= 0) n = path_find(g_cx, g_cy, tx, ty, out, 96);
+        guard_leave(&gd);
+    } else n = -1;
+    g_leg_calls++;
+    int before = dist2(g_cx, g_cy, tx, ty);
+    if (n > 0) {
+        for (int i = 0; i < n; i++) add(out[i].x, out[i].y, 0, 0);
+        g_cx = out[n - 1].x; g_cy = out[n - 1].y;
+    }
+    int after = dist2(g_cx, g_cy, tx, ty), reached = after <= REACHED * REACHED;
+    int stuck = n <= 0 || (!reached && (after > before || before - after < MIN_PROGRESS * MIN_PROGRESS)) || g_leg_calls >= LEG_CALLS;
+    if (!reached && !stuck) return;                     /* partial: the next piece on the next frame */
+    if (!reached && g_cfg.log >= 1) mlog("missionpath: leg %d to %d,%d not found from %d,%d (%d pieces): straight", g_leg + 1, tx, ty, g_cx, g_cy, g_leg_calls);
+    add(tx, ty, !reached, g_leg + 1);                   /* the waypoint itself (a piece may end next to a blocked one) */
+    g_cx = tx; g_cy = ty;
+    g_leg++; g_leg_calls = 0;
+}
+
+void missionpath_frame(void)
+{
+    BYTE *g = GAME, *s = SARGE_ITEM;
+    if (!g || !s || !game_in_play() || GAME_TYPE(g) != 0) {    /* between missions (Play Again too): built anew */
+        if (!game_in_play()) { g_key = -1; g_phase = 0; g_npts = 0; }
+        return;
+    }
+    if (!g_cfg.mission_path) return;
+    int key = (GAME_MISSION(g) << 16) ^ GAME_SCENARIO(g);
+    if (key != g_key || (g_phase == 0 && s != g_sarge)) {       /* first play frame of a mission: Sarge's start */
+        g_key = key; g_sarge = s; g_phase = 0; g_frames = 0; g_npts = 0; g_nwp = 0; g_leg = 0; g_leg_calls = 0;
+        g_cx = *(short *)(s + 4); g_cy = *(short *)(s + 6);
+        add(g_cx, g_cy, 0, 0);
+        if (g_cfg.log >= 1) mlog("missionpath: mission %d, Sarge starts at %d,%d", GAME_MISSION(g), g_cx, g_cy);
+        return;
+    }
+    if (g_phase == 0) {
+        if (++g_frames < RESOLVE_FRAMES) return;
+        resolve(GAME_MISSION(g), g_pts[0].x, g_pts[0].y);
+        g_phase = 1;
+        return;
+    }
+    if (g_phase == 1) leg_step();
+}

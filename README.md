@@ -47,6 +47,7 @@ folder first. So this DLL is two things:
 | `controls.c` | Modern controls (`[controls] mode=modern`): mouse aim, left = fire, hold right = walk toward the pointer, tap right = walk to the spot, double-click right and hold = run (`FUN_00414ad0` speed), W A S D = screen directions, smooth camera (`FUN_0040dcd0`). Wraps the keyboard dispatcher `FUN_0041fca0`, sets bits in the player input word `0x6a547c` and Sarge's facing; hides W A S D from the game's own key bindings. |
 | `fonts.c` | Font substitution: the game asks for "ArialNarrow"; uses Arial Narrow if installed, otherwise Arial narrowed to its width. |
 | `clock.c` | The game clock: replaces the exe's `GetTickCount`, adjustable speed, pause, hotkeys. |
+| `missionpath.c` | **Mission path** (`[hud] mission_path`): once per mission, a route from Sarge's start through the mission's waypoints in order (WAYS table from the mission scripts), built with pathfind.c over a few frames; drawn on the ground by modern.c. No game patch. |
 
 ## Conventions for rewritten game functions
 

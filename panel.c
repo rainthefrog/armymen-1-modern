@@ -84,6 +84,7 @@ static Row g_rows[] = {
     { "Sharp menu text",          &g_cfg.menu_text, "display", "menu_text" },                  /* 19 */
     { "No corner squash",         &g_cfg.fix_squash, "gameplay", "fix_squash" },               /* 20 */
     { "Radio messages as overlay", &g_cfg.radio_overlay, "display", "radio_overlay" },        /* 21 */
+    { "Mission path on ground",   &g_cfg.mission_path, "hud", "mission_path" },             /* 22 */
 };
 #define ROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 #define SPEED_ROW ROWS                 /* game speed */

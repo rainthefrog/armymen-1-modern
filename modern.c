@@ -151,7 +151,7 @@ static int nearest(int r, int g, int b)
     }
     return best;
 }
-static BYTE C_WHITE, C_RED, C_YELLOW, C_GREEN, C_BLACK, C_GREY, C_ORANGE, C_SKY;
+static BYTE C_WHITE, C_RED, C_YELLOW, C_GREEN, C_BLACK, C_GREY, C_ORANGE, C_SKY, C_PATH, C_PATH_DARK;
 static BYTE C_ARMY[4];                        /* target marks in the target's army colour: green tan blue grey */
 
 /* Throw distance in a real unit (user: "show distance unit (feet, yards, etc)"): a soldier sprite is ~24 px
@@ -172,6 +172,8 @@ static void colours(void)
     C_GREEN = (BYTE)nearest(60, 220, 60); C_BLACK = (BYTE)nearest(0, 0, 0); C_GREY = (BYTE)nearest(150, 150, 150);
     C_ORANGE = (BYTE)nearest(255, 140, 20);
     C_SKY = (BYTE)nearest(110, 190, 255);
+    C_PATH = (BYTE)nearest(245, 245, 235);     /* mission path: white, 2 px + a dark edge (route marker: green dashed; target outline: yellow) */
+    C_PATH_DARK = (BYTE)nearest(40, 40, 40);
     C_ARMY[0] = (BYTE)nearest(90, 210, 70); C_ARMY[1] = (BYTE)nearest(230, 195, 120);
     C_ARMY[2] = (BYTE)nearest(80, 140, 255); C_ARMY[3] = (BYTE)nearest(195, 195, 205);
 }
@@ -649,6 +651,42 @@ static void modern_draw_body(Surf *b)
         ObjMark mk[8]; int nm = objectives_marks(mk, 8);
         for (int i = 0; i < nm; i++) target_mark(&mk[i], *(short *)(u + 4), *(short *)(u + 6));
         if (!nm && objectives_target(&ox, &oy)) edge_arrow(ox, oy, C_YELLOW);   /* no named target: the sector */
+    }
+    missionpath_frame();                                /* built once per mission (missionpath.c), never per frame */
+    {   /* The mission path (2026-11-20, [hud] mission_path): Sarge's start -> each waypoint, painted on the ground
+         * like the route marker (g_route: under objects), white, 2 px with a dark edge, solid; a leg the planner did not find is
+         * dashed. Each waypoint: a small ring with its number. Only segments touching the screen are drawn. */
+        const MissionPt *mp; int n = missionpath_points(&mp);
+        if (n >= 2) {
+            g_route = 1;
+            int W = g_cfg.width, H = g_cfg.height;
+            if (!g_cfg.hd_world) under_begin(CAMERA_X - 8, CAMERA_Y + layout_field_shift() - 8, CAMERA_X + W + 8, CAMERA_Y + layout_field_shift() + H + 8);
+            for (int pass = 0; pass < 2; pass++)            /* the dark edges first: a joint never cuts the white line */
+            for (int i = 0; i + 1 < n; i++) {
+                int x0, y0, x1, y1; to_screen(mp[i].x, mp[i].y, &x0, &y0); to_screen(mp[i + 1].x, mp[i + 1].y, &x1, &y1);
+                if ((x0 < 0 && x1 < 0) || (y0 < 0 && y1 < 0) || (x0 >= W && x1 >= W) || (y0 >= H && y1 >= H)) continue;
+                int tx = abs(x1 - x0) < abs(y1 - y0), ty = !tx, d = mp[i + 1].dashed ? 4 : 0;   /* 2 px wide + a dark edge */
+                if (pass == 0) { line(x0 + 2 * tx, y0 + 2 * ty, x1 + 2 * tx, y1 + 2 * ty, C_PATH_DARK, d); continue; }
+                line(x0, y0, x1, y1, C_PATH, d);
+                line(x0 + tx, y0 + ty, x1 + tx, y1 + ty, C_PATH, d);
+            }
+            for (int i = 1; i < n; i++) {
+                if (!mp[i].wp) continue;
+                int wx, wy; to_screen(mp[i].x, mp[i].y, &wx, &wy);
+                if (wx < -20 || wy < -20 || wx > W + 20 || wy > H + 20) continue;
+                circle(wx, wy, 6, C_PATH, 0);
+                circle(wx, wy, 5, C_PATH, 0);
+            }
+            g_nunder = 0;
+            g_route = 0;
+            for (int i = 1; i < n; i++) {               /* the numbers: on top (a pad inside a building hid them) */
+                if (!mp[i].wp) continue;
+                int wx, wy; to_screen(mp[i].x, mp[i].y, &wx, &wy);
+                if (wx < -20 || wy < -20 || wx > W + 20 || wy > H + 20) continue;
+                char s[4]; wsprintfA(s, "%d", mp[i].wp);
+                text(wx + 8, wy - 12, s, C_PATH, 1);
+            }
+        }
     }
     int rx, ry;
     if (modern_on(MOD_ROUTE)) {
