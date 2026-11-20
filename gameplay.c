@@ -51,11 +51,41 @@ static void weapon_range(void)
     }
 }
 
+/* Vehicle health regeneration (2026-11-20, user: "do vehicles regain health like sarge? if not, they should. just much
+ * slower"): the vehicle Sarge drives (SARGE +0x2d0) heals like Sarge - after regen_delay_ms without damage - but
+ * VEHICLE_REGEN_SLOWER times slower ([gameplay] vehicle_regen_x, default 4; 0 = off). Health +0x1c / max +0x1e.
+ * Only while alive (state 1, health > 0). Game clock. */
+#define VEHICLE_REGEN_SLOWER 4
+static void vehicle_regen(void)
+{
+    static int slower = -1;
+    if (slower < 0) slower = GetPrivateProfileIntA("gameplay", "vehicle_regen_x", VEHICLE_REGEN_SLOWER, mod_ini_path());
+    static BYTE *who; static int last_hp, since_hurt_ms; static double owed; static DWORD last_ms;
+    BYTE *u = SARGE;
+    BYTE *v = u && !IsBadReadPtr(u, 0x2d4) ? *(BYTE **)(u + 0x2d0) : NULL;
+    DWORD now = clock_game_ms();
+    int dt = last_ms ? (int)(now - last_ms) : 0;
+    last_ms = now;
+    if (!g_cfg.health_regen || slower <= 0 || !v || IsBadReadPtr(v, 0x70) || *(int *)(v + 0x68) != 1) { who = NULL; return; }
+    int hp = *(short *)(v + 0x1c), max = *(short *)(v + 0x1e);
+    if (v != who || hp <= 0 || max <= 0) { who = v; last_hp = hp; since_hurt_ms = 0; owed = 0; return; }
+    if (dt < 0 || dt > 250) dt = 0;
+    if (hp < last_hp) { since_hurt_ms = 0; owed = 0; }
+    else since_hurt_ms += dt;
+    if (since_hurt_ms >= g_cfg.regen_delay_ms && hp < max && g_cfg.regen_full_s > 0) {
+        owed += (double)max * dt / (g_cfg.regen_full_s * 1000.0 * slower);
+        int add = (int)owed;
+        if (add > 0) { owed -= add; hp = hp + add > max ? max : hp + add; *(short *)(v + 0x1c) = (short)hp; }
+    }
+    last_hp = hp;
+}
+
 void gameplay_frame(void)
 {
     weapon_range();
     capture_frame();                             /* capture.c: Sarge in an enemy vehicle */
     barricades_frame();                          /* barricades.c: Sarge stuck on a barricade */
+    vehicle_regen();
     static BYTE *who;
     static int last_hp, since_hurt_ms;
     static double owed;                          /* fractions of a health point not yet given */

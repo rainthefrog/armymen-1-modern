@@ -103,8 +103,17 @@ typedef struct { int on, q[G_COUNT], qk, mid_x, mid_src, air_x, map_x, knob_x; }
  * "the smaller window should allow the elements to be scaled down and up so long as they fit") */
 static int g_floor64 = ONE * 3 / 2;
 static int scale64(float scale) { int q = (int)(scale * ONE + 0.5f); return q < g_floor64 ? g_floor64 : q > 3 * ONE ? 3 * ONE : q; }
+/* the minimap group locked at one size (2026-11-20, user: "the far right UI element should be locked at 1.5x"):
+ * [hud] minimap_lock (default 1.5; 0 = resizable as before). Cycling it (resize icon, Mod Settings) does nothing. */
+static float minimap_lock(void)
+{
+    static float v = -1;
+    if (v < 0) { char t[16]; GetPrivateProfileStringA("hud", "minimap_lock", "1.5", t, sizeof t, mod_ini_path()); v = (float)atof(t); if (v < 0) v = 0; }
+    return v;
+}
 static float *group_cfg(int g)
 {
+    if (g == G_MAP && minimap_lock() > 0) { static float locked; locked = minimap_lock(); return &locked; }   /* writes are dropped */
     return g == G_MSG ? &g_cfg.hud_corner_scale : g == G_MID ? &g_cfg.hud_centre_scale : g == G_AIR ? &g_cfg.hud_air_scale : &g_cfg.hud_minimap_scale;
 }
 static const char *const GROUP_KEY[G_COUNT] = { "corner_scale", "centre_scale", "air_scale", "minimap_scale" };
@@ -856,7 +865,7 @@ void __cdecl layout_draw_battlefield(void) { PROF_BEGIN(t); layout_draw_battlefi
 float layout_group_scale(int g) { return g >= 0 && g < G_COUNT ? *group_cfg(g) : 1.0f; }
 void layout_group_cycle(int g)
 {
-    if (g < 0 || g >= G_COUNT) return;
+    if (g < 0 || g >= G_COUNT || (g == G_MAP && minimap_lock() > 0)) return;
     float *s = group_cfg(g);
     *s = next_size(g);
     char v[8]; wsprintfA(v, "%d.%d", (int)*s, (int)(*s * 10) % 10);
