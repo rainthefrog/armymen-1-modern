@@ -49,6 +49,7 @@ folder first. So this DLL is two things:
 | `fonts.c` | Font substitution: the game asks for "ArialNarrow"; uses Arial Narrow if installed, otherwise Arial narrowed to its width. |
 | `clock.c` | The game clock: replaces the exe's `GetTickCount`, adjustable speed, pause, hotkeys. |
 | `missionpath.c` | **Mission path** (`[hud] mission_path`): once per mission, a route from Sarge's start through the mission's waypoints in order (WAYS table from the mission scripts), built with pathfind.c over a few frames; drawn on the ground by modern.c. No game patch. |
+| `vehicles.c` | **The vehicle Sarge drives** (2026-11-20): click-to-drive routes with reversing / multi-point turns (`[controls] vehicle_reverse`, hybrid A* in pathfind.c), a steady turret (`turret_smooth`: the hull no longer drags it, eased aim), getting unstuck (`vehicle_unstick`: no creeping into sandbags / rocks, moves that lead out of an overlap are let through). Wraps the calls to VehicleUpdate (0x419c52) and VehicleLockTurret (0x417ce8). |
 
 ## Conventions for rewritten game functions
 

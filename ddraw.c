@@ -75,6 +75,9 @@ void config_load(void)
     g_cfg.longer_range = GetPrivateProfileIntA("gameplay", "longer_range", 1, ini);
     g_cfg.fix_squash = GetPrivateProfileIntA("gameplay", "fix_squash", 1, ini);
     g_cfg.drive_enemy_vehicles = GetPrivateProfileIntA("gameplay", "drive_enemy_vehicles", 1, ini);   /* on by default (2026-11-20, user expected it) */
+    g_cfg.vehicle_reverse = GetPrivateProfileIntA("controls", "vehicle_reverse", 1, ini);   /* vehicles.c (2026-11-20) */
+    g_cfg.turret_smooth = GetPrivateProfileIntA("controls", "turret_smooth", 1, ini);
+    g_cfg.vehicle_unstick = GetPrivateProfileIntA("controls", "vehicle_unstick", 1, ini);
     g_cfg.see_interior = GetPrivateProfileIntA("display", "see_interior", 1, ini);
     g_cfg.menu_text = GetPrivateProfileIntA("display", "menu_text", 1, ini);
     g_cfg.radio_overlay = GetPrivateProfileIntA("display", "radio_overlay", 1, ini);

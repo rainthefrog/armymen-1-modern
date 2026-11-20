@@ -90,6 +90,9 @@ static Row g_rows[] = {
     { "Minimap: Sarge marked",    &g_cfg.mm_sarge, "hud", "minimap_sarge" },
     { "Minimap: contrast",        &g_cfg.mm_contrast, "hud", "minimap_contrast" },
     { "Minimap: hover details",   &g_cfg.mm_hover, "hud", "minimap_hover" },
+    { "Vehicles: reverse to fit", &g_cfg.vehicle_reverse, "controls", "vehicle_reverse" },    /* vehicles.c (2026-11-20) */
+    { "Vehicles: steady turret",  &g_cfg.turret_smooth, "controls", "turret_smooth" },
+    { "Vehicles: get unstuck",    &g_cfg.vehicle_unstick, "controls", "vehicle_unstick" },
 };
 #define ROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 #define SPEED_ROW ROWS                 /* game speed */

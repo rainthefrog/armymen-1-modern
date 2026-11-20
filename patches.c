@@ -309,6 +309,10 @@ void patches_apply(void)
     capture_unit_enter_original = (CaptureTwoFn)hook_wrap("capture: UnitEnterVehicle (0x41d800) -> capture.c", 0x41d800, uin_o, sizeof uin_o,
                                                           (void *)capture_unit_enter);
     hook_call("capture: RunAI -> HandleVehicle (0x4296b6)", 0x4296b6, 0x4296f0, (void *)capture_handle_vehicle);
+    /* vehicles.c (2026-11-20): the player's vehicle update (unstick, no creeping into objects, trace) and the turret
+     * turning with the hull (skipped for Sarge's turret while turret_smooth: it keeps its aim). Inactive while off. */
+    hook_call("vehicles: VehicleUpdate (call 0x419c52) -> vehicles.c", 0x419c52, 0x4176f0, (void *)vehicles_update);
+    hook_call("vehicles: VehicleLockTurret (call 0x417ce8) -> vehicles.c", 0x417ce8, 0x417eb0, (void *)vehicles_turret_lock);
 
     clock_install();
     hdvideo_install();

@@ -760,7 +760,9 @@ static void vehicle_controls(BYTE *u, BYTE *v, int pointer, int px, int py, int 
                              int right_tap, int kx, int ky, DWORD now)
 {
     int vx = VEH_X(v) - CAMERA_X, vy = VEH_Y(v) - CAMERA_Y;    /* vehicle on screen */
-    if (pointer && (px != vx || py != vy)) {
+    if (pointer && (px != vx || py != vy) && g_cfg.turret_smooth)   /* vehicles.c: world aim, eased, no fight with the hull */
+        vehicles_aim_turret(v, px + CAMERA_X, py + CAMERA_Y, now, left && !S.left_was_down && VEH_TYPE(v) != VEH_TYPE_FIXED_GUN);
+    else if (pointer && (px != vx || py != vy)) {
         if (left && !S.left_was_down && VEH_HAS_TURRET(v) && VEH_MOVER(v) && VEH_TYPE(v) != VEH_TYPE_FIXED_GUN) {
             int dir = facing_toward(px - vx, py - vy);       /* firing: the turret points exactly at the pointer */
             VEH_TURRET(v) = (short)dir;
@@ -779,14 +781,20 @@ static void vehicle_controls(BYTE *u, BYTE *v, int pointer, int px, int py, int 
     }
     if (right_tap && pointer) {
         S.going = 1; S.target_x = px + CAMERA_X; S.target_y = py + CAMERA_Y; S.going_since = now; S.enter = NULL;
-        /* a route by the vehicle's own footprint (pathfind.c path_find_vehicle) */
-        S.nwp = path_find_vehicle(VEH_TYPE(v) - 1, VEH_X(v), VEH_Y(v), S.target_x, S.target_y, S.wp, (int)(sizeof S.wp / sizeof *S.wp));
+        /* a route by the vehicle's own footprint (pathfind.c path_find_vehicle); vehicle_reverse: with reversing (vehicles.c) */
+        if (g_cfg.vehicle_reverse) { vehicles_drive_start(v, S.target_x, S.target_y, now); S.nwp = 0; }
+        else S.nwp = path_find_vehicle(VEH_TYPE(v) - 1, VEH_X(v), VEH_Y(v), S.target_x, S.target_y, S.wp, (int)(sizeof S.wp / sizeof *S.wp));
         S.wpi = 0;
     }
     if (kx || ky || right_hold) S.going = 0;
-    if (S.going && now - S.going_since > (S.nwp ? VEH_ROUTE_TIMEOUT_MS : GOTO_TIMEOUT_MS)) S.going = 0;
-    if (kx || ky) steer_vehicle(v, facing_toward(kx, ky), 1);
+    if (S.going && !g_cfg.vehicle_reverse && now - S.going_since > (S.nwp ? VEH_ROUTE_TIMEOUT_MS : GOTO_TIMEOUT_MS)) S.going = 0;
+    if ((kx || ky) && g_cfg.vehicle_reverse) vehicles_steer(v, facing_toward(kx, ky), 1, 0);   /* vehicles.c: jeeps turn only while moving */
+    else if (kx || ky) steer_vehicle(v, facing_toward(kx, ky), 1);
+    else if (right_hold && pointer && reversing && g_cfg.vehicle_reverse)   /* the game inverts turns while backing up */
+        vehicles_steer(v, (facing_toward(px - vx, py - vy) + FACINGS / 2) & (FACINGS - 1), -1, 0);
+    else if (right_hold && pointer && g_cfg.vehicle_reverse) vehicles_steer(v, facing_toward(px - vx, py - vy), 1, 0);
     else if (right_hold && pointer) steer_vehicle(v, facing_toward(px - vx, py - vy), reversing ? -1 : 1);
+    else if (S.going && g_cfg.vehicle_reverse) { if (!vehicles_drive(v, now)) S.going = 0; }
     else if (S.going) {
         int gx = S.target_x, gy = S.target_y;
         while (S.nwp && S.wpi < S.nwp) {                      /* along the route: next corner when close */
@@ -1537,6 +1545,7 @@ int controls_route(POINT *pts, int max)
 {
     BYTE *u = SARGE;
     if (!u || !S.going || max < 2) return 0;
+    if (SARGE_VEHICLE(u) && g_cfg.vehicle_reverse) return vehicles_route(pts, max);   /* vehicles.c: planned poses */
     int n = 0;
     pts[n++] = (POINT){ SARGE_X(u), SARGE_Y(u) };
     for (int i = S.wpi; i < S.nwp && n < max; i++) pts[n++] = S.wp[i];
