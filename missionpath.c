@@ -21,6 +21,7 @@
  * ============================================================================================ */
 #include "common.h"
 #include <stdlib.h>
+#include <string.h>
 
 #define GAME                 (*(BYTE **)0x4b3f70)
 #define GAME_TYPE(g)         (*(int *)((g) + 0x68))          /* 0 = one player */
@@ -144,35 +145,199 @@ static void resolve(int m, int sx, int sy)
     }
 }
 
-/* one piece of the current leg (game thread, once per frame) */
+/* ---------------------------------------------------------------- the walking planner for the mission route
+ * 2026-11-20 (user: "the point of the navigation line is to be able to navigate the terrain - so make sure to update
+ * it to actually follow a path sarge can follow"): path_find (pathfind.c) is made for one click: ~40 ms and at most
+ * 40000 cells, then the NEAREST point so far - chained over long distances it ran into dead ends and the rest of the
+ * leg became a straight line through walls. This is its own complete A*: the same walking rule (a cell is free when
+ * none of its 4x4 sample points is blocked for Sarge, controls_blocked_at; no corner cutting), the whole map
+ * (512 x 512 cells of 8 px), RESUMABLE - a few ms per frame until it is finished - with its own arrays (the click
+ * planner and the pointer's reachability test keep theirs) and the cell answers kept for the whole route build. A leg
+ * is only "not found" when the target is really closed off; then the found part is kept and the rest dashed.
+ * The cell chain is then straightened in sight steps (path_line_free = the click route's line test, Sarge's width),
+ * also spread over frames. */
+#define WG          512
+#define WCELL       8
+#define W_BUDGET_MS 6                    /* per frame */
+#define W_HEAP      (WG * WG * 2)
+#define W_LOOKAHEAD 48                   /* cells: the straightening looks at most this far ahead */
+static BYTE g_wfree[WG * WG];            /* 0 unknown, 1 free, 2 blocked - kept for the whole route build */
+static uint16_t g_wgen[WG * WG], g_wclosed[WG * WG], g_wcurgen;
+static float g_wcost[WG * WG];
+static int g_wfrom[WG * WG];
+static int *g_wheap; static float *g_wheapf; static int g_wnheap;
+static int g_wstart, g_wgoal, g_wbest; static float g_wbesth;
+static int g_wphase;                     /* 0 idle, 1 searching, 2 straightening, 3 done */
+static int g_wchain[WG * WG / 2], g_wnc, g_wi, g_wfound, g_wtx, g_wty, g_wcx, g_wcy;
+
+static int wfree(int c)
+{
+    if (!g_wfree[c]) {
+        int x0 = (c % WG) * WCELL, y0 = (c / WG) * WCELL, blocked = 0;
+        int near_start = abs(c % WG - g_wstart % WG) <= 1 && abs(c / WG - g_wstart / WG) <= 1;
+        blocked = controls_blocked_at(x0 + WCELL / 2, y0 + WCELL / 2);
+        for (int sy = 1; sy < WCELL && !blocked && !near_start; sy += 2)
+            for (int sx = 1; sx < WCELL && !blocked; sx += 2) blocked = controls_blocked_at(x0 + sx, y0 + sy);
+        g_wfree[c] = blocked ? 2 : 1;
+        if (near_start) g_wfree[c] = 0;  /* tested anew for the next leg's start */
+        return !blocked;
+    }
+    return g_wfree[c] == 1;
+}
+static float west(int a, int b)
+{
+    int dx = abs(a % WG - b % WG), dy = abs(a / WG - b / WG);
+    return (float)(dx > dy ? dx + 0.4142 * dy : dy + 0.4142 * dx);
+}
+static void wpush(int c, float f)
+{
+    if (g_wnheap >= W_HEAP) return;
+    int i = g_wnheap++;
+    while (i > 0) { int p = (i - 1) / 2; if (g_wheapf[p] <= f) break; g_wheap[i] = g_wheap[p]; g_wheapf[i] = g_wheapf[p]; i = p; }
+    g_wheap[i] = c; g_wheapf[i] = f;
+}
+static int wpop(void)
+{
+    int top = g_wheap[0], c = g_wheap[--g_wnheap]; float f = g_wheapf[g_wnheap]; int i = 0;
+    for (;;) {
+        int l = 2 * i + 1, r = l + 1, m = i; float mf = f;
+        if (l < g_wnheap && g_wheapf[l] < mf) { m = l; mf = g_wheapf[l]; }
+        if (r < g_wnheap && g_wheapf[r] < mf) { m = r; mf = g_wheapf[r]; }
+        if (m == i) break;
+        g_wheap[i] = g_wheap[m]; g_wheapf[i] = g_wheapf[m]; i = m;
+    }
+    g_wheap[i] = c; g_wheapf[i] = f;
+    return top;
+}
+static int wbegin(int sx, int sy, int tx, int ty)
+{
+    if (!g_wheap) { g_wheap = malloc(sizeof(int) * W_HEAP); g_wheapf = malloc(sizeof(float) * W_HEAP); }
+    if (!g_wheap || !g_wheapf) return 0;
+    if (sx < 0 || sy < 0 || tx < 0 || ty < 0 || sx >= WG * WCELL || sy >= WG * WCELL || tx >= WG * WCELL || ty >= WG * WCELL) return 0;
+    if (++g_wcurgen == 0) { memset(g_wgen, 0, sizeof g_wgen); memset(g_wclosed, 0, sizeof g_wclosed); g_wcurgen = 1; }
+    g_wstart = (sy / WCELL) * WG + sx / WCELL;
+    g_wgoal = (ty / WCELL) * WG + tx / WCELL;
+    g_wtx = tx; g_wty = ty; g_wcx = sx; g_wcy = sy;
+    if (!wfree(g_wgoal)) {                                       /* a pad in a doorway, a soldier's spot: nearest free */
+        int best = -1;
+        for (int r = 1; r <= 10 && best < 0; r++)
+            for (int dy = -r; dy <= r && best < 0; dy++)
+                for (int dx = -r; dx <= r && best < 0; dx++) {
+                    if (abs(dx) != r && abs(dy) != r) continue;
+                    int x = g_wgoal % WG + dx, y = g_wgoal / WG + dy;
+                    if (x >= 0 && y >= 0 && x < WG && y < WG && wfree(y * WG + x)) best = y * WG + x;
+                }
+        if (best >= 0) { g_wgoal = best; g_wtx = (best % WG) * WCELL + WCELL / 2; g_wty = (best / WG) * WCELL + WCELL / 2; }
+    }
+    g_wnheap = 0;
+    g_wgen[g_wstart] = g_wcurgen; g_wcost[g_wstart] = 0; g_wfrom[g_wstart] = -1;
+    g_wbest = g_wstart; g_wbesth = west(g_wstart, g_wgoal);
+    wpush(g_wstart, g_wbesth);
+    g_wphase = 1; g_wfound = 0;
+    return 1;
+}
+/* one frame's work; 1 = finished (route in out / *n: the straightened points, the last = the leg's end) */
+static int wstep(POINT *out, int max, int *n, int *found)
+{
+    LARGE_INTEGER q0, qf, qn; QueryPerformanceCounter(&q0); QueryPerformanceFrequency(&qf);
+    static const int DX[8] = { 1, -1, 0, 0, 1, 1, -1, -1 }, DY[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+    int k = 0;
+    #define W_TIME_UP() ((++k & 63) == 0 && (QueryPerformanceCounter(&qn), (qn.QuadPart - q0.QuadPart) * 1000 / qf.QuadPart >= W_BUDGET_MS))
+    if (g_wphase == 1) {
+        while (g_wnheap > 0) {
+            if (W_TIME_UP()) return 0;
+            int c = wpop();
+            if (g_wclosed[c] == g_wcurgen) continue;
+            g_wclosed[c] = g_wcurgen;
+            if (c == g_wgoal) { g_wfound = 1; break; }
+            float h = west(c, g_wgoal);
+            if (h < g_wbesth) { g_wbesth = h; g_wbest = c; }
+            int cx = c % WG, cy = c / WG;
+            for (int d = 0; d < 8; d++) {
+                int nx = cx + DX[d], ny = cy + DY[d];
+                if (nx < 0 || ny < 0 || nx >= WG || ny >= WG) continue;
+                int nb = ny * WG + nx;
+                if (g_wclosed[nb] == g_wcurgen || !wfree(nb)) continue;
+                if (d >= 4 && (!wfree(cy * WG + nx) || !wfree(ny * WG + cx))) continue;   /* no corner cutting */
+                float g = g_wcost[c] + (d >= 4 ? 1.4142f : 1.0f);
+                if (g_wgen[nb] == g_wcurgen && g_wcost[nb] <= g) continue;
+                g_wgen[nb] = g_wcurgen; g_wcost[nb] = g; g_wfrom[nb] = c;
+                wpush(nb, g + west(nb, g_wgoal));
+            }
+        }
+        int end = g_wfound ? g_wgoal : g_wbest;
+        g_wnc = 0;
+        for (int c = end; c != -1 && g_wnc < (int)(sizeof g_wchain / sizeof *g_wchain); c = g_wfrom[c]) g_wchain[g_wnc++] = c;
+        /* chain[0] = end ... chain[nc-1] = start: walk it from the start */
+        g_wi = g_wnc - 1; *n = 0;
+        g_wphase = 2;
+    }
+    if (g_wphase == 2) {
+        while (g_wi > 0 && *n < max) {
+            if (W_TIME_UP()) return 0;
+            /* the farthest chain point ahead (within W_LOOKAHEAD) in Sarge's straight sight */
+            int j = g_wi - 1, lim = g_wi - W_LOOKAHEAD < 0 ? 0 : g_wi - W_LOOKAHEAD;
+            for (int t = lim; t < g_wi - 1; t++) {
+                int px = (g_wchain[t] % WG) * WCELL + WCELL / 2, py = (g_wchain[t] / WG) * WCELL + WCELL / 2;
+                if (t == 0 && g_wfound) { px = g_wtx; py = g_wty; }
+                if (path_line_free(g_wcx, g_wcy, px, py)) { j = t; break; }
+            }
+            int px = (g_wchain[j] % WG) * WCELL + WCELL / 2, py = (g_wchain[j] / WG) * WCELL + WCELL / 2;
+            if (j == 0 && g_wfound) { px = g_wtx; py = g_wty; }
+            out[(*n)++] = (POINT){ px, py };
+            g_wcx = px; g_wcy = py; g_wi = j;
+        }
+        g_wphase = 3;
+    }
+    #undef W_TIME_UP
+    *found = g_wfound;
+    return 1;
+}
+
+/* one frame's work on the current leg (game thread). Walking legs: the complete resumable planner above. Driven
+ * legs (user: "since its expecting to get the tank, make sure the next path is one the tank can take"): the
+ * VEHICLE planner only (path_find_vehicle with that vehicle's footprint, 16 px tiles, its own line test), chained
+ * from its last point if it stopped short; no walking fallback - where the vehicle cannot go the rest is dashed. */
+static void leg_done(int tx, int ty, int reached)
+{
+    if (!reached && g_cfg.log >= 1) mlog("missionpath: leg %d to %d,%d ends at %d,%d (closed off): the rest dashed", g_leg + 1, tx, ty, g_cx, g_cy);
+    add(tx, ty, !reached, g_leg + 1);
+    g_cx = tx; g_cy = ty;
+    g_leg++; g_leg_calls = 0; g_wphase = 0;
+}
 static void leg_step(void)
 {
-    if (g_leg >= g_nwp) { g_phase = 2; if (g_cfg.log >= 1) mlog("missionpath: done, %d points, %d waypoints", g_npts, g_nwp); return; }
+    if (g_leg >= g_nwp) { g_phase = 2; if (g_cfg.log >= 1) { mlog("missionpath: done, %d points, %d waypoints", g_npts, g_nwp); char b[600]; int o = 0; for (int i = 0; i < g_npts && o < 560; i++) o += wsprintfA(b + o, " %d,%d%s", g_pts[i].x, g_pts[i].y, g_pts[i].dashed ? "d" : ""); mlog("missionpath: points%s", b); } return; }
     int tx = g_wx[g_leg], ty = g_wy[g_leg];
-    static POINT out[96];
-    volatile int n = 0;
+    static POINT out[MAX_PTS];
+    static int wn;
     Guard gd;
-    if (GUARD_TRY(gd, "mission path (missionpath.c)")) {
-        if (g_leg_calls == 0 && g_wveh[g_leg] >= 0) {
-            n = path_find_vehicle(g_wveh[g_leg], g_cx, g_cy, tx, ty, out, 96);
-            if (n > 0 && dist2(out[n - 1].x, out[n - 1].y, tx, ty) > 48 * 48) n = 0;   /* not all the way: walk it */
-        }
-        if (n <= 0) n = path_find(g_cx, g_cy, tx, ty, out, 96);
-        guard_leave(&gd);
-    } else n = -1;
-    g_leg_calls++;
-    int before = dist2(g_cx, g_cy, tx, ty);
-    if (n > 0) {
-        for (int i = 0; i < n; i++) add(out[i].x, out[i].y, 0, 0);
-        g_cx = out[n - 1].x; g_cy = out[n - 1].y;
+    if (g_wveh[g_leg] >= 0) {                                    /* driven */
+        volatile int n = 0;
+        if (GUARD_TRY(gd, "mission path, vehicle (missionpath.c)")) { n = path_find_vehicle(g_wveh[g_leg], g_cx, g_cy, tx, ty, out, 96); guard_leave(&gd); }
+        else n = -1;
+        g_leg_calls++;
+        int before = dist2(g_cx, g_cy, tx, ty);
+        if (n > 0) { for (int i = 0; i < n; i++) add(out[i].x, out[i].y, 0, 0); g_cx = out[n - 1].x; g_cy = out[n - 1].y; }
+        int after = dist2(g_cx, g_cy, tx, ty), reached = after <= 32 * 32;
+        if (reached || n <= 0 || before - after < MIN_PROGRESS * MIN_PROGRESS || g_leg_calls >= LEG_CALLS) leg_done(tx, ty, reached);
+        return;
     }
-    int after = dist2(g_cx, g_cy, tx, ty), reached = after <= REACHED * REACHED;
-    int stuck = n <= 0 || (!reached && (after > before || before - after < MIN_PROGRESS * MIN_PROGRESS)) || g_leg_calls >= LEG_CALLS;
-    if (!reached && !stuck) return;                     /* partial: the next piece on the next frame */
-    if (!reached && g_cfg.log >= 1) mlog("missionpath: leg %d to %d,%d not found from %d,%d (%d pieces): straight", g_leg + 1, tx, ty, g_cx, g_cy, g_leg_calls);
-    add(tx, ty, !reached, g_leg + 1);                   /* the waypoint itself (a piece may end next to a blocked one) */
-    g_cx = tx; g_cy = ty;
-    g_leg++; g_leg_calls = 0;
+    if (g_wphase == 0) {                                         /* walking: start the search */
+        volatile int ok = 0;
+        if (GUARD_TRY(gd, "mission path (missionpath.c)")) { ok = wbegin(g_cx, g_cy, tx, ty); guard_leave(&gd); }
+        if (!ok) { leg_done(tx, ty, 0); return; }
+        wn = 0;
+        return;
+    }
+    volatile int fin = 0; int found = 0;
+    if (GUARD_TRY(gd, "mission path (missionpath.c)")) { fin = wstep(out, MAX_PTS, &wn, &found); guard_leave(&gd); }
+    else { leg_done(tx, ty, 0); return; }
+    if (!fin) return;                                            /* next frame */
+    for (int i = 0; i < wn; i++) add(out[i].x, out[i].y, 0, 0);
+    if (wn > 0) { g_cx = out[wn - 1].x; g_cy = out[wn - 1].y; }
+    if (g_cfg.log >= 1) mlog("missionpath: leg %d walked: %s, %d points", g_leg + 1, found ? "found" : "closed off", wn);
+    leg_done(tx, ty, found || dist2(g_cx, g_cy, tx, ty) <= 32 * 32);
 }
 
 void missionpath_frame(void)
@@ -187,6 +352,7 @@ void missionpath_frame(void)
     if (key != g_key || (g_phase == 0 && s != g_sarge)) {       /* first play frame of a mission: Sarge's start */
         g_key = key; g_sarge = s; g_phase = 0; g_frames = 0; g_npts = 0; g_nwp = 0; g_leg = 0; g_leg_calls = 0;
         g_cx = *(short *)(s + 4); g_cy = *(short *)(s + 6);
+        memset(g_wfree, 0, sizeof g_wfree); g_wphase = 0;   /* the cell answers belong to this map */
         add(g_cx, g_cy, 0, 0);
         if (g_cfg.log >= 1) mlog("missionpath: mission %d, Sarge starts at %d,%d", GAME_MISSION(g), g_cx, g_cy);
         return;

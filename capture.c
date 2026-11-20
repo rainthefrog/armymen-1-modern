@@ -332,3 +332,36 @@ void capture_frame(void)
     VEH_AI_GOAL(v) = 0;
     update_seen(v);
 }
+
+/* modern.c (2026-11-20, user: "show if vehicle is not empty on cursor"): another army's vehicle under the world point
+ * (wx, wy) within HOVER_REACH of Sarge that he cannot take - why not ("Occupied", "Moving", ...), its position in
+ * *vx, *vy; NULL = none there or it can be taken. */
+const char *capture_hover_note(int wx, int wy, int *vx, int *vy)
+{
+    BYTE *s = PLAYER_SARGE;
+    if (!s || !capture_allowed() || g_cap.v) return NULL;
+    for (int a = 1; a < ARMIES; a++) {
+        if (!LEGION_STATUS(a)) continue;
+        BYTE *leg = ARMY_RECORD(a);
+        if (!leg) continue;
+        int n = *(signed char *)(leg + 0x50);
+        for (int i = 0; i < n && i < 50; i++) {
+            BYTE *v = *(BYTE **)(leg + 0x54 + 4 * i);
+            if (!v || IsBadReadPtr(v, 0x150)) continue;
+            int x = *(short *)(v + 4), y = *(short *)(v + 6);
+            if (abs(wx - x) > 22 || abs(wy - y) > 22) continue;
+            int dx = x - *(short *)(s + 4), dy = y - *(short *)(s + 6);
+            if (dx * dx + dy * dy > HOVER_REACH * HOVER_REACH * 4) continue;
+            *vx = x; *vy = y;
+            if (ITEM_HEALTH(v) <= 0) return "Wrecked";
+            if (VEH_STATE(v) != VEH_DEPLOYED) return NULL;
+            if (VEH_DRIVER(v) || has_passengers(v)) return "Occupied";
+            if (VEH_NPC(v) && VEH_SPEED(v) != 0) return "Occupied - moving";
+            if (VEH_SPEED(v) != 0) return "Moving";
+            if (!slot_free()) return "Cannot take";
+            if (dx * dx + dy * dy > HOVER_REACH * HOVER_REACH) return "Get closer";
+            return NULL;
+        }
+    }
+    return NULL;
+}

@@ -538,3 +538,6 @@ int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int 
 }
 
 void path_regions_step(void) { PROF_BEGIN(t); path_regions_step_body(); PROF_END(t, PR_REGIONS); }   /* timed (trace) */
+
+/* missionpath.c: the same straight-walk test as the click route (Sarge's width, every pixel) */
+int path_line_free(int x0, int y0, int x1, int y1) { return line_free(x0, y0, x1, y1); }

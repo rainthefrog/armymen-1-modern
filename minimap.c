@@ -440,7 +440,8 @@ void minimap_draw_tip(Surf *b)
 {
     int sx, sy, font, colour, idx[3];
     if (!g_cfg.mm_hover || g_hover < 0 || !b || !b->bits || panel_is_open() || !controls_pointer(&sx, &sy)) return;
-    if (!objectives_font(&font, &colour) || !hud_draw_string_original) return;
+    if (!objectives_font(&font, &colour)) colour = C_FILL[0];   /* frame colour: the message box ink if known */
+    (void)font;
     int cx, cy, q = layout_hud_point(ONSCREENMAPRECT[0], ONSCREENMAPRECT[1], &cx, &cy);
     int n = hover_find(sx, sy, q, idx, 3);
     if (!n) return;
@@ -456,7 +457,7 @@ void minimap_draw_tip(Surf *b)
         ink[nl++] = C_FILL[o->look];
     }
     int w = 0, lh = 12, h = nl * lh + 4;
-    for (int i = 0; i < nl; i++) { int lw = lstrlenA(line[i]) * 15 / 2 + 12; if (lw > w) w = lw; }   /* ~6.6 px a character (objectives.c PIN_CHAR) */
+    for (int i = 0; i < nl; i++) { int lw = lstrlenA(line[i]) * 6 + 12; if (lw > w) w = lw; }   /* modern.c 5x7 text: 6 px a character */
     /* above-left of the pointer (the minimap is in the bottom-right corner), kept on screen */
     int x0 = sx - w - 8, y0 = sy - h - 8;
     int W = b->w < g_cfg.width ? b->w : g_cfg.width, H = b->h < g_cfg.height ? b->h : g_cfg.height;
@@ -476,7 +477,6 @@ void minimap_draw_tip(Surf *b)
         hdworld_clear_run(b, y, x0, x0 + w < W ? x0 + w : W);        /* interface: the HD battlefield stays off it */
     }
     for (int i = 0; i < nl; i++) {
-        int clip[2] = { w - 8, lh };
-        hud_draw_string_original(b, x0 + 5, y0 + 2 + i * lh, line[i], font, clip, ink[i]);
+        modern_text(b, x0 + 6, y0 + 3 + i * lh, line[i], ink[i]);   /* the mod's own text (the game font drew nothing on Windows) */
     }
 }

@@ -605,6 +605,7 @@ int controls_pointer_world(int *x, int *y);        /* controls.c: world point un
 int objectives_need(const char *need);                             /* objectives.c: briefing contains / lacks a word */
 int objectives_item_ground(const char *name, int *x, int *y, int *raw, BYTE **item);   /* objectives.c: named item on the ground */
 typedef struct { short x, y; BYTE dashed, wp; } MissionPt;   /* dashed: the leg INTO this point was not found (straight); wp: 1.. waypoint number, 0 = bend */
+int path_line_free(int x0, int y0, int x1, int y1);                 /* pathfind.c */
 void missionpath_frame(void);                                      /* missionpath.c: per gameplay frame (game thread): build once per mission */
 int missionpath_points(const MissionPt **pts);                     /* missionpath.c: the route (world px), 0 = none / not built yet */
 /* capture.c: Sarge drives empty enemy vehicles ([gameplay] drive_enemy_vehicles) */
@@ -621,7 +622,9 @@ void capture_frame(void);                                         /* once per ga
 int capture_allowed(void);                                        /* option on and a one-player game */
 int capture_can_enter(BYTE *vehicle);                             /* Sarge may climb in (own: the game's rule) */
 int capture_hover_ok(BYTE *vehicle);                              /* another army's vehicle: enter pointer near Sarge */
-BYTE *capture_vehicle(void);                                      /* the vehicle Sarge took from another army, or NULL */
+const char *capture_hover_note(int wx, int wy, int *vx, int *vy);   /* capture.c: why an enemy vehicle cannot be taken */
+BYTE *capture_vehicle(void);
+int modern_text(Surf *b, int x, int y, const char *s, BYTE c);       /* modern.c: the mod's own 5x7 text */                                      /* the vehicle Sarge took from another army, or NULL */
 /* minimap.c (2026-11-20): minimap blips, contrast, hover details */
 int layout_hud_point(int design_x, int design_y, int *sx, int *sy);   /* layout.c: HUD design point -> finished frame (enlarged), returns scale in 64ths */
 void minimap_note_frame(int x1, int y1, int x2, int y2);              /* hud.c hud_minimap_rect: the game drew the minimap - copy its pins */

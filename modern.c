@@ -644,6 +644,11 @@ static void modern_draw_body(Surf *b)
 
     g_nbarred = 0;
     if (modern_on(MOD_HEALTH_BARS)) { each_enemy(health_bar); target_health_bars(); }
+    {   /* an enemy vehicle at the pointer that Sarge cannot take: why (user: "show if vehicle is not empty on cursor") */
+        int wx, wy, vx, vy;
+        const char *why = controls_pointer_world(&wx, &wy) ? capture_hover_note(wx, wy, &vx, &vy) : NULL;
+        if (why) { int sx, sy; to_screen(vx, vy, &sx, &sy); text(sx - lstrlenA(why) * 3, sy - 34, why, C_YELLOW, 1); }
+    }
     if (modern_on(MOD_ARROWS)) {
         g_near_count = 0;
         each_enemy(enemy_arrow);
@@ -827,3 +832,6 @@ static void modern_draw_body(Surf *b)
 }
 
 void modern_draw(Surf *b) { PROF_BEGIN(t); modern_draw_body(b); PROF_END(t, PR_OVERLAY); }   /* timed (trace) */
+
+/* minimap.c tooltip (2026-11-20: the game's cached message font drew nothing there on Windows - empty box) */
+int modern_text(Surf *b, int x, int y, const char *s, BYTE c) { Surf *keep = g_b; g_b = b; int r = text(x, y, s, c, 1); g_b = keep; return r; }
