@@ -160,7 +160,11 @@ static int overlay_click(int x, int y)
     }
     if (layout_resize_click(x, y)) { controls_block_left(); return 1; }   /* a HUD group's resize icon (layout.c) */
     RECT r;
-    if (objectives_box(&r) && PtInRect(&r, p)) {
+    /* 2026-11-20: off by default - clicks into the top-left corner during play replayed the briefing radio and its
+     * voice again and again (user). [hud] objective_click=1 brings it back. */
+    static int oc = -1;
+    if (oc < 0) oc = GetPrivateProfileIntA("hud", "objective_click", 0, mod_ini_path());
+    if (oc && objectives_box(&r) && PtInRect(&r, p)) {
         mlog("panel: objective box clicked - briefing");
         CMD_OBJECTIVE();
         return 1;

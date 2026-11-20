@@ -2042,6 +2042,8 @@ static void apply_modern_controls(void)
         /* what the rest of this function sees: fire = "left", walk hold / walk tap = the old right button */
         static int fire_was;
         int fire = (left && S.lmode == LM_FIRE) || (right && !rsel);
+        /* firing stops a walk in progress (2026-11-20, user: "shooting should also immediately stop any path traversal") */
+        if (fire && !fire_was && (S.going || S.nwp)) { S.going = 0; S.nwp = 0; S.route_run = 0; S.running = 0; if (g_cfg.log >= 2) mlog("controls: fire - walk stopped"); }
         if (cancel_hold) { fire = 0; tap = tap_run = 0; if (S.charging) INPUT |= INPUT_FIRE; }
         right_hold = left && S.lmode == LM_WALK;
         right_tap = tap;
