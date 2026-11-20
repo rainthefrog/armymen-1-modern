@@ -57,17 +57,22 @@ static int picture_h(const UiPicture *p) { return p->src.bottom - p->src.top; }
  * wider screen the battlefield is full height (layout.c patches its view and surface size), so
  * the game shows beside the panel. */
 
-/* Move a picture's design position (top-left, 640x480) for the current screen; remember big
- * panels so clicks on them can be mapped back. */
-static void place_picture(UiPicture *pic, int *px, int *py, int on_back_buffer)
+/* Move a picture's design position (top-left, 640x480) for the current screen. Returns 1 for a centred
+ * picture (pop-up, sign, radio): the caller notes it as an open panel (note_centred) once it is really drawn.
+ * 2026-11-20 (user: "this mission complete is still drawing the BG"): the panel used to be noted here, before
+ * radio_take - so the radio the MOD draws as an overlay was an "open panel" too, and gpu.c ps_resolve shows no
+ * battlefield art inside open panels: the 8-bit battlefield in the radio's whole rectangle. On the mission-over
+ * screen the game stops counting frames, so that panel never closed. */
+static int place_picture(UiPicture *pic, int *px, int *py, int on_back_buffer)
 {
-    if (!layout_active()) return;
-    Anchor a = layout_place(px, py);
-    int w = picture_w(pic), h = picture_h(pic);
-    if (a == ANCHOR_CENTER) {
-        RECT r = { *px, *py, *px + w, *py + h };
-        layout_note_panel(a, &r);
-    }
+    (void)pic; (void)on_back_buffer;
+    if (!layout_active()) return 0;
+    return layout_place(px, py) == ANCHOR_CENTER;
+}
+static void note_centred(UiPicture *pic, int px, int py)
+{
+    RECT r = { px, py, px + picture_w(pic), py + picture_h(pic) };
+    layout_note_panel(ANCHOR_CENTER, &r);
 }
 
 /* ---------------------------------------------------------------- FUN_00412f70 */
@@ -105,11 +110,12 @@ void __fastcall hud_draw_picture(UiPicture *pic, int x, int y)
         g_panel_src = pic->src;
     }
     int design_x = px;
-    place_picture(pic, &px, &py, 1);
+    int centred = place_picture(pic, &px, &py, 1);
     if (!is_panel) {                                 /* a radio message (briefing, script call): drawn by radio.c */
         RECT pr = { px, py, px + picture_w(pic), py + picture_h(pic) };
-        if (radio_take(pic, 0, &pr)) return;
+        if (radio_take(pic, 0, &pr)) return;         /* an overlay, not a panel on the picture: the battlefield stays HD */
     }
+    if (centred) note_centred(pic, px, py);
     void *back = BACK_BUFFER;
     if (!(pic->flags & 2)) {
         DWORD how = (pic->flags & 1) ? DDBLTFAST_WAIT : DDBLTFAST_WAIT | DDBLTFAST_SRCCOLORKEY;
@@ -149,7 +155,7 @@ void __fastcall hud_draw_picture_on_screen(UiPicture *pic, int x, int y)
     if (!pic || !pic->image || (pic->flags & 0x3e)) return;
     int px = x - pic->hot_x, py = y - pic->hot_y;
     int k = layout_menu_scale();                     /* an in-game menu: placed and stretched x k/64 (layout.c) */
-    int dw = pic->src.right, dh = pic->src.bottom;
+    int dw = pic->src.right, dh = pic->src.bottom, centred = 0;
     if (k) {
         int qx = px + picture_w(pic), qy = py + picture_h(pic), ex = px + pic->src.right, ey = py + pic->src.bottom;
         layout_menu_place(k, &px, &py); layout_menu_place(k, &qx, &qy); layout_menu_place(k, &ex, &ey);
@@ -158,7 +164,7 @@ void __fastcall hud_draw_picture_on_screen(UiPicture *pic, int x, int y)
         dw = ex - px; dh = ey - py;
     } else {
         int px0 = px, py0 = py;
-        place_picture(pic, &px, &py, 0);
+        centred = place_picture(pic, &px, &py, 0);
         /* a picture moved by the layout (e.g. the mission-over CONTINUE button beside the radio): clicks on it are
          * mapped back to where the game tests them (2026-11-20, user: the win screen "requires enter button") */
         if (px != px0 || py != py0) {
@@ -168,9 +174,10 @@ void __fastcall hud_draw_picture_on_screen(UiPicture *pic, int x, int y)
     }
     {   /* the mission-over radio: drawn by radio.c; what the game draws after it (buttons, panel) is cut out there */
         RECT pr = { px, py, px + dw, py + dh };
-        if (radio_take(pic, 1, &pr)) return;
+        if (radio_take(pic, 1, &pr)) return;         /* an overlay, not a panel on the screen (see place_picture) */
         radio_note_screen_picture(&pr);
     }
+    if (centred) note_centred(pic, px, py);
     RECT d;
     d.left = GAME_CLIENT_SCREEN_RECT.left + px;
     d.top = GAME_CLIENT_SCREEN_RECT.top + py;
