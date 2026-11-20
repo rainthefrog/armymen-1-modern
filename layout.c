@@ -152,6 +152,7 @@ static Zones zones(void)
     int q[G_COUNT], qk = KNOB_SCALE;
     { int t[G_COUNT]; for (int g = 0; g < G_COUNT; g++) t[g] = ONE * 3 / 2; g_floor64 = fits_as_is(t) ? ONE * 3 / 2 : ONE; }
     scales_now(q);
+    qk = q[G_MSG];        /* the knob strip (far right) at the message box's scale (far left) - user 2026-11-20 */
     /* Too wide for the screen (small window): ALL groups scale down by the same factor until they fit side by
      * side without overlapping (2026-11-17, user: "auto scale with the window size"; the old fit shrank the
      * message box alone over the logo). Never below 1x (the game draws them at 1x underneath). */
@@ -314,7 +315,7 @@ static int fits_as_is(const int *q)
     int w = g_cfg.width, gap = layout_hud_gap();
     int mid_w = ZONE_AIR_X - ZONE_MID_X + gap, air_w = ZONE_MAP_X - ZONE_AIR_X;
     int frame_w = ZONE_KNOB_X - ZONE_MAP_X, knob_w = LAYOUT_DESIGN_W - ZONE_KNOB_X;
-    int right_start = w - SC(knob_w, KNOB_SCALE) - SC(frame_w, q[G_MAP]) - SC(air_w, q[G_AIR]);
+    int right_start = w - SC(knob_w, q[G_MSG]) - SC(frame_w, q[G_MAP]) - SC(air_w, q[G_AIR]);
     int free_w = right_start - SC(ZONE_MID_X, q[G_MSG]);
     return free_w >= 0 && free_w >= SC(mid_w, q[G_MID]);   /* side by side, no overlap */
 }
