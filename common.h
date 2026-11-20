@@ -102,6 +102,7 @@ struct Config {
     int longer_range;               /* [gameplay] longer_range: direct-fire weapons reach weapon_range_pct % (gameplay.c) */
     int weapon_range_pct;           /* [gameplay] weapon_range_pct (default 120) */
     int downhill_hits;              /* [gameplay] downhill_hits: direct fire from high ground hits units below */
+    int drive_enemy_vehicles;       /* [gameplay] drive_enemy_vehicles: Sarge may drive empty enemy vehicles (capture.c) */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
     int hud_corners;                /* [hud] corners: message box / minimap in the bottom corners (layout.c) */
     float hud_corner_scale;         /* [hud] corner_scale: 1 .. 3 in quarter steps (default 1.5) */
@@ -586,3 +587,18 @@ void guard_enter(Guard *g, const char *what);
 void guard_leave(Guard *g);
 #define GUARD_TRY(g, what) (guard_enter(&(g), (what)), __builtin_setjmp((g).jb) == 0)
 int controls_pointer_world(int *x, int *y);        /* controls.c: world point under the pointer */
+/* capture.c: Sarge drives empty enemy vehicles ([gameplay] drive_enemy_vehicles) */
+typedef void (__fastcall *CaptureTwoFn)(BYTE *a, BYTE *b);
+typedef void (__fastcall *CaptureOneFn)(BYTE *a);
+extern CaptureTwoFn capture_sarge_in_original, capture_unit_enter_original;
+extern CaptureOneFn capture_sarge_out_original;
+void __fastcall capture_sarge_in(BYTE *sarge, BYTE *vehicle);     /* wraps SargeInVehicle 0x448ae0 */
+void __fastcall capture_sarge_out(BYTE *sarge);                   /* wraps SargeOutVehicle 0x448b50 */
+void __fastcall capture_unit_enter(BYTE *unit, BYTE *vehicle);    /* wraps UnitEnterVehicle 0x41d800 */
+void __fastcall capture_handle_vehicle(BYTE *vehicle);            /* call 0x4296b6 (RunAI -> HandleVehicle) */
+void __cdecl capture_enter_key(void);                             /* rewrite of FUN_00418910 (Enter Vehicle key) */
+void capture_frame(void);                                         /* once per gameplay frame (gameplay.c) */
+int capture_allowed(void);                                        /* option on and a one-player game */
+int capture_can_enter(BYTE *vehicle);                             /* Sarge may climb in (own: the game's rule) */
+int capture_hover_ok(BYTE *vehicle);                              /* another army's vehicle: enter pointer near Sarge */
+BYTE *capture_vehicle(void);                                      /* the vehicle Sarge took from another army, or NULL */

@@ -627,15 +627,18 @@ typedef void (__fastcall *TurretSpriteFn)(BYTE *sprite, int direction);
 
 static int wrap_dir(int d) { d &= FACINGS - 1; return d >= FACINGS / 2 ? d - FACINGS : d; }   /* -128..127 */
 
-/* The player's usable, empty vehicle under the world point (wx, wy), or NULL. */
+/* The player's usable, empty vehicle under the world point (wx, wy), or NULL. With [gameplay]
+ * drive_enemy_vehicles also another army's empty vehicle near Sarge (capture.c). */
 static BYTE *vehicle_at(int wx, int wy)
 {
-    BYTE *army = ARMY_RECORD(0);
-    if (!army) return NULL;
+  for (int a = 0; a < 4; a++) {
+    if (a && !capture_allowed()) break;
+    BYTE *army = ARMY_RECORD(a);
+    if (!army) continue;
     int n = *(signed char *)(army + 0x50);
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n && i < 50; i++) {
         BYTE *v = *(BYTE **)(army + 0x54 + 4 * i);
-        if (!v || !VEH_USABLE(v) || VEH_DRIVER(v)) continue;
+        if (!v || (a ? !capture_hover_ok(v) : (!VEH_USABLE(v) || VEH_DRIVER(v)))) continue;
         RECT r = { VEH_X(v) - 16, VEH_Y(v) - 16, VEH_X(v) + 16, VEH_Y(v) + 16 };
         BYTE *m = VEH_MOVER(v);
         if (m && *(int *)(m + 0x24) > *(int *)(m + 0x1c) && *(int *)(m + 0x28) > *(int *)(m + 0x20))
@@ -644,12 +647,13 @@ static BYTE *vehicle_at(int wx, int wy)
         POINT p = { wx, wy };
         if (PtInRect(&r, p)) return v;
     }
+  }
     return NULL;
 }
 
 static int try_enter_vehicle(BYTE *u, BYTE *v)
 {
-    if (COMMAND_CURSOR || SARGE_VEHICLE(u) || !VEH_USABLE(v) || VEH_DRIVER(v)) return 0;
+    if (COMMAND_CURSOR || SARGE_VEHICLE(u) || !capture_can_enter(v)) return 0;   /* own: usable, not AI driven */
     int dx = VEH_X(v) - SARGE_X(u), dy = VEH_Y(v) - SARGE_Y(u);
     if (dx * dx + dy * dy > ENTER_DISTANCE * ENTER_DISTANCE) return 0;
     ENTER_VEHICLE(u, v);
@@ -1043,7 +1047,7 @@ static BYTE *enemy_unit_at(int wx, int wy)
         int nv = *(signed char *)(leg + 0x50);
         for (int i = 0; i < nv && i < 50; i++) {
             BYTE *v = *(BYTE **)(leg + 0x54 + 4 * i);
-            if (!v || *(short *)(v + 0x1c) <= 0) continue;
+            if (!v || *(short *)(v + 0x1c) <= 0 || v == capture_vehicle()) continue;   /* Sarge's captured one */
             BYTE *m = VEH_MOVER(v);
             if (!m) continue;
             RECT rc = { *(int *)(m + 0x1c), *(int *)(m + 0x20), *(int *)(m + 0x24), *(int *)(m + 0x28) };

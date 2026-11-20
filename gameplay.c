@@ -54,6 +54,7 @@ static void weapon_range(void)
 void gameplay_frame(void)
 {
     weapon_range();
+    capture_frame();                             /* capture.c: Sarge in an enemy vehicle */
     static BYTE *who;
     static int last_hp, since_hurt_ms;
     static double owed;                          /* fractions of a health point not yet given */

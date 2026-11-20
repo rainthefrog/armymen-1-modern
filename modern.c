@@ -472,7 +472,7 @@ static void each_enemy(EnemyFn fn)
         int nv = *(signed char *)(leg + 0x50);
         for (int i = 0; i < nv && i < 50; i++) {
             BYTE *v = *(BYTE **)(leg + 0x54 + 4 * i);
-            if (!v || *(short *)(v + 0x1c) <= 0) continue;
+            if (!v || *(short *)(v + 0x1c) <= 0 || v == capture_vehicle()) continue;   /* Sarge's captured one */
             fn(v, *(short *)(v + 4), *(short *)(v + 6), *(short *)(v + 6) - 30, 1);
         }
     }

@@ -74,6 +74,7 @@ void config_load(void)
     g_cfg.downhill_hits = GetPrivateProfileIntA("gameplay", "downhill_hits", 1, ini);
     g_cfg.longer_range = GetPrivateProfileIntA("gameplay", "longer_range", 1, ini);
     g_cfg.fix_squash = GetPrivateProfileIntA("gameplay", "fix_squash", 1, ini);
+    g_cfg.drive_enemy_vehicles = GetPrivateProfileIntA("gameplay", "drive_enemy_vehicles", 0, ini);
     g_cfg.see_interior = GetPrivateProfileIntA("display", "see_interior", 1, ini);
     g_cfg.menu_text = GetPrivateProfileIntA("display", "menu_text", 1, ini);
     g_cfg.weapon_range_pct = GetPrivateProfileIntA("gameplay", "weapon_range_pct", 120, ini);
