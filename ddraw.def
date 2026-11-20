@@ -1,0 +1,4 @@
+LIBRARY ddraw.dll
+EXPORTS
+    DirectDrawCreate@12
+    DirectDrawEnumerateA@8

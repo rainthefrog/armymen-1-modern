@@ -1,0 +1,5 @@
+# build output
+*.o
+ddraw.dll
+# stray editor / patch leftovers
+*.new
