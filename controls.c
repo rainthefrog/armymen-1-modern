@@ -431,6 +431,12 @@ static struct {
 } S;
 enum { LM_NONE, LM_PENDING, LM_WALK, LM_FIRE, LM_ENTER, LM_TURN };
 #define WALK_LOCK_AFTER_SHOT_MS  300    /* Army Men II: no walking right after a shot (mis-clicks) */
+static int combat_lock_ms(void)
+{
+    static int v = -1;
+    if (v < 0) { v = GetPrivateProfileIntA("controls", "combat_lock_ms", 1500, mod_ini_path()); if (v <= 0) v = WALK_LOCK_AFTER_SHOT_MS; }
+    return v;
+}
 #define TURN_ONLY_RADIUS         33     /* a hold this close to Sarge, in its first 500 ms: turn only */
 #define TURN_ONLY_MS             500
 
@@ -1950,7 +1956,10 @@ static void apply_modern_controls(void)
             if (layout_any_panel_open()) S.lmode = LM_NONE;          /* closing a pop-up (sign, radio) */
             else if (key_down(VK_SHIFT) || kx || ky || hover == HOVER_TARGET || hover == HOVER_FAR_ENEMY) S.lmode = LM_FIRE;
             else if (hover == HOVER_ENTER) S.lmode = LM_ENTER;
-            else if (now - S.fire_end_at < WALK_LOCK_AFTER_SHOT_MS) S.lmode = LM_NONE;
+            /* in a fire fight (user: "if I move the mouse off the enemy while clicking, sarge will start running over"):
+             * a click within combat_lock_ms of the last shot FIRES at the pointer instead of walking ([controls]
+             * combat_lock_ms, default 1500; 0 = the old 300 ms "no walk" pause) */
+            else if (now - S.fire_end_at < (DWORD)combat_lock_ms()) S.lmode = combat_lock_ms() > WALK_LOCK_AFTER_SHOT_MS ? LM_FIRE : LM_NONE;
             else S.lmode = LM_PENDING;
             lrun = S.lmode == LM_PENDING && dbl;
             press_on_sarge = pointer && field && !veh && hover == HOVER_GROUND && on_sarge(px, py, sx, sy);

@@ -170,9 +170,10 @@ int capture_can_enter(BYTE *v)
 int capture_hover_ok(BYTE *v)
 {
     BYTE *s = PLAYER_SARGE;
-    if (!s || !capture_can_enter(v)) return 0;
-    int dx = *(short *)(v + 4) - *(short *)(s + 4), dy = *(short *)(v + 6) - *(short *)(s + 6);
-    return dx * dx + dy * dy <= HOVER_REACH * HOVER_REACH;
+    /* 2026-11-20 (user: "can't enter the enemy vehicle unless I'm close to it. if its empty go straight to entering
+     * it"): an EMPTY standing enemy vehicle is no threat - from any distance the click walks to it and climbs in
+     * (controls.c S.enter, as for own vehicles); occupied / moving ones stay targets */
+    return s && capture_can_enter(v);
 }
 
 static void capture(BYTE *s, BYTE *v)
