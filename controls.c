@@ -431,7 +431,10 @@ static struct {
 } S;
 enum { LM_NONE, LM_PENDING, LM_WALK, LM_FIRE, LM_ENTER, LM_TURN };
 #define WALK_LOCK_AFTER_SHOT_MS  300    /* Army Men II: no walking right after a shot (mis-clicks) */
-static DWORD g_fire_cancel_at, g_fire_lock_until;
+static DWORD g_fire_cancel_at, g_fire_lock_until, g_click_hint_at;
+/* modern.c: the rifle fires once per click - the button is held after its shot (2026-11-20, user: "the regular rifle
+ * needs to indicate you need to keep clicking to shoot") */
+int controls_click_hint(void) { return g_click_hint_at && GetTickCount() - g_click_hint_at < 120; }
 /* modern.c: the pointer indicator - fire lock left (ms, 0 = none), just cancelled */
 void controls_fire_state(int *lock_ms_left, int *cancelled)
 {
@@ -489,6 +492,7 @@ static void fire_pulse(BYTE *u, int left, DWORD now)
         S.shot_at = now;
         S.saw_shot = 0;
     } else if (!S.pressing && (SARGE_WEAPON_TYPE(u) == WEAPON_BAZOOKA_TYPE || (SARGE_WEAPON_TYPE(u) == WEAPON_RIFLE_TYPE && rifle_semi_auto()))) {
+        if (SARGE_WEAPON_TYPE(u) == WEAPON_RIFLE_TYPE && now - S.released_at > 200) g_click_hint_at = now;   /* held: "click" hint */
         /* the bazooka: one rocket per click (a click held a moment fired a second one - user 2026-11-17).
          * The RIFLE too (2026-11-20, user: "the rifle and auto rifle seem the same with the mouse controls. want the
          * regular rifle to behave more like the original"): one shot per click, as the original's press-and-release;

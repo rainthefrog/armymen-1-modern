@@ -506,15 +506,30 @@ static int has_world_bar(BYTE *it)
     return 0;
 }
 
+/* health as Sarge's HUD shows it (2026-11-20, user: "if the health bars could look like sarge's"): a row of
+ * PIPS segments in a dark frame, lit from the left - the first red, the next yellow, the rest green; empty ones
+ * dark. (x, y) = the row's top centre. */
+#define PIPS 8
+static void health_pips(int x, int y, int hp, int mx)
+{
+    if (mx <= 0) return;
+    int lit = hp <= 0 ? 0 : (hp * PIPS + mx - 1) / mx;
+    if (lit > PIPS) lit = PIPS;
+    int w = PIPS * 3 + 1, x0 = x - w / 2;
+    BYTE empty = (BYTE)nearest(40, 52, 36);
+    box(x0 - 1, y - 1, x0 + w + 1, y + 5, C_BLACK);
+    for (int i = 0; i < PIPS; i++) {
+        BYTE c = i >= lit ? empty : i == 0 ? C_RED : i < 4 ? C_YELLOW : C_GREEN;
+        box(x0 + 1 + i * 3, y + 1, x0 + 1 + i * 3 + 2, y + 4, c);
+    }
+}
 static void health_bar(BYTE *it, int cx, int cy, int top, int veh)
 {
     (void)cy; (void)veh;
     int hp = *(short *)(it + 0x1c), mx = *(short *)(it + 0x1e);
     if (mx <= 0 || hp >= mx || has_world_bar(it)) return;
     int sx, sy; to_screen(cx, top - HEALTH_BAR_ABOVE, &sx, &sy);
-    int w = HEALTH_BAR_W, f = hp * w / mx;
-    box(sx - w / 2 - 1, sy - 1, sx + w / 2 + 1, sy + 3, C_BLACK);
-    box(sx - w / 2, sy, sx - w / 2 + f, sy + 2, hp * 3 < mx ? C_RED : C_GREEN);
+    health_pips(sx, sy - 2, hp, mx);
     if (sx >= 0 && sy >= 0 && sx < g_cfg.width && sy < g_cfg.height && g_nbarred < HEALTH_BARRED_MAX)
         g_barred[g_nbarred++] = it;      /* on screen: the reticle bar is not needed for it */
 }
@@ -787,12 +802,14 @@ static void modern_draw_body(Surf *b)
         if (tg) {
             int hp = *(short *)(tg + 0x1c), mx = *(short *)(tg + 0x1e);
             if (mx > 0 && hp > 0) {
-                int sy0 = ry - layout_field_shift(), w = 16, f = hp > mx ? w : (hp * w + mx - 1) / mx;
-                for (int x = -1; x <= w; x++) for (int y = 11; y <= 14; y++) px(rx - w / 2 + x, sy0 + y, C_BLACK);
-                for (int x = 0; x < f; x++) for (int y = 12; y <= 13; y++) px(rx - w / 2 + x, sy0 + y, hp * 3 < mx ? C_RED : C_GREEN);
+                health_pips(rx, ry - layout_field_shift() + 11, hp, mx);
             }
         }
         ry -= layout_field_shift();
+        if (controls_click_hint()) {      /* the rifle: one shot per click - the button is still held */
+            int blink = (GetTickCount() / 250) & 1;
+            text(rx - 15, ry + 18, "CLICK", blink ? C_YELLOW : C_WHITE, 1);
+        }
         {   /* reload: a yellow arc around the pointer fills up while a slow weapon reloads (grey = still to go) */
             double fr;
             if (controls_reload(&fr)) {
