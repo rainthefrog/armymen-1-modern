@@ -131,6 +131,10 @@ struct Config {
     int video_fit;            /* [display] video_fit: videos fill the window */
     int borderless_fs;        /* [display] borderless_fullscreen: start covering the whole monitor */
     float zoom;               /* [display] zoom: battlefield zoom, interface unchanged (zoom.c); 1 = off */
+    int mm_blips;             /* [hud] minimap_blips: bigger outlined blips (minimap.c) */
+    int mm_sarge;             /* [hud] minimap_sarge: Sarge highlighted on the minimap */
+    int mm_contrast;          /* [hud] minimap_contrast: darker, higher-contrast map picture */
+    int mm_hover;             /* [hud] minimap_hover: details of the blip under the pointer */
 };
 
 /* view.c: where the shown part of the screen (the view, in game pixels) goes in the window. */
@@ -618,3 +622,11 @@ int capture_allowed(void);                                        /* option on a
 int capture_can_enter(BYTE *vehicle);                             /* Sarge may climb in (own: the game's rule) */
 int capture_hover_ok(BYTE *vehicle);                              /* another army's vehicle: enter pointer near Sarge */
 BYTE *capture_vehicle(void);                                      /* the vehicle Sarge took from another army, or NULL */
+/* minimap.c (2026-11-20): minimap blips, contrast, hover details */
+int layout_hud_point(int design_x, int design_y, int *sx, int *sy);   /* layout.c: HUD design point -> finished frame (enlarged), returns scale in 64ths */
+void minimap_note_frame(int x1, int y1, int x2, int y2);              /* hud.c hud_minimap_rect: the game drew the minimap - copy its pins */
+void minimap_picture_drawn(void *back, const void *pic, int px, int py, int w, int h);   /* hud.c hud_draw_picture: picture drawn (contrast) */
+void minimap_draw(Surf *b);                                           /* hud.c finished frame: blips over the enlarged minimap */
+void minimap_draw_tip(Surf *b);                                       /* hud.c finished frame: tooltip of the blip under the pointer */
+int minimap_hovering(void);                                           /* tips.c: a blip is under the pointer */
+int panel_row_of(const int *value);                                   /* panel.c: row switching that value (modmenu.c) */

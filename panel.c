@@ -86,6 +86,10 @@ static Row g_rows[] = {
     { "Radio messages as overlay", &g_cfg.radio_overlay, "display", "radio_overlay" },        /* 21 */
     { "Mission path on ground",   &g_cfg.mission_path, "hud", "mission_path" },             /* 22 */
     { "Drive empty enemy vehicles", &g_cfg.drive_enemy_vehicles, "gameplay", "drive_enemy_vehicles" },   /* 23 */
+    { "Minimap: bigger blips",    &g_cfg.mm_blips, "hud", "minimap_blips" },                   /* minimap.c (modmenu.c finds these by value pointer, any index) */
+    { "Minimap: Sarge marked",    &g_cfg.mm_sarge, "hud", "minimap_sarge" },
+    { "Minimap: contrast",        &g_cfg.mm_contrast, "hud", "minimap_contrast" },
+    { "Minimap: hover details",   &g_cfg.mm_hover, "hud", "minimap_hover" },
 };
 #define ROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 #define SPEED_ROW ROWS                 /* game speed */
@@ -265,3 +269,10 @@ int panel_row_value(int i)
 void panel_row_set(int i, int on) { if (i >= 0 && i < ROWS && panel_row_value(i) != (on != 0)) click_row(i); }
 void panel_speed_cycle(void) { click_row(SPEED_ROW); }
 void panel_zoom_cycle(void) { click_row(ZOOM_ROW); }
+
+/* modmenu.c: the row that switches this value (-1 = none) - rows found by what they switch, not by position */
+int panel_row_of(const int *value)
+{
+    for (int i = 0; i < ROWS; i++) if (g_rows[i].value == value) return i;
+    return -1;
+}

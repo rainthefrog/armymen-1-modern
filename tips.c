@@ -64,6 +64,7 @@ void tips_draw(Surf *b)
     static DWORD since;
     int sx, sy, font, colour;
     if (!b || !b->bits || !layout_view_is_gameplay() || panel_is_open() || !controls_pointer(&sx, &sy)) { last = NULL; return; }
+    if (minimap_hovering()) { last = NULL; return; }          /* minimap.c shows that blip's details instead */
     const char *t = tip_at(sx, sy);
     DWORD now = GetTickCount();
     if (t != last) { last = t; since = now; }

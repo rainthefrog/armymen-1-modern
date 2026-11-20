@@ -126,6 +126,7 @@ void __fastcall hud_draw_picture(UiPicture *pic, int x, int y)
             return;
         }
         ((BltFastFn)VTBL(back)[7])(back, px, py, pic->image, &pic->src, how);
+        minimap_picture_drawn(back, pic, px, py, picture_w(pic), picture_h(pic));   /* minimap.c: map picture contrast */
         return;
     }
     DDSURFACEDESC d = { .dwSize = sizeof d };
@@ -134,6 +135,7 @@ void __fastcall hud_draw_picture(UiPicture *pic, int x, int y)
     if (pic->shade) UNPACK_SHADED(dst, d.lPitch, pic->image, picture_h(pic), pic->shade);
     else UNPACK(dst, d.lPitch, pic->image, picture_h(pic));
     ((UnlockFn)VTBL(back)[32])(back, d.lpSurface);
+    minimap_picture_drawn(back, pic, px, py, picture_w(pic), picture_h(pic));
 }
 
 /* ---------------------------------------------------------------- FUN_00413050 */
@@ -317,6 +319,7 @@ MinimapPlotFn hud_minimap_plot_original;
 
 void __fastcall hud_minimap_rect(int x1, int y1, int x2, int y2)
 {
+    minimap_note_frame(x1, y1, x2, y2);          /* minimap.c: drawn after the pins - copy them */
     if (layout_active()) {
         int dx, dy;
         layout_offset(ANCHOR_HUD, &dx, &dy);
@@ -412,8 +415,10 @@ static void hud_finish_frame_body(Surf *s)
     modern_draw(s);                                  /* modern.c: hit markers, arrows, route ... */
     objectives_draw(s);
     layout_scale_corners(s);
+    minimap_draw(s);                                 /* minimap.c: blips over the enlarged minimap */
     layout_draw_resize_icon(s);                      /* the resize icon of the HUD group under the pointer */
     tips_draw(s);
+    minimap_draw_tip(s);                             /* minimap.c: details of the blip under the pointer */
     panel_draw(s);
     debugview_draw(s);                               /* debugview.c: hitboxes + names (Ctrl+Shift+H) */
 }
