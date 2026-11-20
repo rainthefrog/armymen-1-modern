@@ -401,8 +401,10 @@ int menutext_overlay(int dw, int dh, int pw, int ph, const uint32_t **pix, unsig
     {
         BYTE *sc = SCRN_FULL;
         int st = sc && !IsBadReadPtr(sc, 8) ? *(int *)(sc + 4) : -1;
-        static int last_st = -1;
-        if (st != last_st) { last_st = st; if (g_n) { lock(); g_n = 0; InterlockedIncrement(&g_ver); unlock(); } }
+        /* labels belong to the state they were recorded in (g_state, track_screen); another state now = theirs is gone.
+         * (First version compared with the state seen LAST FRAME - the new screen's labels, recorded before this
+         * frame, were dropped with it: an empty mission select, 2026-11-20.) */
+        if (g_n && g_state != -1 && st != g_state) { lock(); g_n = 0; InterlockedIncrement(&g_ver); unlock(); }
         if (game_in_play() && !game_menu_up() && (g_n || g_nsl)) menutext_clear();
         if (!g_n && !g_nsl) { g_nprev = -1; return 0; }
     }
