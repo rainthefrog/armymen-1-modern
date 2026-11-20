@@ -242,6 +242,20 @@ static void unscale_with(const Zones *z, int *x, int *y)
     }
 }
 static void unscale_corner(int *x, int *y) { Zones z = zones(); unscale_with(&z, x, y); }
+/* The topmost game row any HUD pixel can be on (1x panel or an enlarged group): above it layout_on_hud_panel and
+ * weapons_ui_at are always 0 (an unscaled point above every piece is the point itself). modern.c tests that row first
+ * - the per-pixel test runs zones() several times (2026-11-20 perf: most of the overlay time). */
+int layout_hud_top(void)
+{
+    int dx, dy; layout_offset(ANCHOR_HUD, &dx, &dy);
+    int top = LAYOUT_HUD_PANEL_Y + dy;
+    Zones z = zones();
+    if (z.on) {
+        Piece p[5]; int n = pieces(&z, p), h = g_cfg.height;
+        for (int i = 0; i < n; i++) { int t = h - SC(PANEL_ROWS, p[i].q); if (t < top) top = t; }
+    }
+    return top < 0 ? 0 : top;
+}
 void layout_unscale(int *x, int *y) { if (layout_view_is_gameplay()) unscale_corner(x, y); }
 
 /* Design x of a game-screen x in the HUD band, or -1 (not on the panel, e.g. the gap). */
@@ -472,7 +486,8 @@ void layout_hud_mask_row(int y, BYTE *row, int w)
 /* Is design pixel (d, panel row ry) a see-through MARGIN of the panel art (above the first solid pixel of
  * its column)? See-through pixels BELOW that are holes the game fills with other pictures (the logo, the
  * minimap, the message window): they are part of the interface and are copied when enlarged. */
-static int art_margin(const Surf *art, const RECT *src, int d, int ry)
+/* the first solid row of design column d of the panel art (rows above it are margin) */
+static int art_top(const Surf *art, const RECT *src, int d)
 {
     static short top[LAYOUT_DESIGN_W]; static const BYTE *cached_bits; static RECT cached_src;
     if (d < 0 || d >= LAYOUT_DESIGN_W) return 0;
@@ -487,8 +502,9 @@ static int art_margin(const Surf *art, const RECT *src, int d, int ry)
             top[c] = (short)r;
         }
     }
-    return ry < top[d];
+    return top[d];
 }
+static int art_margin(const Surf *art, const RECT *src, int d, int ry) { return ry < art_top(art, src, d); }
 
 /* changes whenever the HUD layout does (present.c rebuilds the mask then) */
 unsigned layout_hud_signature(void)
@@ -540,37 +556,47 @@ void layout_scale_corners(Surf *b)
         if (dx0 < 0 || dx0 + dw > w || dy0 < 0) continue;
         { RECT s1 = { p[i].src_x, h - PANEL_ROWS, p[i].src_x + p[i].w1, h };   /* HD HUD pictures (hdsprites) follow */
           hdsprites_scale_back(s1, dx0, dy0, q); }
+        /* per column, once per piece (2026-11-20 perf: the zone search ran per pixel, and the battlefield was put
+         * back into the margin ONE pixel per call - each call walks every map link; now whole runs) */
+        static int col_sx[3 * LAYOUT_DESIGN_W + 256], col_top[3 * LAYOUT_DESIGN_W + 256];   /* col_top: first solid art row (above = margin) */
+        if (dw > (int)(sizeof col_sx / sizeof col_sx[0])) continue;
+        for (int x = 0; x < dw; x++) {
+            int sx = UN(x, q);
+            if (sx >= p[i].w1) sx = p[i].w1 - 1;
+            int d = -1, scr = p[i].src_x + sx;
+            for (int k = 0; k < 6; k++) { int t = scr - off[k]; if (t >= starts[k] && t < starts[k + 1]) { d = t; break; } }
+            col_sx[x] = sx;
+            col_top[x] = art ? art_top(art, &src, d >= 0 ? d : WEAPON_COL_SRC_X + (scr - (LAYOUT_HUD_SPLIT_X + off[1]))) : 0;   /* d < 0: the spare-weapon gap = a copy of the weapon column (its own top edge, 2026-11-18) */
+        }
         for (int y = 0; y < dh; y++) {
             int sy = UN(y, q);
             if (sy >= PANEL_ROWS) sy = PANEL_ROWS - 1;
-            BYTE *dst = b->bits + (size_t)(dy0 + y) * b->pitch + dx0;
+            int Y = dy0 + y;
+            BYTE *dst = b->bits + (size_t)Y * b->pitch + dx0;
+            BYTE *pr = painted && Y - band_y0 >= 0 ? painted + (size_t)(Y - band_y0) * w + dx0 : NULL;
             int run = -1;                       /* start of a run of written pixels */
+            int rest = -1;                      /* start of a run of margin pixels to put the battlefield back on */
             for (int x = 0; x < dw; x++) {
-                int sx = UN(x, q);
-                if (sx >= p[i].w1) sx = p[i].w1 - 1;
                 int kept = 0;
-                for (int k = 0; k < nkeep && !kept; k++) kept = dy0 + y >= keeps[k].top && dy0 + y < keeps[k].bottom && dx0 + x >= keeps[k].left && dx0 + x < keeps[k].right;
-                if (kept) {
-                    if (run >= 0) { hdworld_clear_run(b, dy0 + y, dx0 + run, dx0 + x); run = -1; }
-                    continue;
-                }
+                for (int k = 0; k < nkeep && !kept; k++) kept = Y >= keeps[k].top && Y < keeps[k].bottom && dx0 + x >= keeps[k].left && dx0 + x < keeps[k].right;
                 /* panel pixels only: in the art's see-through MARGIN the battlefield shows - put back from the
                  * map (the group's own 1x picture lies under it), unless an earlier piece painted it */
-                int d = -1, scr = p[i].src_x + sx;
-                for (int k = 0; k < 6; k++) { int t = scr - off[k]; if (t >= starts[k] && t < starts[k + 1]) { d = t; break; } }
-                if (art && art_margin(art, &src, d >= 0 ? d : WEAPON_COL_SRC_X + (scr - (LAYOUT_HUD_SPLIT_X + off[1])), sy)) {   /* d < 0: the spare-weapon gap = a copy of the weapon column (its own top edge, 2026-11-18) */
-                    if (run >= 0) { hdworld_clear_run(b, dy0 + y, dx0 + run, dx0 + x); run = -1; }
-                    int py = dy0 + y - band_y0;
-                    if (painted && py >= 0 && !painted[(size_t)py * w + dx0 + x]) hdworld_restore_field(b, dy0 + y, dx0 + x, dx0 + x + 1);
+                int margin = !kept && sy < col_top[x];
+                int restore = margin && pr && !pr[x];
+                if (!restore && rest >= 0) { hdworld_restore_field(b, Y, dx0 + rest, dx0 + x); rest = -1; }
+                if (kept || margin) {
+                    if (run >= 0) { hdworld_clear_run(b, Y, dx0 + run, dx0 + x); run = -1; }
+                    if (restore && rest < 0) rest = x;
                     continue;
                 }
-                dst[x] = tmp[i][sy][sx];
-                { int py = dy0 + y - band_y0; if (painted && py >= 0) painted[(size_t)py * w + dx0 + x] = 1; }
+                dst[x] = tmp[i][sy][col_sx[x]];
+                if (pr) pr[x] = 1;
                 if (run < 0) run = x;
             }
+            if (rest >= 0) hdworld_restore_field(b, Y, dx0 + rest, dx0 + dw);
             /* written pixels are interface now: drop the battlefield's upscale references there (a dark
              * panel pixel could equal the old tree/fence byte, and the HD tree was drawn over the panel) */
-            if (run >= 0) hdworld_clear_run(b, dy0 + y, dx0 + run, dx0 + dw);
+            if (run >= 0) hdworld_clear_run(b, Y, dx0 + run, dx0 + dw);
         }
     }
     (void)dx; (void)dy;

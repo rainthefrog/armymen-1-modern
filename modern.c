@@ -152,6 +152,19 @@ static int nearest(int r, int g, int b)
     return best;
 }
 static BYTE C_WHITE, C_RED, C_YELLOW, C_GREEN, C_BLACK, C_GREY, C_ORANGE, C_SKY, C_PATH, C_PATH_DARK;
+static BYTE C_LANE_FILL, C_LANE_EDGE;            /* mission path band (lane_piece) */
+static int nearest_not(int r, int g, int b, const int ex[4])   /* nearest() without the indices in ex */
+{
+    Pal *p = g_dd ? g_dd->pal : NULL;
+    if (!p) return 255;
+    int best = 0, bd = 1 << 30;
+    for (int i = 0; i < 256; i++) {
+        if (i == ex[0] || i == ex[1] || i == ex[2] || i == ex[3]) continue;
+        int dr = p->e[i].peRed - r, dg = p->e[i].peGreen - g, db = p->e[i].peBlue - b, d = dr * dr + dg * dg + db * db;
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
 static BYTE C_ARMY[4];                        /* target marks in the target's army colour: green tan blue grey */
 
 /* Throw distance in a real unit (user: "show distance unit (feet, yards, etc)"): a soldier sprite is ~24 px
@@ -174,10 +187,40 @@ static void colours(void)
     C_SKY = (BYTE)nearest(110, 190, 255);
     C_PATH = (BYTE)nearest(245, 245, 235);     /* mission path: white, 2 px + a dark edge (route marker: green dashed; target outline: yellow) */
     C_PATH_DARK = (BYTE)nearest(40, 40, 40);
+    {   /* the lane colours: indices of their own (gpu.c blends exactly these bytes), never the rings' or the text's */
+        int ex[4] = { C_PATH, C_PATH_DARK, C_WHITE, -1 };
+        C_LANE_EDGE = (BYTE)nearest_not(250, 250, 240, ex);
+        ex[3] = C_LANE_EDGE;
+        C_LANE_FILL = (BYTE)nearest_not(255, 255, 255, ex);
+    }
     C_ARMY[0] = (BYTE)nearest(90, 210, 70); C_ARMY[1] = (BYTE)nearest(230, 195, 120);
     C_ARMY[2] = (BYTE)nearest(80, 140, 255); C_ARMY[3] = (BYTE)nearest(195, 195, 205);
 }
-static int on_interface(int x, int y) { return layout_on_hud_panel(x, y) || weapons_ui_at(x, y); }
+static int g_hud_top;                         /* layout_hud_top() for this draw (hud_rows_reset) */
+/* Interface test per pixel (2026-11-20 perf): above g_hud_top there is no HUD pixel; below it, a whole row of the
+ * interface mask is made once per draw (layout_hud_mask_row - the same test the zoom mask uses) instead of
+ * layout_on_hud_panel + weapons_ui_at per pixel (zones() several times each: the mission path band behind the
+ * HUD cost 6+ ms). Without the layout (640x480) the per-pixel test as before. */
+static BYTE *g_hrow; static int g_hrow_w, g_hrow_h, g_hrow_on; static BYTE g_hrow_done[2048];
+static void hud_rows_reset(void)
+{
+    g_hud_top = layout_hud_top();
+    g_hrow_on = layout_active() && g_cfg.width <= 4096 && g_cfg.height <= 2048;
+    if (g_hrow_on && (g_hrow_w != g_cfg.width || g_hrow_h != g_cfg.height)) {
+        free(g_hrow); g_hrow = malloc((size_t)g_cfg.width * g_cfg.height);
+        g_hrow_w = g_hrow ? g_cfg.width : 0; g_hrow_h = g_hrow ? g_cfg.height : 0;
+    }
+    if (!g_hrow) g_hrow_on = 0;
+    memset(g_hrow_done, 0, sizeof g_hrow_done);
+}
+static int on_interface(int x, int y)
+{
+    if (y < g_hud_top) return 0;
+    if (!g_hrow_on || y >= g_hrow_h || x < 0 || x >= g_hrow_w) return layout_on_hud_panel(x, y) || weapons_ui_at(x, y);
+    BYTE *row = g_hrow + (size_t)y * g_hrow_w;
+    if (!g_hrow_done[y]) { layout_hud_mask_row(y, row, g_hrow_w); g_hrow_done[y] = 1; }
+    return row[x];
+}
 /* "Under the sprites" drawing (route line / marker): pixels where a world sprite is solid are left
  * alone - the sprite cells near the drawing are collected once (roofs.c registry) and each pixel is
  * tested with the game's sprite-mask test ObjectIntersectPoint (0x42faf0, ecx cell, edx world point). */
@@ -248,6 +291,88 @@ static void circle(int cx, int cy, int r, BYTE c, int dotted)
     }
 }
 static void box(int x0, int y0, int x1, int y1, BYTE c) { for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) px(x, y, c); }
+
+/* ---------------------------------------------------------------- the mission path band (2026-11-20)
+ * A lane as wide as a vehicle (user): LANE_W game px (jeep footprint 0x4b2b20: sides 14 + 22 px, its body about
+ * 26 px wide), drawn in row RUNS - per row, the x range of a segment's band (a capsule: the segment widened by r,
+ * round ends; or a flat-ended piece for dashes) is computed and filled at once (hdworld_under_fill: ground level,
+ * behind objects). The per-pixel route path (px: interface test, mask, under_run per pixel) was the overlay's
+ * cost. Two colours the GPU blends see-through (modern_lane -> gpu.c ps_world): fill LANE_FILL_A, edge
+ * LANE_EDGE_A. Without the upscaled battlefield (8-bit only): the edge and a sparse hatch, per pixel. */
+#define LANE_W        26
+#define LANE_EDGE     2           /* px: the edge band inside LANE_W */
+#define LANE_DASH_ON  14          /* px along a dashed leg */
+#define LANE_DASH_OFF 10
+#define LANE_FILL_A   0.30f       /* share of the lane colour over the upscaled ground */
+#define LANE_EDGE_A   0.70f
+/* gpu.c (display thread): the lane's palette indices and their opacity; x, y = -1: none */
+void modern_lane(float out[4])
+{
+    int ok = g_loaded && C_LANE_FILL != C_LANE_EDGE;
+    out[0] = ok ? (float)C_LANE_FILL : -1.0f; out[1] = ok ? (float)C_LANE_EDGE : -1.0f;
+    out[2] = LANE_FILL_A; out[3] = LANE_EDGE_A;
+}
+/* a*x + b in [lo, hi] -> x range (intersected into *x0, *x1) */
+static void lane_clip(double a, double b, double lo, double hi, double *x0, double *x1)
+{
+    if (fabs(a) < 1e-9) { if (b < lo || b > hi) { *x0 = 1; *x1 = 0; } return; }
+    double u = (lo - b) / a, v = (hi - b) / a;
+    if (u > v) { double t = u; u = v; v = t; }
+    if (u > *x0) *x0 = u;
+    if (v < *x1) *x1 = v;
+}
+/* one run of the band on row y: through the ground-level fill, the interface (HUD) left out */
+static void lane_run(int y, int xa, int xb, BYTE c, int fill)
+{
+    Surf *b = g_b;
+    if (!b || y < 0 || y >= g_cfg.height || y >= b->h) return;
+    if (xa < 0) xa = 0;
+    if (xb > g_cfg.width) xb = g_cfg.width;
+    if (xb > b->w) xb = b->w;
+    if (xb <= xa) return;
+    if (g_cfg.hd_world && y < g_hud_top && hdworld_under_fill(b, y, xa, xb, c)) return;
+    if (g_cfg.hd_world && hdworld_over_mask(b)) {             /* HUD rows: the runs between interface pixels */
+        int s = -1;
+        for (int x = xa; x <= xb; x++) {
+            int ok = x < xb && !on_interface(x, y);
+            if (ok && s < 0) s = x;
+            if (!ok && s >= 0) { hdworld_under_fill(b, y, s, x, c); s = -1; }
+        }
+        return;
+    }
+    (void)fill;
+    for (int x = xa; x < xb; x++) px(x, y, c);                /* no override mask (yet): per pixel, opaque */
+}
+/* the band of segment (ax, ay) -> (bx, by) between t0 and t1 (0..1 along it), half width r; caps = round ends */
+static void lane_piece(int ax, int ay, int bx, int by, float t0, float t1, int caps, float r, BYTE c, int fill)
+{
+    double dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy, L = sqrt(L2);
+    double px0 = ax + dx * t0, py0 = ay + dy * t0, px1 = ax + dx * t1, py1 = ay + dy * t1;
+    int ya = (int)floor((py0 < py1 ? py0 : py1) - r), yb = (int)ceil((py0 > py1 ? py0 : py1) + r);
+    if (ya < 0) ya = 0;
+    if (yb > g_cfg.height - 1) yb = g_cfg.height - 1;
+    for (int y = ya; y <= yb; y++) {
+        double yc = y + 0.5, lo = 1e9, hi = -1e9;
+        if (L > 1e-6) {                                       /* the straight part: along t0..t1, across |s| <= r */
+            double x0 = -1e9, x1 = 1e9;
+            lane_clip(dx / L2, ((yc - ay) * dy - ax * dx) / L2, t0, t1, &x0, &x1);
+            lane_clip(-dy / L, ((yc - ay) * dx + ax * dy) / L, -r, r, &x0, &x1);
+            if (x0 <= x1) { lo = x0; hi = x1; }
+        }
+        if (caps || L <= 1e-6)                                /* round ends (joints between legs stay closed) */
+            for (int k = 0; k < 2; k++) {
+                double cx = k ? px1 : px0, cy = k ? py1 : py0, e = yc - cy;
+                if (fabs(e) > r) continue;
+                double h = sqrt(r * r - e * e);
+                if (cx - h < lo) lo = cx - h;
+                if (cx + h > hi) hi = cx + h;
+            }
+        if (hi < lo) continue;
+        int xa = (int)ceil(lo - 0.5), xb = (int)floor(hi - 0.5) + 1;   /* pixel centres inside */
+        if (xa < -1000000 || xb > 1000000) continue;
+        lane_run(y, xa, xb, c, fill);
+    }
+}
 
 /* 5x7 pixel font: digits, capitals and a few signs (5 bits per row, top row first) */
 static const char GLYPHS[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ:/%.-+ ";
@@ -653,6 +778,7 @@ static void modern_draw_body(Surf *b)
     if (!b || !b->bits || !u || !layout_view_is_gameplay()) return;
     if (!g_loaded) load();
     g_b = b;
+    hud_rows_reset();
     colours();
     DWORD now = GetTickCount();
     int sgx, sgy; to_screen(*(short *)(u + 4), *(short *)(u + 6), &sgx, &sgy);
@@ -705,29 +831,46 @@ static void modern_draw_body(Surf *b)
     }
     MT(2, missionpath_frame());                         /* built once per mission (missionpath.c), never per frame */
     {   /* The mission path (2026-11-20, [hud] mission_path): Sarge's start -> each waypoint, painted on the ground
-         * like the route marker (g_route: under objects), white, 2 px with a dark edge, solid; a leg the planner did not find is
-         * dashed. Each waypoint: a small ring with its number. Only segments touching the screen are drawn. */
+         * like the route marker (g_route: under objects). 2026-11-20 (user: "I want the line as wide as a vehicle"): a
+         * LANE_W px band (a jeep's width), see-through white fill with a stronger 2 px edge (the GPU blends them by
+         * their palette index: modern_lane, gpu.c ps_world); a leg the planner did not find is dashed (flat-ended
+         * dashes). Each waypoint: a ring with its number. Drawn as row runs, only segments touching the screen. */
         QueryPerformanceCounter(&q0);
         const MissionPt *mp; int n = missionpath_points(&mp);
         if (n >= 2) {
             g_route = 1;
             int W = g_cfg.width, H = g_cfg.height;
             if (!g_cfg.hd_world) under_begin(CAMERA_X - 8, CAMERA_Y + layout_field_shift() - 8, CAMERA_X + W + 8, CAMERA_Y + layout_field_shift() + H + 8);
-            for (int pass = 0; pass < 2; pass++)            /* the dark edges first: a joint never cuts the white line */
+            int R = LANE_W / 2, m = R + 2;
+            for (int pass = 0; pass < 2; pass++)            /* the edge colour first at full width, then the fill inside */
             for (int i = 0; i + 1 < n; i++) {
                 int x0, y0, x1, y1; to_screen(mp[i].x, mp[i].y, &x0, &y0); to_screen(mp[i + 1].x, mp[i + 1].y, &x1, &y1);
-                if ((x0 < 0 && x1 < 0) || (y0 < 0 && y1 < 0) || (x0 >= W && x1 >= W) || (y0 >= H && y1 >= H)) continue;
-                int tx = abs(x1 - x0) < abs(y1 - y0), ty = !tx, d = mp[i + 1].dashed ? 4 : 0;   /* 2 px wide + a dark edge */
-                if (pass == 0) { line(x0 + 2 * tx, y0 + 2 * ty, x1 + 2 * tx, y1 + 2 * ty, C_PATH_DARK, d); continue; }
-                line(x0, y0, x1, y1, C_PATH, d);
-                line(x0 + tx, y0 + ty, x1 + tx, y1 + ty, C_PATH, d);
+                if ((x0 < -m && x1 < -m) || (y0 < -m && y1 < -m) || (x0 >= W + m && x1 >= W + m) || (y0 >= H + m && y1 >= H + m)) continue;
+                if (!g_cfg.hd_world) {                      /* 8-bit only (no blending): the old line, 2 px white + a dark edge */
+                    int tx = abs(x1 - x0) < abs(y1 - y0), ty = !tx, d = mp[i + 1].dashed ? 4 : 0;
+                    if (pass == 0) { line(x0 + 2 * tx, y0 + 2 * ty, x1 + 2 * tx, y1 + 2 * ty, C_PATH_DARK, d); continue; }
+                    line(x0, y0, x1, y1, C_PATH, d);
+                    line(x0 + tx, y0 + ty, x1 + tx, y1 + ty, C_PATH, d);
+                    continue;
+                }
+                float r = pass ? (float)(R - LANE_EDGE) : (float)R;
+                BYTE c = pass ? C_LANE_FILL : C_LANE_EDGE;
+                if (!mp[i + 1].dashed) { lane_piece(x0, y0, x1, y1, 0.0f, 1.0f, 1, r, c, pass); continue; }
+                double len = sqrt((double)(x1 - x0) * (x1 - x0) + (double)(y1 - y0) * (y1 - y0));
+                if (len < 1) continue;
+                for (double s = 0; s < len; s += LANE_DASH_ON + LANE_DASH_OFF) {   /* flat-ended dashes; the fill stops short of the ends */
+                    double e = s + LANE_DASH_ON < len ? s + LANE_DASH_ON : len, inset = pass ? LANE_EDGE : 0;
+                    if (e - s < 6 || e - s <= 2 * inset) continue;   /* no stub at the leg's end */
+                    lane_piece(x0, y0, x1, y1, (float)((s + inset) / len), (float)((e - inset) / len), 0, r, c, pass);
+                }
             }
-            for (int i = 1; i < n; i++) {
+            for (int i = 1; i < n; i++) {                   /* waypoint: a solid ring (dark outside, white inside) */
                 if (!mp[i].wp) continue;
                 int wx, wy; to_screen(mp[i].x, mp[i].y, &wx, &wy);
                 if (wx < -20 || wy < -20 || wx > W + 20 || wy > H + 20) continue;
-                circle(wx, wy, 6, C_PATH, 0);
-                circle(wx, wy, 5, C_PATH, 0);
+                circle(wx, wy, 9, C_PATH_DARK, 0);
+                circle(wx, wy, 8, C_PATH, 0);
+                circle(wx, wy, 7, C_PATH, 0);
             }
             g_nunder = 0;
             g_route = 0;
@@ -737,7 +880,7 @@ static void modern_draw_body(Surf *b)
                 int wx, wy; to_screen(mp[i].x, mp[i].y, &wx, &wy);
                 if (wx < -20 || wy < -20 || wx > W + 20 || wy > H + 20) continue;
                 char s[4]; wsprintfA(s, "%d", mp[i].wp);
-                text(wx + 8, wy - 12, s, C_PATH, 1);
+                text(wx + 11, wy - 14, s, C_PATH, 1);
             }
         }
     }
@@ -885,4 +1028,4 @@ static void modern_draw_body(Surf *b)
 void modern_draw(Surf *b) { PROF_BEGIN(t); modern_draw_body(b); PROF_END(t, PR_OVERLAY); }   /* timed (trace) */
 
 /* minimap.c tooltip (2026-11-20: the game's cached message font drew nothing there on Windows - empty box) */
-int modern_text(Surf *b, int x, int y, const char *s, BYTE c) { Surf *keep = g_b; g_b = b; int r = text(x, y, s, c, 1); g_b = keep; return r; }
+int modern_text(Surf *b, int x, int y, const char *s, BYTE c) { Surf *keep = g_b; g_b = b; hud_rows_reset(); int r = text(x, y, s, c, 1); g_b = keep; return r; }

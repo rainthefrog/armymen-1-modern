@@ -766,6 +766,29 @@ void hdworld_under_run(Surf *d, int y, int x0, int x1)
     UnionRect(&g_obox[g_oi], &g_obox[g_oi], &rr);
 }
 
+/* The same for a whole run in one colour (modern.c mission path band, 2026-11-20): byte c is written at x0..x1 of
+ * row y and the pixel marked ground-level overlay - except where something is already drawn over the battlefield
+ * on the screen itself (mask 1: Sarge redrawn over a rock by roofs.c, explosions, interface): those stay in front.
+ * Returns 0 when the override mask is not available (upscaled battlefield off): the caller draws per pixel. */
+int hdworld_under_fill(Surf *d, int y, int x0, int x1, BYTE c)
+{
+    if (g_ready != 1 || !d || !d->bits || y < 0 || y >= d->h) return 0;
+    BYTE *o = over_buf(d);
+    if (!o) return 0;
+    if (x0 < 0) x0 = 0;
+    if (x1 > d->w) x1 = d->w;
+    if (x1 <= x0) return 1;
+    BYTE *row = o + (size_t)y * d->w, *px = d->bits + (size_t)y * d->pitch;
+    for (int x = x0; x < x1; x++) {
+        if (row[x] == 1) continue;
+        px[x] = c;
+        if (!row[x]) row[x] = 2;
+    }
+    RECT rr = { x0, y, x1, y + 1 };
+    UnionRect(&g_obox[g_oi], &g_obox[g_oi], &rr);
+    return 1;
+}
+
 /* layout.c moved the battlefield rows of the back buffer up by n (map bottom): the links move up too
  * (reading n rows further down the map), the override mask moves with the rows, the bottom n rows are
  * black (overridden, no references). */

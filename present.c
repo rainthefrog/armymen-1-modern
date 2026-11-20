@@ -266,6 +266,7 @@ extern volatile double g_gt_wget, g_gt_wup, g_gt_atlas; extern volatile int g_gt
 static volatile LONGLONG g_prof[PR_N];                  /* game thread: QPC ticks per hook this frame (trace) */
 void prof_add(int k, LONGLONG ticks) { if (k >= 0 && k < PR_N) g_prof[k] += ticks; }
 static double g_prof_frame[PR_N];                      /* ... of the last finished frame, in ms */
+static double g_prof_sum[PR_N]; static int g_prof_sum_n;   /* ... summed over gameplay frames for the 10 s perf line (2026-11-20) */
 static volatile LONGLONG g_refs_ticks;                 /* game thread: QPC ticks in hdworld_note_copy this frame */
 void present_perf_refs(LONGLONG ticks) { g_refs_ticks += ticks; }
 static void pf_report(int w, int h)
@@ -283,6 +284,14 @@ static void pf_report(int w, int h)
         g_pf[k] = 0; g_pf_n[k] = 0;
     }
     mlog("%s ms", line);
+    if (g_prof_sum_n) {                        /* the game thread's mod stages, averaged (spike lines show only the worst frames) */
+        static const char *const PN[PR_N] = { "ctl", "regions", "cam", "field", "cells", "blit", "ghost", "hud", "overlay", "shown",
+                                              "h.weap", "h.modern", "h.obj", "h.corners", "h.minimap", "h.rest" };
+        o = wsprintfA(line, "perf game stages (avg ms over %d frames):", g_prof_sum_n);
+        for (int k = 0; k < PR_N; k++) { double a = g_prof_sum[k] / g_prof_sum_n; o += wsprintfA(line + o, " %s %d.%02d", PN[k], (int)a, (int)(a * 100) % 100); g_prof_sum[k] = 0; }
+        g_prof_sum_n = 0;
+        mlog("%s", line);
+    }
 }
 
 /* Display timing, written to the log while the timing trace runs (Ctrl+Shift+T): once a second the
@@ -639,6 +648,7 @@ void present_request(DDraw *dd, int wait)
         if (prev) { pf_add(PF_GAME, t_frame); pf_add(PF_REFS, t_refs); }
         g_refs_ticks = 0;
         for (int k = 0; k < PR_N; k++) { g_prof_frame[k] = (double)g_prof[k] * 1000.0 / (double)fq.QuadPart; g_prof[k] = 0; }
+        if (prev && layout_view_is_gameplay()) { for (int k = 0; k < PR_N; k++) g_prof_sum[k] += g_prof_frame[k]; g_prof_sum_n++; }
         prev = tw;
     }
     t_wait_prev = t_wait; t_wait = 0;          /* t_frame spans the previous frame's wait */

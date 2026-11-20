@@ -31,6 +31,7 @@ typedef struct {
     uint32_t *samples;                 /* original colours on the GRID */
     uint32_t *hd; int hw, hh, tried;   /* HD pixels (BGRA), loaded when first needed */
     unsigned serial;                   /* gpu.c texture cache key */
+    BYTE *ink; int ink_tried;          /* per ORIGINAL pixel: 1 = the HD art has ink over it (entry_ink) */
 } Entry;
 
 static Entry g_e[MAX_ENTRIES];
@@ -257,6 +258,26 @@ static BYTE *g_idmap;
 static int g_idmap_cap;
 static HdOp g_out[255];
 
+/* Per original pixel of e: does the HD art have ink in any texel it covers (the key-pixel rule in hdsprites_prepare).
+ * Built once per picture (it was a texel search per screen pixel per frame). NULL = not available. */
+static const BYTE *entry_ink(Entry *e)
+{
+    if (e->ink || e->ink_tried || !e->hd || e->w <= 0 || e->h <= 0) return e->ink;
+    e->ink_tried = 1;
+    BYTE *m = malloc((size_t)e->w * e->h);
+    if (!m) return NULL;
+    for (int y = 0; y < e->h; y++)
+        for (int x = 0; x < e->w; x++) {
+            int x0 = x * e->hw / e->w, x1 = (x + 1) * e->hw / e->w, y0 = y * e->hh / e->h, y1 = (y + 1) * e->hh / e->h, ink = 0;
+            for (int ty = y0; ty < y1 && ty < e->hh && !ink; ty++)
+                for (int tx = x0; tx < x1 && tx < e->hw; tx++)
+                    if (is_hd_ink(e->hd[(size_t)ty * e->hw + tx])) { ink = 1; break; }   /* not the art's cyan background */
+            m[(size_t)y * e->w + x] = (BYTE)ink;
+        }
+    e->ink = m;
+    return m;
+}
+
 /* Builds the id map for the view of the screen (bits/pitch = the screen snapshot). Returns the
  * number of HD ops (0 = none); *ops / *idmap are valid until the next call. */
 int hdsprites_prepare(const BYTE *bits, int pitch, RECT view, const HdOp **ops, const BYTE **idmap)
@@ -272,9 +293,20 @@ int hdsprites_prepare(const BYTE *bits, int pitch, RECT view, const HdOp **ops, 
     }
     memset(g_idmap, 0, (size_t)vw * vh);
     int n = 0, wide_menu = hdart_active();
-    for (int k = 0; k < g_screen_n && n < 127; k++) {
+    /* log=2: time per picture (which notes make the snapshot slow; every 10 s the six costliest, 2026-11-20) */
+    static LARGE_INTEGER pq; static double pt[MAX_ENTRIES]; static int pc[MAX_ENTRIES], pq64[MAX_ENTRIES], pframes; static DWORD pat;
+    LARGE_INTEGER pa = { 0 }, p0 = { 0 }; int prev = -1, prof = g_cfg.log >= 2;
+    if (prof && !pq.QuadPart) QueryPerformanceFrequency(&pq);
+    pframes += prof;
+    if (prof) QueryPerformanceCounter(&p0);
+    for (int k = 0; k <= g_screen_n; k++) {
+        if (prof) QueryPerformanceCounter(&pa);
+        if (prev >= 0) pt[prev] += (pa.QuadPart - p0.QuadPart) * 1000.0 / pq.QuadPart;
+        p0 = pa; prev = -1;
+        if (k == g_screen_n || n >= 127) break;
         Op *o = &g_screen_ops[k];
         Entry *e = &g_e[o->id];
+        if (prof) { prev = o->id; pc[prev]++; pq64[prev] = o->q; }
         if (!e->hd || !o->src || !o->src->bits) continue;
         if (wide_menu && e->w == 640 && e->h == 480) continue;      /* the widescreen picture shows (hdart.c) */
         if (o->sr.left < 0 || o->sr.top < 0 || o->sr.right > o->src->w || o->sr.bottom > o->src->h) continue;
@@ -288,37 +320,51 @@ int hdsprites_prepare(const BYTE *bits, int pitch, RECT view, const HdOp **ops, 
          * to the picture's own pixel, is the picture (the enlarged HUD copies map pixels a little differently -
          * a one-pixel shift counted as "drawn over" and left speckles of the original, 2026-11-18); text and frames
          * drawn on top use other colours and stay */
+        int q = o->q > 0 ? o->q : 64;
         BYTE uses[256] = { 0 };
-        for (int y = o->sr.top; y < o->sr.bottom; y++) {
-            const BYTE *r = o->src->bits + (size_t)y * o->src->pitch;
-            for (int x = o->sr.left; x < o->sr.right; x++) uses[r[x]] = 1;
+        if (q != 64) {                                   /* only the enlarged copies use the colour rule (below) */
+            for (int y = o->sr.top; y < o->sr.bottom; y++) {
+                const BYTE *r = o->src->bits + (size_t)y * o->src->pitch;
+                for (int x = o->sr.left; x < o->sr.right; x++) uses[r[x]] = 1;
+            }
+            if (o->src->has_ck) for (int i = o->src->ck_lo; i <= (int)o->src->ck_hi && i < 256; i++) uses[i] = 0;
         }
-        if (o->src->has_ck) for (int i = o->src->ck_lo; i <= (int)o->src->ck_hi && i < 256; i++) uses[i] = 0;
+        /* the source column of every screen column of c, once per op (2026-11-20: floor() per PIXEL for the enlarged
+         * HUD notes was most of the snapshot - 9 notes of one HUD picture cost 4 ms in Wine). Same arithmetic as
+         * before: floor(ax + X * 64 / q), so the mapping is unchanged (render rule 2). -1 = outside the source. */
+        static int colx[4096];
+        int cw = c.right - c.left;
+        if (cw > 4096) continue;
+        for (int x = c.left; x < c.right; x++) {
+            int sx = q == 64 ? o->sr.left + (x - o->dr.left) : (int)floor(o->ax + x * 64.0 / q + 1e-6);
+            colx[x - c.left] = sx < o->sr.left || sx >= o->sr.right ? -1 : sx;
+        }
+        const BYTE *ink1 = e->w >= 640 && e->h >= 480 ? NULL : entry_ink(e);   /* see is_key below */
+        int klo = o->keyed ? (int)o->lo : 1, khi = o->keyed ? (int)o->hi : 0;
+        int clo = o->src->has_ck ? (int)o->src->ck_lo : 1, chi = o->src->has_ck ? (int)o->src->ck_hi : 0;
         for (int y = c.top; y < c.bottom; y++) {
             const BYTE *fr = bits + (size_t)y * pitch;
-            int q = o->q > 0 ? o->q : 64;
             int sy = q == 64 ? o->sr.top + (y - o->dr.top) : (int)floor(o->ay + y * 64.0 / q + 1e-6);
             if (sy < o->sr.top || sy >= o->sr.bottom) continue;
             const BYTE *srow = o->src->bits + (size_t)sy * o->src->pitch;
+            const BYTE *irow = ink1 && sy < e->h ? ink1 + (size_t)sy * e->w : NULL;
             BYTE *mp = g_idmap + (size_t)(y - view.top) * vw - view.left;
             for (int x = c.left; x < c.right; x++) {
-                int sx = q == 64 ? o->sr.left + (x - o->dr.left) : (int)floor(o->ax + x * 64.0 / q + 1e-6);
-                if (sx < o->sr.left || sx >= o->sr.right) continue;
+                int sx = colx[x - c.left];
+                if (sx < 0) continue;
                 BYTE v = srow[sx];
-                int is_key = (o->keyed && v >= o->lo && v <= o->hi) || (o->src->has_ck && v >= o->src->ck_lo && v <= o->src->ck_hi);
+                int is_key = (v >= klo && v <= khi) || (v >= clo && v <= chi);
                 if (is_key) {
                     /* a key-colour pixel is the picture's where the HD art has ink in it (Codex's soft edges and
                      * shapes a little past the old outline, letter edges of the logo): any of the texels it covers
                      * with alpha; ps_sprite blends by that alpha, so see-through parts keep what is under. (The
-                     * first try made black boxes: the loader forced every HD pixel opaque - fixed, 2026-11-18.) */
-                    int x0 = (sx - 0) * e->hw / e->w, x1 = (sx + 1) * e->hw / e->w, y0 = sy * e->hh / e->h, y1 = (sy + 1) * e->hh / e->h, ink = 0;
-                    for (int ty = y0; ty < y1 && ty < e->hh && !ink; ty++)
-                        for (int tx = x0; tx < x1 && tx < e->hw; tx++)
-                            if (is_hd_ink(e->hd[(size_t)ty * e->hw + tx])) { ink = 1; break; }   /* not the art's cyan background (BMPs are opaque everywhere) */
+                     * first try made black boxes: the loader forced every HD pixel opaque - fixed, 2026-11-18.)
+                     * The texel test per original pixel is cached per picture (entry_ink). */
+                    int ink = irow && sx < e->w && irow[sx];
                     /* not for whole-screen pictures (menu backgrounds): their dark key-colour areas claimed
                      * whatever was drawn on top without an HD picture of its own - black boxes over the OFF
                      * buttons of Mod Settings on the main menu (2026-11-18) */
-                    if (ink && !(e->w >= 640 && e->h >= 480) && n_undo < MAX_UNDO) {
+                    if (ink && n_undo < MAX_UNDO) {
                         undo_at[n_undo] = &mp[x]; undo_was[n_undo++] = mp[x];   /* taken back if the picture is not on screen (below) */
                         mp[x] = (BYTE)id;
                     }
@@ -381,6 +427,16 @@ int hdsprites_prepare(const BYTE *bits, int pitch, RECT view, const HdOp **ops, 
         }
         h->id = id;
         h->pix = e->hd; h->pw = e->hw; h->ph = e->hh; h->serial = e->serial;
+    }
+    if (prof && pframes && GetTickCount() - pat > 10000) {
+        pat = GetTickCount();
+        for (int r = 0; r < 6; r++) {
+            int bi = -1; for (int i = 0; i < g_n; i++) if (pt[i] > 0 && (bi < 0 || pt[i] > pt[bi])) bi = i;
+            if (bi < 0) break;
+            mlog("hdsprites: %.2f ms per frame for %s (%.1f notes per frame, last q %d)", pt[bi] / pframes, g_e[bi].path, (double)pc[bi] / pframes, pq64[bi]);
+            pt[bi] = -pt[bi];
+        }
+        memset(pt, 0, sizeof pt); memset(pc, 0, sizeof pc); pframes = 0;
     }
     *ops = g_out;
     *idmap = g_idmap;
