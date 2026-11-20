@@ -130,7 +130,7 @@ static const Item COMBAT[] = {
     { "Barricade rules", 0, 3 }, { "Enemies use them", 0, 11 }, { "Corner shots", 0, 12 }, { "Leg hits", 0, 13 },
     { "Downhill hits", 0, 14 }, { "Longer range", 0, 17 }, { "No corner squash", 0, 20 }, { "Health regen", 0, 2 }, { "Half damage", 1, MOD_HALF_DAMAGE },
     { "Aim assist", 1, MOD_AIM_ASSIST }, { "Hit markers", 1, MOD_HIT_MARKERS }, { "Damage direction", 1, MOD_DAMAGE_DIR },
-    { "Health bars", 1, MOD_HEALTH_BARS },
+    { "Health bars", 1, MOD_HEALTH_BARS }, { "Enemy vehicles", 0, 23 },
 };
 static const Item MENUS[] = {
     { "Sharp menu text", 0, 19 }, { "Buttons press in", 0, 16 }, { "Radio overlay", 0, 21 },
