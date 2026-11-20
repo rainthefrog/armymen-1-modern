@@ -162,7 +162,9 @@ static void resolve(int m, int sx, int sy)
 #define WG          512
 #define WCELL       8
 #define W_BUDGET_MS 6                    /* per frame */
-#define W_HEAP      (WG * WG * 2)
+#define W_HEAP      (WG * WG * 8)          /* lazy pushes: a full-map search filled 2 x cells and stopped as "closed off" */
+#define WIDE_TYPE   0                    /* VEH_SIZES entry used for the wide route (jeep) */
+#define WIDE_CALLS  6                    /* vehicle-planner pieces per walking leg before the fine search */
 #define NEAR_COST   6.0f                 /* extra cost of a route cell next to an obstacle */
 #define W_LOOKAHEAD 48                   /* cells: the straightening looks at most this far ahead */
 static BYTE g_wfree[WG * WG];            /* 0 unknown, 1 free, 2 blocked - kept for the whole route build */
@@ -376,6 +378,29 @@ static void leg_step(void)
         if (n > 0) { for (int i = 0; i < n; i++) add(out[i].x, out[i].y, 0, 0); g_cx = out[n - 1].x; g_cy = out[n - 1].y; }
         int after = dist2(g_cx, g_cy, tx, ty), reached = after <= 32 * 32;
         if (reached || n <= 0 || before - after < MIN_PROGRESS * MIN_PROGRESS || g_leg_calls >= LEG_CALLS) leg_done(tx, ty, reached);
+        return;
+    }
+    if (g_wphase == 0 && g_leg_calls < WIDE_CALLS) {
+        /* WIDE ROUTE first (2026-11-20, user: "this should be using same navigation vehicles are using for wider
+         * access"): the vehicle planner with the jeep's footprint (16 px tiles, its own clearance) - open lanes and
+         * long distances; chained from its end like a driven leg. Only if it cannot get there (a doorway, a gap only
+         * Sarge fits through) the fine walking search below takes over from where it stopped. */
+        static int leg_npts, leg_cx, leg_cy;
+        if (g_leg_calls == 0) { leg_npts = g_npts; leg_cx = g_cx; leg_cy = g_cy; }   /* the leg's start (to drop the wide try) */
+        volatile int n = 0;
+        if (GUARD_TRY(gd, "mission path, wide (missionpath.c)")) { n = path_find_vehicle(WIDE_TYPE, g_cx, g_cy, tx, ty, out, 96); guard_leave(&gd); }
+        else n = -1;
+        g_leg_calls++;
+        int before = dist2(g_cx, g_cy, tx, ty);
+        if (n > 0) { for (int i = 0; i < n; i++) add(out[i].x, out[i].y, 0, 0); g_cx = out[n - 1].x; g_cy = out[n - 1].y; }
+        int after = dist2(g_cx, g_cy, tx, ty);
+        if (after <= 32 * 32) { leg_done(tx, ty, 1); return; }
+        if (n <= 0 || before - after < MIN_PROGRESS * MIN_PROGRESS || g_leg_calls >= WIDE_CALLS) {
+            /* the wide route does not get there (e.g. stops outside a yard wall): dropped - the whole leg is planned
+             * by the fine walking search from the leg's start (continuing from the wide end made detours) */
+            g_npts = leg_npts; g_cx = leg_cx; g_cy = leg_cy;
+            g_leg_calls = WIDE_CALLS;
+        }
         return;
     }
     if (g_wphase == 0) {                                         /* walking: start the search */
