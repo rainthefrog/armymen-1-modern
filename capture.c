@@ -31,8 +31,15 @@
  *     each frame every enemy seer (units on the map, vehicles, Sarge) that has line of sight
  *     (CanSeeFromItem 0x44af10, the test ItemUpdateSeen uses) marks it seen (See 0x449a90) - no "item seen"
  *     events fired.
- *   On leaving (SargeOutVehicle, also from VehicleDie / VehicleUndeploy): UID, legion slot and TAD go back to
- *   its army; the AI stays off - an abandoned vehicle stays parked (Sarge can come back to it).
+ *   - its colours are the player's (user 2026-11-20: "some green in the driver's seat to look like it's being
+ *     driven by sarge"): the body and turret ANIMs' trans_table (game binary AnimTransTable(pAnimation /
+ *     pAnimation[TURRETANIM], UnitColorTable(army)), done once at creation, 0x416d40) point at the player's
+ *     unit colour table. AnimCellDisplay copies it into the sprite every draw, so the 8-bit picture turns green
+ *     at once, and hdworld.c's army_of (the table the remap blitter gets) picks the green ramp for the upscaled
+ *     art - one source for both. VEHICLE +0x9c pAnimation, ANIM size 0xe4 (turret = pAnimation + 0xe4),
+ *     ANIM +0x08 trans_table; unit_color_tables 0x4f75e8 (as modern.c colour-blind).
+ *   On leaving (SargeOutVehicle, also from VehicleDie / VehicleUndeploy): UID, legion slot, TAD and colours go
+ *   back to its army; the AI stays off - an abandoned vehicle stays parked (Sarge can come back to it).
  *
  * Rewrites / wraps:
  *   FUN_00418910 Enter Vehicle key (VehicleSargeFlip, game binary), key-table handler, __cdecl no args.
@@ -73,6 +80,12 @@
 #define VEH_NPC(v)        (*(int *)((v) + 0xe8))
 #define VEH_HUMAN_AI(v)   (*(int *)((v) + 0xec))
 #define VEH_DRIVER(v)     (*(BYTE **)((v) + 0x14c))
+
+#define VEH_ANIM(v)       (*(BYTE **)((v) + 0x9c))       /* pAnimation: body ANIM, turret ANIM right after it */
+#define ANIM_SIZE         0xe4
+#define ANIM_TRANS(a)     (*(BYTE **)((a) + 0x08))       /* trans_table (army colours) */
+#define VEH_ANIMS         2                              /* body, TURRETANIM */
+#define UNIT_COLOR_TABLES ((BYTE **)0x4f75e8)            /* game binary unit_color_tables[army] */
 
 #define SARGE_VEHICLE(s)  (*(BYTE **)((s) + 0x2d0))
 
@@ -123,7 +136,41 @@ static struct {
     BYTE *legion;       /* the player legion whose spare slot holds it */
     DWORD uid;          /* its own UID (restored on leaving) */
     DWORD uid_now;      /* the player's UID it carries now */
+    BYTE *trans[VEH_ANIMS];   /* its own colour tables (restored on leaving) */
+    int recoloured;
 } g_cap;
+
+/* The vehicle's body / turret ANIM, NULL when its animation block does not look valid. */
+static BYTE *veh_anim(BYTE *v, int i)
+{
+    BYTE *a = VEH_ANIM(v);
+    if (!a || IsBadWritePtr(a, ANIM_SIZE * VEH_ANIMS)) return NULL;
+    return a + ANIM_SIZE * i;
+}
+
+/* Captured: draw it with the player's colours (8-bit table; the upscaled art follows the table). */
+static void recolour_to_player(BYTE *v)
+{
+    BYTE *t = UNIT_COLOR_TABLES[PLAYER_ARMY];
+    if (!t) return;
+    for (int i = 0; i < VEH_ANIMS; i++) {
+        BYTE *a = veh_anim(v, i);
+        if (!a) continue;
+        if (!g_cap.recoloured) g_cap.trans[i] = ANIM_TRANS(a);
+        ANIM_TRANS(a) = t;
+    }
+    g_cap.recoloured = 1;
+}
+
+static void recolour_back(BYTE *v)
+{
+    if (!g_cap.recoloured) return;
+    for (int i = 0; i < VEH_ANIMS; i++) {
+        BYTE *a = veh_anim(v, i);
+        if (a && ANIM_TRANS(a) == UNIT_COLOR_TABLES[PLAYER_ARMY]) ANIM_TRANS(a) = g_cap.trans[i];
+    }
+    g_cap.recoloured = 0;
+}
 
 int capture_allowed(void)
 {
@@ -192,6 +239,8 @@ static void capture(BYTE *s, BYTE *v)
     VEH_AI_GOAL(v) = 0;
     VEH_HUMAN_AI(v) = 0;
     if (had_tad) TAD_CREATE(PLAYER_ARMY, ITEM_VEHICLE, v, 0);
+    recolour_to_player(v);
+    mlog("capture: vehicle %p colours %p,%p -> player table %p", v, g_cap.trans[0], g_cap.trans[1], UNIT_COLOR_TABLES[PLAYER_ARMY]);
     mlog("capture: Sarge took army %d vehicle %p (class %d) uid %08lx -> %08lx (player slot %d)%s",
          UID_ARMY(uid), v, (int)((uid >> 16) & 0x3f) - 1, uid, g_cap.uid_now, CAPTURE_SLOT, had_tad ? "" : ", no TAD");
 }
@@ -204,6 +253,7 @@ static void release(void)
         int had_tad = ITEM_TAD(v) != NULL;
         if (had_tad) { TAD_DELETE(ITEM_TAD(v)); ITEM_TAD(v) = NULL; }
         UID(v) = g_cap.uid;
+        recolour_back(v);
         if (had_tad) TAD_CREATE(UID_ARMY(g_cap.uid), ITEM_VEHICLE, v, 0);
         mlog("capture: Sarge left vehicle %p - back to army %d (uid %08lx, health %d, parked)", v, UID_ARMY(g_cap.uid), g_cap.uid,
              ITEM_HEALTH(v));
@@ -330,6 +380,7 @@ void capture_frame(void)
     BYTE *v = g_cap.v;
     VEH_NPC(v) = 0;                                      /* a script order may have switched its AI on */
     VEH_AI_GOAL(v) = 0;
+    recolour_to_player(v);                               /* (kept: nothing in the game sets it again, cheap) */
     update_seen(v);
 }
 
