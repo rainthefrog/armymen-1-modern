@@ -468,6 +468,7 @@ static int building_blocked_w(int wx0, int wy0, int x, int y)
     return g_bb[y][x] == 2;
 }
 /* a floor cell (window x, y): inside the building box, free in its own hitbox, its image drawn there */
+static int g_floor_noimg;                 /* 1 = floor cells without the building-image test (fallback) */
 static int floor_cell(const void *flv, BYTE (*cm)[IN_N], int wx0, int wy0, int bx0, int by0, int bx1, int by1, int sl, int st, int x, int y)
 {
     const struct { int cx0, cy0, inside, circle; } *hdr = flv;   /* Floor starts with these */
@@ -477,7 +478,7 @@ static int floor_cell(const void *flv, BYTE (*cm)[IN_N], int wx0, int wy0, int b
     int ax = wx0 + x, ay = wy0 + y, ok = 0;
     if (ax >= bx0 && ax <= bx1 && ay >= by0 && ay <= by1 && !building_blocked_w(wx0, wy0, x, y) && !cell_blocked(ax, ay)) {   /* 2026-11-20 (user: "it should respect the bounding"): the game's full Sarge hitbox too */
         int e = hdworld_entry_at(ax * IN_CELL + IN_CELL / 2 - sl, ay * IN_CELL + IN_CELL / 2 - st);
-        ok = e >= 0 && floor_tex_entry(e);
+        ok = g_floor_noimg || (e >= 0 && floor_tex_entry(e));
     }
     cm[y][x] = ok ? 1 : 2;
     return ok;
@@ -592,6 +593,7 @@ static int floor_now(Floor *fl)
         }
     /* circle mode: under the roof is enough (2026-11-20: in a tight spot no free cell was within 2 - no cut-away) */
     int scx = sx / IN_CELL - wx0, scy = sy / IN_CELL - wy0, found = g_sarge_hidden >= IN_HIDDEN_PCT;
+    if (!found && g_sarge_hidden > 0 && g_cfg.log >= 1) { static DWORD at2; if (GetTickCount() - at2 > 3000) { at2 = GetTickCount(); mlog("interior: Sarge %d,%d partly under a roof (hidden %d%% < %d) - no circle", sx, sy, g_sarge_hidden, IN_HIDDEN_PCT); } }
     if (0)
         for (int r = 0; r <= 2 && !found; r++)
             for (int dy = -r; dy <= r && !found; dy++) for (int dx = -r; dx <= r && !found; dx++) {
@@ -637,6 +639,18 @@ static int floor_now(Floor *fl)
         for (int r = 0; r <= 3 && fx < 0; r++)
             for (int dy = -r; dy <= r && fx < 0; dy++) for (int dx = -r; dx <= r && fx < 0; dx++)
                 if (FLOOR_AT(c0x + dx, c0y + dy)) { fx = c0x + dx; fy = c0y + dy; }
+        if (fx < 0) {
+            /* 2026-11-20 (user: "still not drawing under building shader here"): no cell near him passed the "this
+             * building's image is drawn at that map pixel" test (a part outside fl->cells, or no image reference) -
+             * the circle without that test (hitbox-free cells only; the GPU still draws it on the building's art) */
+            g_floor_noimg = 1; memset(cm, 0, sizeof cm);
+            for (int r = 0; r <= 3 && fx < 0; r++)
+                for (int dy = -r; dy <= r && fx < 0; dy++) for (int dx = -r; dx <= r && fx < 0; dx++)
+                    if (FLOOR_AT(c0x + dx, c0y + dy)) { fx = c0x + dx; fy = c0y + dy; }
+        }
+        if (g_cfg.log >= 1 && fx < 0) { static DWORD at; if (GetTickCount() - at > 3000) { at = GetTickCount();
+            mlog("interior: Sarge %d,%d under a roof (hidden %d%%, %d building cells) - no floor cell within 3 (blocked %d, bhit %d)", sx, sy,
+                 g_sarge_hidden, fl->ncells, cell_blocked(sx / IN_CELL, sy / IN_CELL), building_blocked(sx / IN_CELL, sy / IN_CELL)); } }
         if (fx >= 0) {
             int qn = 0, qi = 0;
             fl->mask[fy * 2 + (fx >> 5)] |= 1u << (fx & 31);
@@ -656,6 +670,7 @@ static int floor_now(Floor *fl)
         }
         #undef FLOOR_AT
         #undef IN_CIRCLE
+        g_floor_noimg = 0;
         fl->circle = 1;
         goto circle_done;
         /* 2026-11-20 (user: "the room highlight is still wrong - needs to be the entire room"): the walk mask splits a
