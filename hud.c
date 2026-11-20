@@ -417,17 +417,18 @@ static void hud_finish_frame_body(Surf *s)
      * buffer again without redrawing it, and enlarging / darkening it again would stack up. */
     if (layout_view_is_gameplay() && !g_hud_fresh) return;
     g_hud_fresh = 0;
-    weapons_draw_markers(s);
-    controls_draw_sprint(s);
-    modern_draw(s);                                  /* modern.c: hit markers, arrows, route ... */
-    objectives_draw(s);
-    layout_scale_corners(s);
-    minimap_draw(s);                                 /* minimap.c: blips over the enlarged minimap */
+    { PROF_BEGIN(t); weapons_draw_markers(s); controls_draw_sprint(s); PROF_END(t, PR_H_WEAP); }
+    { PROF_BEGIN(t); modern_draw(s); PROF_END(t, PR_H_MODERN); }                /* modern.c: hit markers, arrows, route ... */
+    { PROF_BEGIN(t); objectives_draw(s); PROF_END(t, PR_H_OBJ); }
+    { PROF_BEGIN(t); layout_scale_corners(s); PROF_END(t, PR_H_CORNERS); }
+    { PROF_BEGIN(t); minimap_draw(s); PROF_END(t, PR_H_MINIMAP); }              /* minimap.c: blips over the enlarged minimap */
+    PROF_BEGIN(tr);
     layout_draw_resize_icon(s);                      /* the resize icon of the HUD group under the pointer */
     tips_draw(s);
     minimap_draw_tip(s);                             /* minimap.c: details of the blip under the pointer */
     panel_draw(s);
     debugview_draw(s);                               /* debugview.c: hitboxes + names (Ctrl+Shift+H) */
+    PROF_END(tr, PR_H_REST);
 }
 
 void hud_finish_frame(Surf *s) { PROF_BEGIN(t); hud_finish_frame_body(s); PROF_END(t, PR_HUD); }   /* timed (trace) */

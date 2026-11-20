@@ -658,7 +658,9 @@ static void modern_draw_body(Surf *b)
     int sgx, sgy; to_screen(*(short *)(u + 4), *(short *)(u + 6), &sgx, &sgy);
 
     g_nbarred = 0;
-    if (modern_on(MOD_HEALTH_BARS)) { each_enemy(health_bar); target_health_bars(); }
+    static double mt[6]; static DWORD mt_at; LARGE_INTEGER q0, q1, qf; QueryPerformanceFrequency(&qf);
+    #define MT(i, code) do { QueryPerformanceCounter(&q0); code; QueryPerformanceCounter(&q1); mt[i] += (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart; } while (0)
+    if (modern_on(MOD_HEALTH_BARS)) { MT(0, each_enemy(health_bar)); MT(1, target_health_bars()); }
     {   /* a captured enemy vehicle: a green driver in the seat (2026-11-20, user: "just drawing the driver in there") -
          * head and shoulders, a little behind the vehicle's centre along its hull facing, drawn on top */
         int vx, vy, f;
@@ -701,10 +703,11 @@ static void modern_draw_body(Surf *b)
         for (int i = 0; i < nm; i++) target_mark(&mk[i], *(short *)(u + 4), *(short *)(u + 6));
         if (!nm && objectives_target(&ox, &oy)) edge_arrow(ox, oy, C_YELLOW);   /* no named target: the sector */
     }
-    missionpath_frame();                                /* built once per mission (missionpath.c), never per frame */
+    MT(2, missionpath_frame());                         /* built once per mission (missionpath.c), never per frame */
     {   /* The mission path (2026-11-20, [hud] mission_path): Sarge's start -> each waypoint, painted on the ground
          * like the route marker (g_route: under objects), white, 2 px with a dark edge, solid; a leg the planner did not find is
          * dashed. Each waypoint: a small ring with its number. Only segments touching the screen are drawn. */
+        QueryPerformanceCounter(&q0);
         const MissionPt *mp; int n = missionpath_points(&mp);
         if (n >= 2) {
             g_route = 1;
@@ -728,6 +731,7 @@ static void modern_draw_body(Surf *b)
             }
             g_nunder = 0;
             g_route = 0;
+            QueryPerformanceCounter(&q1); mt[3] += (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart;
             for (int i = 1; i < n; i++) {               /* the numbers: on top (a pad inside a building hid them) */
                 if (!mp[i].wp) continue;
                 int wx, wy; to_screen(mp[i].x, mp[i].y, &wx, &wy);
@@ -875,6 +879,7 @@ static void modern_draw_body(Surf *b)
         }
     }
     g_b = NULL;
+    mt[5] += 0; if (GetTickCount() - mt_at > 2000) { if (g_cfg.log >= 2) mlog("modern times 2s (ms): enemy bars %.1f target bars %.1f mpath build %.1f mpath draw %.1f", mt[0], mt[1], mt[2], mt[3]); memset(mt, 0, sizeof mt); mt_at = GetTickCount(); }
 }
 
 void modern_draw(Surf *b) { PROF_BEGIN(t); modern_draw_body(b); PROF_END(t, PR_OVERLAY); }   /* timed (trace) */

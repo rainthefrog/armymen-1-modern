@@ -581,7 +581,9 @@ int objectives_marks(ObjMark *out, int max);  /* objectives.c: mission targets t
 int view_is_video(void);                    /* view.c */
 
 /* ---- game-thread profile (present.c prof_add; printed per frame by the timing trace) */
-enum { PR_CONTROLS, PR_REGIONS, PR_CAMERA, PR_FIELD, PR_CELLS, PR_BLIT, PR_GHOST, PR_HUD, PR_OVERLAY, PR_SHOWN, PR_N };
+/* PR_H_*: parts of PR_HUD (2026-11-20, stutter hunt): weapons, modern (+ mission path), objectives (+ zones, interior), corners, minimap, rest */
+enum { PR_CONTROLS, PR_REGIONS, PR_CAMERA, PR_FIELD, PR_CELLS, PR_BLIT, PR_GHOST, PR_HUD, PR_OVERLAY, PR_SHOWN,
+       PR_H_WEAP, PR_H_MODERN, PR_H_OBJ, PR_H_CORNERS, PR_H_MINIMAP, PR_H_REST, PR_N };
 void prof_add(int k, LONGLONG ticks);
 #define PROF_BEGIN(v) LARGE_INTEGER v; QueryPerformanceCounter(&v)
 #define PROF_END(v, k) do { LARGE_INTEGER pr_b_; QueryPerformanceCounter(&pr_b_); prof_add(k, pr_b_.QuadPart - v.QuadPart); } while (0)

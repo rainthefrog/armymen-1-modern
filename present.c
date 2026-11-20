@@ -690,7 +690,8 @@ void present_request(DDraw *dd, int wait)
                       clock_game_ms(), (int)(t_frame * 10), (int)((t_frame - t_wait_prev) * 10), (int)(t_refs * 10), (int)(t_wait * 10),
                       (int)(g_t_slot * 10), (int)(g_t_snap * 10), (int)(g_t_draw * 10), (int)(g_t_gpu * 10), (int)(g_t_present * 10), info);
             {                                        /* where the game thread's work went (x0.1 ms) */
-                static const char *const PN[PR_N] = { "ctl", "regions", "cam", "field", "cells", "blit", "ghost", "hud", "overlay", "shown" };
+                static const char *const PN[PR_N] = { "ctl", "regions", "cam", "field", "cells", "blit", "ghost", "hud", "overlay", "shown",
+                                                      "h.weap", "h.modern", "h.obj", "h.corners", "h.minimap", "h.rest" };
                 int o = lstrlenA(line);
                 o += wsprintfA(line + o, " | wget %d wup %d atlas %d mapKpx %d movedKpx %d", (int)(g_gt_wget * 10), (int)(g_gt_wup * 10), (int)(g_gt_atlas * 10), g_gt_dirty_px / 1000, g_gt_move_px / 1000);
                 o += wsprintfA(line + o, " |");

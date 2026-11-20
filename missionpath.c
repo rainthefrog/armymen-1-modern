@@ -163,6 +163,7 @@ static void resolve(int m, int sx, int sy)
 #define WCELL       8
 #define W_BUDGET_MS 6                    /* per frame */
 #define W_HEAP      (WG * WG * 2)
+#define NEAR_COST   3.0f                 /* extra cost of a route cell next to an obstacle */
 #define W_LOOKAHEAD 48                   /* cells: the straightening looks at most this far ahead */
 static BYTE g_wfree[WG * WG];            /* 0 unknown, 1 free, 2 blocked - kept for the whole route build */
 static uint16_t g_wgen[WG * WG], g_wclosed[WG * WG], g_wcurgen;
@@ -173,7 +174,7 @@ static int g_wstart, g_wgoal, g_wbest; static float g_wbesth;
 static int g_wphase;                     /* 0 idle, 1 searching, 2 straightening, 3 done */
 static int g_wchain[WG * WG / 2], g_wnc, g_wi, g_wfound, g_wtx, g_wty, g_wcx, g_wcy;
 
-static int wfree(int c)
+static int wraw(int c)
 {
     if (!g_wfree[c]) {
         int x0 = (c % WG) * WCELL, y0 = (c / WG) * WCELL, blocked = 0;
@@ -186,6 +187,30 @@ static int wfree(int c)
         return !blocked;
     }
     return g_wfree[c] == 1;
+}
+/* 2026-11-20 (user: "the pathing guide needs to actually traverse the area and not cross objects but go around
+ * them"): a route cell needs its 8 neighbours free too - the line keeps a full cell (8 px) off every obstacle instead
+ * of brushing its edge (it looked like crossing the object's picture). Next to the start / goal only the cell itself. */
+static int wfree(int c)
+{
+    if (!wraw(c)) return 0;
+    int x = c % WG, y = c / WG;
+    if ((abs(x - g_wstart % WG) <= 2 && abs(y - g_wstart / WG) <= 2) || (abs(x - g_wgoal % WG) <= 2 && abs(y - g_wgoal / WG) <= 2)) return 1;
+    for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+        int nx = x + dx, ny = y + dy;
+        if ((dx || dy) && nx >= 0 && ny >= 0 && nx < WG && ny < WG && !wraw(ny * WG + nx)) return 0;
+    }
+    return 1;
+}
+/* straight segment for the straightening: every 4 px on a route cell (the same clearance) */
+static int wline(int x0, int y0, int x1, int y1)
+{
+    int dx = x1 - x0, dy = y1 - y0, n = (abs(dx) > abs(dy) ? abs(dx) : abs(dy)) / 4 + 1;
+    for (int i = 0; i <= n; i++) {
+        int x = x0 + dx * i / n, y = y0 + dy * i / n;
+        if (x < 0 || y < 0 || x >= WG * WCELL || y >= WG * WCELL || !wfree((y / WCELL) * WG + x / WCELL)) return 0;
+    }
+    return 1;
 }
 static float west(int a, int b)
 {
@@ -221,14 +246,14 @@ static int wbegin(int sx, int sy, int tx, int ty)
     g_wstart = (sy / WCELL) * WG + sx / WCELL;
     g_wgoal = (ty / WCELL) * WG + tx / WCELL;
     g_wtx = tx; g_wty = ty; g_wcx = sx; g_wcy = sy;
-    if (!wfree(g_wgoal)) {                                       /* a pad in a doorway, a soldier's spot: nearest free */
+    if (!wraw(g_wgoal)) {                                       /* a pad in a doorway, a soldier's spot: nearest free */
         int best = -1;
         for (int r = 1; r <= 10 && best < 0; r++)
             for (int dy = -r; dy <= r && best < 0; dy++)
                 for (int dx = -r; dx <= r && best < 0; dx++) {
                     if (abs(dx) != r && abs(dy) != r) continue;
                     int x = g_wgoal % WG + dx, y = g_wgoal / WG + dy;
-                    if (x >= 0 && y >= 0 && x < WG && y < WG && wfree(y * WG + x)) best = y * WG + x;
+                    if (x >= 0 && y >= 0 && x < WG && y < WG && wraw(y * WG + x)) best = y * WG + x;
                 }
         if (best >= 0) { g_wgoal = best; g_wtx = (best % WG) * WCELL + WCELL / 2; g_wty = (best / WG) * WCELL + WCELL / 2; }
     }
@@ -260,9 +285,11 @@ static int wstep(POINT *out, int max, int *n, int *found)
                 int nx = cx + DX[d], ny = cy + DY[d];
                 if (nx < 0 || ny < 0 || nx >= WG || ny >= WG) continue;
                 int nb = ny * WG + nx;
-                if (g_wclosed[nb] == g_wcurgen || !wfree(nb)) continue;
-                if (d >= 4 && (!wfree(cy * WG + nx) || !wfree(ny * WG + cx))) continue;   /* no corner cutting */
-                float g = g_wcost[c] + (d >= 4 ? 1.4142f : 1.0f);
+                if (g_wclosed[nb] == g_wcurgen || !wraw(nb)) continue;
+                if (d >= 4 && (!wraw(cy * WG + nx) || !wraw(ny * WG + cx))) continue;   /* no corner cutting */
+                /* passable by Sarge's own rule; a cell next to an obstacle costs extra - the route keeps off objects
+                 * where there is room and still fits through narrow doors */
+                float g = g_wcost[c] + (d >= 4 ? 1.4142f : 1.0f) + (wfree(nb) ? 0.0f : NEAR_COST);
                 if (g_wgen[nb] == g_wcurgen && g_wcost[nb] <= g) continue;
                 g_wgen[nb] = g_wcurgen; g_wcost[nb] = g; g_wfrom[nb] = c;
                 wpush(nb, g + west(nb, g_wgoal));
@@ -283,7 +310,7 @@ static int wstep(POINT *out, int max, int *n, int *found)
             for (int t = lim; t < g_wi - 1; t++) {
                 int px = (g_wchain[t] % WG) * WCELL + WCELL / 2, py = (g_wchain[t] / WG) * WCELL + WCELL / 2;
                 if (t == 0 && g_wfound) { px = g_wtx; py = g_wty; }
-                if (path_line_free(g_wcx, g_wcy, px, py)) { j = t; break; }
+                if (wline(g_wcx, g_wcy, px, py)) { j = t; break; }
             }
             int px = (g_wchain[j] % WG) * WCELL + WCELL / 2, py = (g_wchain[j] / WG) * WCELL + WCELL / 2;
             if (j == 0 && g_wfound) { px = g_wtx; py = g_wty; }

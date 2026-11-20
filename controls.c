@@ -1988,6 +1988,9 @@ static void apply_modern_controls(void)
             S.lpress_at = now; S.lpress_x = px; S.lpress_y = py;
             int dbl = S.lup_at && now - S.lup_at <= GetDoubleClickTime();
             if (layout_any_panel_open()) S.lmode = LM_NONE;          /* closing a pop-up (sign, radio) */
+            /* a radio drawn by the mod (radio.c) is no panel: the click that closes the briefing / mission-over radio
+             * walked Sarge there (2026-11-20, user) - bDisplayRecall 0x505d00, SCREEN state 16 */
+            else if (*(volatile BYTE *)0x505d00 || (*(BYTE **)0x6a5944 && *(int *)(*(BYTE **)0x6a5944 + 4) == 16)) S.lmode = LM_NONE;
             else if (key_down(VK_SHIFT) || kx || ky || hover == HOVER_TARGET || hover == HOVER_FAR_ENEMY) S.lmode = LM_FIRE;
             else if (hover == HOVER_ENTER) S.lmode = LM_ENTER;
             /* in a fire fight (user: "if I move the mouse off the enemy while clicking, sarge will start running over"):
