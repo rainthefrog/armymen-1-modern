@@ -176,14 +176,21 @@ static int g_wstart, g_wgoal, g_wbest; static float g_wbesth;
 static int g_wphase;                     /* 0 idle, 1 searching, 2 straightening, 3 done */
 static int g_wchain[WG * WG / 2], g_wnc, g_wi, g_wfound, g_wtx, g_wty, g_wcx, g_wcy;
 
+static int g_relax, g_walk_npts, g_walk_cx, g_walk_cy;                      /* 1 = this leg's second walking search (relaxed cell rule) */
 static int wraw(int c)
 {
     if (!g_wfree[c]) {
         int x0 = (c % WG) * WCELL, y0 = (c / WG) * WCELL, blocked = 0;
         int near_start = abs(c % WG - g_wstart % WG) <= 1 && abs(c / WG - g_wstart / WG) <= 1;
-        blocked = controls_blocked_at(x0 + WCELL / 2, y0 + WCELL / 2);
-        for (int sy = 1; sy < WCELL && !blocked && !near_start; sy += 2)
-            for (int sx = 1; sx < WCELL && !blocked; sx += 2) blocked = controls_blocked_at(x0 + sx, y0 + sy);
+        if (g_relax) {                   /* second try: the game's own Sarge rule (object masks), centre + 4 points 2 px out */
+            blocked = controls_sarge_blocked_at(x0 + WCELL / 2, y0 + WCELL / 2);
+            static const int RX[4] = { 2, 6, 2, 6 }, RY[4] = { 2, 2, 6, 6 };
+            for (int k = 0; k < 4 && !blocked && !near_start; k++) blocked = controls_sarge_blocked_at(x0 + RX[k], y0 + RY[k]);
+        } else {
+            blocked = controls_blocked_at(x0 + WCELL / 2, y0 + WCELL / 2);
+            for (int sy = 1; sy < WCELL && !blocked && !near_start; sy += 2)
+                for (int sx = 1; sx < WCELL && !blocked; sx += 2) blocked = controls_blocked_at(x0 + sx, y0 + sy);
+        }
         g_wfree[c] = blocked ? 2 : 1;
         if (near_start) g_wfree[c] = 0;  /* tested anew for the next leg's start */
         return !blocked;
@@ -404,6 +411,7 @@ static void leg_step(void)
         return;
     }
     if (g_wphase == 0) {                                         /* walking: start the search */
+        g_walk_npts = g_npts; g_walk_cx = g_cx; g_walk_cy = g_cy;
         volatile int ok = 0;
         if (GUARD_TRY(gd, "mission path (missionpath.c)")) { ok = wbegin(g_cx, g_cy, tx, ty); guard_leave(&gd); }
         if (!ok) { leg_done(tx, ty, 0); return; }
@@ -416,7 +424,16 @@ static void leg_step(void)
     if (!fin) return;                                            /* next frame */
     for (int i = 0; i < wn; i++) add(out[i].x, out[i].y, 0, 0);
     if (wn > 0) { g_cx = out[wn - 1].x; g_cy = out[wn - 1].y; }
-    if (g_cfg.log >= 1) mlog("missionpath: leg %d walked: %s, %d points", g_leg + 1, found ? "found" : "closed off", wn);
+    if (g_cfg.log >= 1) mlog("missionpath: leg %d walked%s: %s, %d points", g_leg + 1, g_relax ? " (relaxed)" : "", found ? "found" : "closed off", wn);
+    if (!found && !g_relax && dist2(g_cx, g_cy, tx, ty) > 32 * 32) {
+        /* 2026-11-20 (user: "this is still going directly through objects and walls"): the strict rule (16 sample
+         * points per 8 px cell, the strict tile test) closes gaps the game lets Sarge through (yard openings, doors) -
+         * the leg was dashed straight through walls. Second search with the game's own Sarge rule. */
+        g_npts = g_walk_npts; g_cx = g_walk_cx; g_cy = g_walk_cy;
+        g_relax = 1; memset(g_wfree, 0, sizeof g_wfree); memset(g_wclr, 0, sizeof g_wclr); g_wphase = 0;
+        return;
+    }
+    if (g_relax) { g_relax = 0; memset(g_wfree, 0, sizeof g_wfree); memset(g_wclr, 0, sizeof g_wclr); }
     leg_done(tx, ty, found || dist2(g_cx, g_cy, tx, ty) <= 32 * 32);
 }
 
