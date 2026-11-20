@@ -665,7 +665,19 @@ void present_request(DDraw *dd, int wait)
     }
     if (wait) {
         clock_frame_shown(layout_view_is_gameplay());    /* game clock: one refresh per shown frame */
-        if (clock_tracing()) {
+        /* SPIKES are always logged (2026-11-20, user: stutter after the 30 s trace had ended): a gameplay frame
+         * longer than [debug] spike_ms (default 40) writes the same trace line, prefixed "spike", at most 4 a
+         * second. The stage times (ctl .. shown) are the mod's; work minus their sum is the game's own code. */
+        static int spike_ms = -1;
+        if (spike_ms < 0) spike_ms = GetPrivateProfileIntA("debug", "spike_ms", 40, mod_ini_path());
+        static DWORD spike_sec, spike_n;
+        int spike = 0;
+        if (spike_ms > 0 && t_frame > spike_ms && layout_view_is_gameplay()) {
+            DWORD sec = GetTickCount() / 1000;
+            if (sec != spike_sec) { spike_sec = sec; spike_n = 0; }
+            spike = spike_n++ < 4;
+        }
+        if (clock_tracing() || spike) {
             LARGE_INTEGER now, fq;
             QueryPerformanceCounter(&now); QueryPerformanceFrequency(&fq);
             char info[160], line[600];
@@ -684,7 +696,7 @@ void present_request(DDraw *dd, int wait)
                 o += wsprintfA(line + o, " |");
                 for (int k = 0; k < PR_N && o < 560; k++) o += wsprintfA(line + o, " %s %d", PN[k], (int)(g_prof_frame[k] * 10));
             }
-            clock_trace_frame(line);
+            if (clock_tracing()) clock_trace_frame(line); else mlog("spike: %s", line);
         }
     }
 }
