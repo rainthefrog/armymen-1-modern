@@ -617,7 +617,10 @@ int layout_any_panel_open(void)
  * position. Kept CLICK_LINGER_MS after the last draw (the game draws such a button once). */
 #define MAX_CLICKS 8
 #define CLICK_LINGER_MS 30000
-static struct { RECT on; int dx, dy; DWORD at; } g_clicks[MAX_CLICKS];
+static struct { RECT on; int dx, dy; DWORD at; int state; } g_clicks[MAX_CLICKS];
+/* 2026-11-20 (user: the win screen "requires enter again" - the mapping held 30 s, CONTINUE is drawn once and the
+ * radio speech is longer): an entry now holds while the SAME screen state is up (SCREEN +4), any time */
+static int screen_state_now(void) { BYTE *s = *(BYTE **)0x6a5944; return s && !IsBadReadPtr(s, 8) ? *(int *)(s + 4) : -1; }
 void layout_note_click(const RECT *on, int dx, int dy)
 {
     int slot = 0;
@@ -625,7 +628,7 @@ void layout_note_click(const RECT *on, int dx, int dy)
         if (EqualRect(&g_clicks[i].on, on)) { slot = i; break; }
         if (g_clicks[i].at < g_clicks[slot].at) slot = i;
     }
-    g_clicks[slot].on = *on; g_clicks[slot].dx = dx; g_clicks[slot].dy = dy; g_clicks[slot].at = GetTickCount();
+    g_clicks[slot].on = *on; g_clicks[slot].dx = dx; g_clicks[slot].dy = dy; g_clicks[slot].at = GetTickCount(); g_clicks[slot].state = screen_state_now();
 }
 void layout_pointer_to_game(int x, int y, int *gx, int *gy)
 {
@@ -635,7 +638,7 @@ void layout_pointer_to_game(int x, int y, int *gx, int *gy)
         POINT p = { x, y };
         DWORD now = GetTickCount();
         for (int i = 0; i < MAX_CLICKS; i++)
-            if (g_clicks[i].at && now - g_clicks[i].at < CLICK_LINGER_MS && PtInRect(&g_clicks[i].on, p) && !layout_menu_scale()) {
+            if (g_clicks[i].at && (now - g_clicks[i].at < CLICK_LINGER_MS || g_clicks[i].state == screen_state_now()) && PtInRect(&g_clicks[i].on, p) && !layout_menu_scale()) {
                 *gx = x - g_clicks[i].dx; *gy = y - g_clicks[i].dy;
                 return;
             }
