@@ -47,7 +47,9 @@
  *     cursor (0x4b8a88) blocks; nearest within 6 tiles (ItemCenterPos 0x449d10 -> tile, TileDistance
  *     0x42b910), own vehicles deployed and not npc. Added: other armies' vehicles that capture_can_enter.
  *   FUN_00448ae0 SargeInVehicle (__fastcall ecx Sarge, edx vehicle): wrapped, then capture.
- *   FUN_00448b50 SargeOutVehicle (__fastcall ecx Sarge): wrapped, then release.
+ *   FUN_00448b50 SargeOutVehicle (__fastcall ecx Sarge): wrapped, then release; from a wreck (VehicleDie) also bail_out
+ *   ([gameplay] vehicle_bailout, below).
+ *   The spare slot 49 is never left empty after a capture (blank stand-in, see slot_clear: VehicleFind crash fix).
  *   FUN_0041d800 UnitEnterVehicle (__fastcall ecx unit, edx vehicle): wrapped, refused for the captured one.
  *   call 0x4296b6 -> HandleVehicle 0x4296f0 (__fastcall ecx vehicle): skipped for the captured one.
  * ============================================================================================ */
@@ -201,10 +203,29 @@ static int has_passengers(BYTE *v)
 
 static BYTE *player_legion(void) { return ARMY_RECORD(PLAYER_ARMY); }
 
+/* 2026-11-20 CRASH FIX (user log, build 21:28:48: EXCEPTION at 0x4188f5 in VehicleFind, uid 04c20032, slot 49 empty):
+ * the captured vehicle's player UID outlives the capture. A trooper caches its target's UID (TROOPER +0x2b8, copied
+ * from the target item +0x30 each update at 0x43cc30) and its fire step 0x43c150 looks it up again with ItemFind
+ * 0x427b80 -> VehicleFind 0x4188c0 = legion[army].slot[index] dereferenced WITHOUT a NULL check. The enemy soldier
+ * that shot the captured jeep to death still held 04c20032 when VehicleDie bailed Sarge out and release() emptied
+ * slot 49 -> NULL read. Rule now: once a capture used the spare slot it is never left empty - it holds this blank
+ * stand-in (UID 0, matches no UID), so VehicleFind of any stale captured UID returns NULL like any other gone
+ * item (its callers test for NULL). The game's own loops never look past the vehicle count, so nothing else reads
+ * the slot (ArmyDelete / VehicleFree run over the count only: the stand-in is never freed). */
+static DWORD g_slot_blank[0x200 / 4];
+#define SLOT_BLANK ((BYTE *)g_slot_blank)
+
+static void slot_clear(BYTE *leg, BYTE *v)
+{
+    if (leg && (LEG_VEH(leg, CAPTURE_SLOT) == v || !LEG_VEH(leg, CAPTURE_SLOT))) LEG_VEH(leg, CAPTURE_SLOT) = SLOT_BLANK;
+}
+
 static int slot_free(void)
 {
     BYTE *leg = player_legion();
-    return leg && LEG_VEH_COUNT(leg) < CAPTURE_SLOT && (!LEG_VEH(leg, CAPTURE_SLOT) || LEG_VEH(leg, CAPTURE_SLOT) == g_cap.v);
+    if (!leg || LEG_VEH_COUNT(leg) >= CAPTURE_SLOT) return 0;
+    BYTE *in = LEG_VEH(leg, CAPTURE_SLOT);
+    return !in || in == SLOT_BLANK || in == g_cap.v;
 }
 
 /* May Sarge climb into v? Player vehicles: the game's rule (deployed, not AI driven). Other armies'
@@ -265,7 +286,7 @@ static void release(void)
         mlog("capture: Sarge left vehicle %p - back to army %d (uid %08lx, health %d, parked)", v, UID_ARMY(g_cap.uid), g_cap.uid,
              ITEM_HEALTH(v));
     }
-    if (g_cap.legion && LEG_VEH(g_cap.legion, CAPTURE_SLOT) == v) LEG_VEH(g_cap.legion, CAPTURE_SLOT) = NULL;
+    slot_clear(g_cap.legion, v);                         /* never empty: stale UIDs of it must find no vehicle, not crash */
     memset(&g_cap, 0, sizeof g_cap);
 }
 
@@ -276,11 +297,61 @@ void __fastcall capture_sarge_in(BYTE *s, BYTE *v)
         capture(s, v);
 }
 
+/* ---- vehicle_bailout (2026-11-20, user: "if the vehicle gets destroyed - kick sarge out. dont kill him")
+ * The game already bails him out: VehicleDie 0x4185f0 (game binary, called from VehicleDamage 0x418460 at
+ * 0x418540) sets state VEH_DYING + health 0, moves the vehicle off the map and calls SargeOutVehicle (0x418707)
+ * for the Sarge of the vehicle's (UID) army - true for the captured one too, its UID is the player's then.
+ * SargeOutVehicle 0x448b50 puts him on the nearest tile the walk rule allows (ItemFanOut 0x44a5e0, 8 tiles,
+ * OutOfVehicle 0x448c80) and gives him his TAD back - but with no protection: he appears in the middle of the
+ * wreck's own fireballs: ~0.2 s after VehicleDie six DMGTYPE_OTHER_EXPLOSION (0x45) hits of 20 land around the
+ * wreck (Wine 2026-11-20, Desert 1 Tan jeep: 1356..1435, 314..396 round the jeep at 1416,392; Sarge put at 1392,368)
+ * = 120 damage against his 60 - he dies right after the bail-out unless the mission-start invulnerability is still
+ * running (one unprotected Wine run: health 53 -> 0 at +0.5 s).
+ * Now ([gameplay] vehicle_bailout=1): after the game's bail-out from a wreck he loses BAILOUT_HURT_PCT of his
+ * full health (never below 1 - "maybe hurt a little") and is invulnerable for BAILOUT_SAFE_MS through the
+ * game's own invulnerableTimer (SARGE +0x2dc, ms; SargeDamage 0x447fc0 ignores all damage while it runs, the
+ * Sarge update 0x446c95 counts it down by the frame time) - time to run from the wreck. Off: the game's way. */
+#define VEH_DYING          2                             /* VehicleDie: state 2 (VEHICLE_DYING), health 0, then SargeOutVehicle */
+#define SARGE_STATE(s)     (*(int *)((s) + 0x68))
+#define SARGE_MAX_HEALTH(s) (*(short *)((s) + 0x1e))
+#define SARGE_INVULN_MS(s) (*(int *)((s) + 0x2dc))       /* invulnerableTimer */
+#define BAILOUT_HURT_PCT   10
+#define BAILOUT_SAFE_MS    2500
+
+static struct { BYTE *s; DWORD until; int hp, x, y, st; } g_watch;   /* log >= 2: Sarge for a few seconds after a bail-out */
+
+static void watch_frame(void)
+{
+    BYTE *s = g_watch.s;
+    if (!s) return;
+    if (s != PLAYER_SARGE || GetTickCount() > g_watch.until) { g_watch.s = NULL; return; }
+    int hp = ITEM_HEALTH(s), x = *(short *)(s + 4), y = *(short *)(s + 6), st = SARGE_STATE(s);
+    if (hp != g_watch.hp || st != g_watch.st || x != g_watch.x || y != g_watch.y)
+        mlog("bailout: Sarge health %d state %d at %d,%d (invulnerable %d ms)", hp, st, x, y, SARGE_INVULN_MS(s));
+    g_watch.hp = hp; g_watch.x = x; g_watch.y = y; g_watch.st = st;
+}
+
+static void bail_out(BYTE *s, BYTE *v)
+{
+    int hp = ITEM_HEALTH(s), max = SARGE_MAX_HEALTH(s);
+    if (g_cfg.vehicle_bailout && hp > 0) {
+        int hurt = max * BAILOUT_HURT_PCT / 100;
+        if (hurt < 1) hurt = 1;
+        ITEM_HEALTH(s) = (short)(hp - hurt < 1 ? 1 : hp - hurt);
+        if (SARGE_INVULN_MS(s) < BAILOUT_SAFE_MS) SARGE_INVULN_MS(s) = BAILOUT_SAFE_MS;
+    }
+    mlog("bailout: vehicle %p destroyed with Sarge inside - out at %d,%d health %d -> %d/%d%s", v, *(short *)(s + 4), *(short *)(s + 6),
+         hp, ITEM_HEALTH(s), max, g_cfg.vehicle_bailout ? ", invulnerable for a moment" : " (vehicle_bailout off)");
+    if (g_cfg.log >= 2) { g_watch.s = s; g_watch.until = GetTickCount() + 6000; g_watch.hp = -1; }
+}
+
 void __fastcall capture_sarge_out(BYTE *s)
 {
     BYTE *v = s ? SARGE_VEHICLE(s) : NULL;
+    int wrecked = v && VEH_STATE(v) == VEH_DYING;
     capture_sarge_out_original(s);
     if (v && v == g_cap.v && SARGE_VEHICLE(s) != v) release();
+    if (wrecked && SARGE_VEHICLE(s) != v) bail_out(s, v);
 }
 
 void __fastcall capture_unit_enter(BYTE *unit, BYTE *v)
@@ -354,8 +425,10 @@ static void update_seen(BYTE *v)
 }
 
 /* Once per gameplay frame (gameplay.c). */
+
 void capture_frame(void)
 {
+    watch_frame();
     if (g_cfg.log >= 2 && capture_allowed()) {           /* every 10 s: other armies' vehicles (staging tests) */
         static DWORD last;
         DWORD now = GetTickCount();
@@ -380,7 +453,7 @@ void capture_frame(void)
     if (!s || SARGE_VEHICLE(s) != g_cap.v || UID(g_cap.v) != g_cap.uid_now) {
         /* left without SargeOutVehicle (mission end / restart: the vehicle may be freed) - forget it */
         mlog("capture: captured vehicle %p gone (new mission?) - forgotten", g_cap.v);
-        if (g_cap.legion && LEG_VEH(g_cap.legion, CAPTURE_SLOT) == g_cap.v) LEG_VEH(g_cap.legion, CAPTURE_SLOT) = NULL;
+        slot_clear(g_cap.legion, g_cap.v);
         memset(&g_cap, 0, sizeof g_cap);
         return;
     }

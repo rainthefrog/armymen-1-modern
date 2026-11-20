@@ -104,6 +104,7 @@ struct Config {
     int weapon_range_pct;           /* [gameplay] weapon_range_pct (default 120) */
     int downhill_hits;              /* [gameplay] downhill_hits: direct fire hits units below / above (vehicles on hills: bullets.c) */
     int drive_enemy_vehicles;       /* [gameplay] drive_enemy_vehicles: Sarge may drive empty enemy vehicles (capture.c) */
+    int vehicle_bailout;            /* [gameplay] vehicle_bailout: Sarge leaves a destroyed vehicle alive (capture.c) */
     int vehicle_reverse;            /* [controls] vehicle_reverse: click-to-drive plans with reversing (vehicles.c) */
     int turret_smooth;              /* [controls] turret_smooth: turret holds its aim while the hull turns, eased (vehicles.c) */
     int vehicle_unstick;            /* [controls] vehicle_unstick: a wedged vehicle may back out; no creeping into objects */

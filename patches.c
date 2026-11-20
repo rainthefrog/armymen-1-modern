@@ -298,7 +298,8 @@ void patches_apply(void)
     hook_call("gameplay: trooper squash on a blocked tile (0x43c840)", 0x43c840, 0x42a230, (void *)squash_stub);
     hook_call("gameplay: trooper squash after his step (0x43c9e3)", 0x43c9e3, 0x42a230, (void *)squash_stub);
     hook_call("gameplay: crush damage of a changing object (0x40cff3)", 0x40cff3, 0x431f60, (void *)crush_stub);
-    /* Sarge drives empty enemy vehicles (capture.c, [gameplay] drive_enemy_vehicles; inactive while off) */
+    /* Sarge drives empty enemy vehicles (capture.c, [gameplay] drive_enemy_vehicles; inactive while off); the SargeOutVehicle
+     * wrap also does [gameplay] vehicle_bailout (Sarge leaves a destroyed vehicle alive, capture.c bail_out) */
     static const BYTE vkey_o[] = { 0x83,0xec,0x14, 0x53, 0x55, 0x56, 0x57 };       /* FUN_00418910: sub esp,14h; push ebx/ebp/esi/edi */
     hook_jmp("capture: Enter Vehicle key (FUN_00418910) -> capture.c", 0x418910, vkey_o, sizeof vkey_o, (void *)capture_enter_key);
     static const BYTE sin_o[] = { 0x56, 0x8b,0xf1, 0x57, 0x8b,0xfa };              /* SargeInVehicle 0x448ae0 */
