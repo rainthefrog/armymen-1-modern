@@ -163,7 +163,7 @@ static void resolve(int m, int sx, int sy)
 #define WCELL       8
 #define W_BUDGET_MS 6                    /* per frame */
 #define W_HEAP      (WG * WG * 2)
-#define NEAR_COST   3.0f                 /* extra cost of a route cell next to an obstacle */
+#define NEAR_COST   6.0f                 /* extra cost of a route cell next to an obstacle */
 #define W_LOOKAHEAD 48                   /* cells: the straightening looks at most this far ahead */
 static BYTE g_wfree[WG * WG];            /* 0 unknown, 1 free, 2 blocked - kept for the whole route build */
 static uint16_t g_wgen[WG * WG], g_wclosed[WG * WG], g_wcurgen;
@@ -202,13 +202,38 @@ static int wfree(int c)
     }
     return 1;
 }
-/* straight segment for the straightening: every 4 px on a route cell (the same clearance) */
+/* CENTRED routes (2026-11-20, user: "make sure it is centered between objects and not just right up against
+ * things"): a cell's clearance = distance in cells to the nearest cell Sarge cannot stand on (up to CLR_MAX); the
+ * route cost grows as the clearance shrinks, so the cheapest route runs down the middle of a passage. */
+#define CLR_MAX 5
+static BYTE g_wclr[WG * WG];             /* 0 unknown, else clearance + 1 - kept with g_wfree for the route build */
+static int wclear(int c)
+{
+    if (!g_wclr[c]) {
+        int x = c % WG, y = c / WG, d = CLR_MAX;
+        for (int r = 0; r <= CLR_MAX && d == CLR_MAX; r++)
+            for (int dy = -r; dy <= r && d == CLR_MAX; dy++)
+                for (int dx = -r; dx <= r; dx++) {
+                    if (abs(dx) != r && abs(dy) != r) continue;
+                    int nx = x + dx, ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= WG || ny >= WG || !wraw(ny * WG + nx)) { d = r; break; }
+                }
+        g_wclr[c] = (BYTE)(d + 1);
+    }
+    return g_wclr[c] - 1;
+}
+static float near_cost(int c) { int k = CLR_MAX - wclear(c); return k > 0 ? NEAR_COST * k * k / (float)(CLR_MAX * CLR_MAX) : 0.0f; }
+/* straight segment for the straightening: every 4 px walkable and never closer to obstacles than its two ends */
 static int wline(int x0, int y0, int x1, int y1)
 {
     int dx = x1 - x0, dy = y1 - y0, n = (abs(dx) > abs(dy) ? abs(dx) : abs(dy)) / 4 + 1;
+    int c0 = (y0 / WCELL) * WG + x0 / WCELL, c1 = (y1 / WCELL) * WG + x1 / WCELL;
+    int need = wclear(c0) < wclear(c1) ? wclear(c0) : wclear(c1);
     for (int i = 0; i <= n; i++) {
         int x = x0 + dx * i / n, y = y0 + dy * i / n;
-        if (x < 0 || y < 0 || x >= WG * WCELL || y >= WG * WCELL || !wfree((y / WCELL) * WG + x / WCELL)) return 0;
+        if (x < 0 || y < 0 || x >= WG * WCELL || y >= WG * WCELL) return 0;
+        int c = (y / WCELL) * WG + x / WCELL;
+        if (!wraw(c) || wclear(c) < need) return 0;
     }
     return 1;
 }
@@ -289,7 +314,7 @@ static int wstep(POINT *out, int max, int *n, int *found)
                 if (d >= 4 && (!wraw(cy * WG + nx) || !wraw(ny * WG + cx))) continue;   /* no corner cutting */
                 /* passable by Sarge's own rule; a cell next to an obstacle costs extra - the route keeps off objects
                  * where there is room and still fits through narrow doors */
-                float g = g_wcost[c] + (d >= 4 ? 1.4142f : 1.0f) + (wfree(nb) ? 0.0f : NEAR_COST);
+                float g = g_wcost[c] + (d >= 4 ? 1.4142f : 1.0f) + near_cost(nb);
                 if (g_wgen[nb] == g_wcurgen && g_wcost[nb] <= g) continue;
                 g_wgen[nb] = g_wcurgen; g_wcost[nb] = g; g_wfrom[nb] = c;
                 wpush(nb, g + west(nb, g_wgoal));
@@ -382,7 +407,7 @@ void missionpath_frame(void)
     if (key != g_key || (g_phase == 0 && s != g_sarge)) {       /* first play frame of a mission: Sarge's start */
         g_key = key; g_sarge = s; g_phase = 0; g_frames = 0; g_npts = 0; g_nwp = 0; g_leg = 0; g_leg_calls = 0;
         g_cx = *(short *)(s + 4); g_cy = *(short *)(s + 6);
-        memset(g_wfree, 0, sizeof g_wfree); g_wphase = 0;   /* the cell answers belong to this map */
+        memset(g_wfree, 0, sizeof g_wfree); memset(g_wclr, 0, sizeof g_wclr); g_wphase = 0;   /* the cell answers belong to this map */
         add(g_cx, g_cy, 0, 0);
         if (g_cfg.log >= 1) mlog("missionpath: mission %d, Sarge starts at %d,%d", GAME_MISSION(g), g_cx, g_cy);
         return;
