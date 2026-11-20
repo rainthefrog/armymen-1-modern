@@ -389,7 +389,7 @@ int path_regions_reachable(int sx, int sy, int tx, int ty)
 #define TILES_H       (*(unsigned short *)0x4e2ef0)
 #define VEH_BAD_TILES 1
 #define VEH_MAX_EXPAND 30000
-static int g_vbox[4], g_vself_x, g_vself_y;
+static int g_vbox[4], g_vself_x, g_vself_y, g_vself_f = -1;   /* start pose; facing -1 = unknown */
 static BYTE g_vtest[VGRID * VGRID], g_vblock[VGRID * VGRID];      /* per tile, bit d: direction d tested / blocked */
 static float g_vcost[VGRID * VGRID];
 static int g_vfrom[VGRID * VGRID];
@@ -398,17 +398,62 @@ static int g_vheap[VEH_MAX_EXPAND * 8 + 16];
 static float g_vheapf[VEH_MAX_EXPAND * 8 + 16];
 static int g_vnheap;
 
+/* Objects that hold up a vehicle on a tile (2026-11-20, user: "vehicles can get stuck on objects"): the game's own
+ * vehicle collision (game binary damageItemsInMask, exe 0x417ef0) counts, per tile the footprint newly covers, every
+ * asset / structure / obstacle with movement > 0 at the tile centre (GetObjectsIntersectPoint 0x42fca0), and wrecks;
+ * a move adding more than one such tile is refused. Sandbag walls, rocks, buildings are objects, not movement-layer
+ * tiles, so routes went straight through them and the vehicle crept into them a tile at a time until it was wedged.
+ * Bushes (class 1), fences (5) and explosives (9) are run over (damaged), so they do not count. Cached per search. */
+typedef BYTE *(__fastcall *VObjectsAtFn)(short *point);
+#define V_OBJECTS_AT   ((VObjectsAtFn)0x42fca0)          /* GetObjectsIntersectPoint: ITEM list, next at +0x60 */
+#define V_ITEM_NEXT(it) (*(BYTE **)((it) + 0x60))
+#define V_ITEM_TYPE1(it) ((int)((*(DWORD *)(it) >> 22) & 0xf))   /* ITEM_TYPE + 1 (UID bits) */
+#define V_ITEM_CLASS(it) ((int)((*(DWORD *)(it) >> 16) & 0x3f) - 1)
+#define V_OBJ_MOVEMENT(it) (*(signed char *)((it) + 0x6f))
+static BYTE g_vobj[VGRID * VGRID];                     /* per search: 0 unknown, 1 free, 2 object */
+static int vtile_object_now(int tx, int ty)
+{
+    short p[2] = { (short)(tx * VTILE + 8), (short)(ty * VTILE + 8) };
+    for (BYTE *it = V_OBJECTS_AT(p); it; it = V_ITEM_NEXT(it)) {
+        int t = V_ITEM_TYPE1(it), c = V_ITEM_CLASS(it);
+        if (t == 10) return 1;                                         /* husk (wreck) */
+        if ((t == 7 || t == 8 || t == 9) && V_OBJ_MOVEMENT(it) > 0 && c != 1 && c != 5 && c != 9) return 1;
+    }
+    return 0;
+}
+static int vtile_object(int tx, int ty)
+{
+    if (!g_cfg.vehicle_unstick) return 0;                              /* switch off: the old rule (tiles only) */
+    if (tx < 0 || ty < 0 || tx >= VGRID || ty >= VGRID) return 1;
+    BYTE *s = &g_vobj[ty * VGRID + tx];
+    if (!*s) *s = vtile_object_now(tx, ty) ? 2 : 1;
+    return *s == 2;
+}
+
+/* The vehicle's own tiles in the parked-vehicle layer (a vehicle standing still adds itself, game binary
+ * AddVehicleToVehicleLayer): with the start facing known, the tiles under its footprint at the start (+ 8 px);
+ * otherwise everything within 64 px of the start (the old rule - it also hid the vehicles parked next to it). */
+static int vtile_self(int tx, int ty)
+{
+    double cx = tx * VTILE + 8 - g_vself_x, cy = ty * VTILE + 8 - g_vself_y;
+    if (g_vself_f < 0) return fabs(cx) <= 64 && fabs(cy) <= 64;
+    double dx, dy; controls_facing_vector(g_vself_f, &dx, &dy);
+    double f = cx * dx + cy * dy, s = -cx * dy + cy * dx;
+    return f <= g_vbox[0] + 8 && f >= -g_vbox[1] - 8 && s <= g_vbox[3] + 8 && s >= -g_vbox[2] - 8;
+}
+
 static int vtile_bad(int tx, int ty)
 {
     int w = TILES_W, h = TILES_H;
     if (tx < 0 || ty < 0 || tx >= w || ty >= h || !MOVE_LAYER) return 1;
     if (MOVE_LAYER[ty * w + tx] >= 15) return 1;
-    if (VEH_LAYER && VEH_LAYER[ty * w + tx] && (abs(tx * VTILE + 8 - g_vself_x) > 64 || abs(ty * VTILE + 8 - g_vself_y) > 64)) return 1;
+    if (VEH_LAYER && VEH_LAYER[ty * w + tx] && !vtile_self(tx, ty)) return 1;
+    if (vtile_object(tx, ty)) return 1;
     return 0;
 }
 
 /* bad tiles under the footprint at world (x, y), heading (dx, dy) */
-static int vfoot_bad(double x, double y, double dx, double dy)
+static int vfoot_count(double x, double y, double dx, double dy, int cap)   /* stops counting above cap */
 {
     double l = sqrt(dx * dx + dy * dy);
     if (l < 1e-6) { dx = 0; dy = -1; l = 1; }
@@ -422,10 +467,11 @@ static int vfoot_bad(double x, double y, double dx, double dy)
             double cx = tx * VTILE + 8 - x, cy = ty * VTILE + 8 - y;
             double f = cx * dx + cy * dy, s = cx * px + cy * py;
             if (f > g_vbox[0] || f < -g_vbox[1] || s > g_vbox[3] || s < -g_vbox[2]) continue;
-            if (vtile_bad(tx, ty) && ++bad > VEH_BAD_TILES) return bad;
+            if (vtile_bad(tx, ty) && ++bad > cap) return bad;
         }
     return bad;
 }
+static int vfoot_bad(double x, double y, double dx, double dy) { return vfoot_count(x, y, dx, dy, VEH_BAD_TILES); }
 
 static const int VDX[8] = { 1, -1, 0, 0, 1, 1, -1, -1 }, VDY[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
 static int vcell_ok(int c, int d)                               /* the vehicle on tile c, moving in direction d */
@@ -478,7 +524,8 @@ int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int 
     const short *sz = (const short *)(intptr_t)(VEH_SIZES + 8 * (type >= 0 && type < 6 ? type : 0));
     for (int i = 0; i < 4; i++) g_vbox[i] = sz[i];
     if (!g_vbox[0] && !g_vbox[1]) { g_vbox[0] = 50; g_vbox[1] = 34; g_vbox[2] = 22; g_vbox[3] = 23; }
-    g_vself_x = sx; g_vself_y = sy;
+    g_vself_x = sx; g_vself_y = sy; g_vself_f = -1;
+    memset(g_vobj, 0, sizeof g_vobj);                           /* objects may have moved / been destroyed */
     int w = TILES_W, h = TILES_H;
     if (w <= 0 || h <= 0 || w > VGRID || h > VGRID || !MOVE_LAYER || max < 1) return 0;
     if (vline_ok(sx, sy, tx, ty)) {
@@ -535,6 +582,339 @@ int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int 
     }
     mlog("path: vehicle type %d (box %d,%d,%d,%d) %d,%d -> %d,%d: %s after %d tiles, %d waypoints", type, g_vbox[0], g_vbox[1], g_vbox[2], g_vbox[3], sx, sy, tx, ty, found ? "found" : "partial", expanded, n);
     return n;
+}
+
+
+/* ---------------------------------------------------------------- vehicle routes with reversing (2026-11-20, user:
+ * "vehicle navigation needs to be reworked to allow for reversing to reorient the vehicle to fit through gaps").
+ * Hybrid A* over (x, y, heading): a state is a pose (float x, y; heading 0..31 = game facing / 8, the game's own
+ * mask resolution - game binary rounds the facing to a multiple of 8 for vehiclemasks), closed per 8 px cell and
+ * heading. Motions from a pose: forward or backward g_ha_step px along the heading, straight or turning one heading
+ * step on the way (the vehicle turns 8 facings per 60 ms while it moves), and for vehicles that can turn on the spot
+ * (Sarge's tank and halftrack; jeep and convoy only turn while moving - VehicleUpdate scales their spin by speed)
+ * one heading step without moving. Backward motion costs HA_REV_COST times more, a change of direction
+ * HA_SWITCH_COST px, so reversing is used where it is needed (lining up with a gap, backing out of a corner).
+ * Each pose on the way is tested with the vehicle's oriented footprint (vfoot_bad, the same test as the tile
+ * routes: movement layer, parked vehicles, blocking objects; at most VEH_BAD_TILES), cached per cell and heading.
+ * Heuristic: distance to the goal over 16 px tiles around blocked tiles (one Dijkstra from the goal per plan), at
+ * least the straight distance. The search runs in slices (vehicles.c: a few ms per gameplay frame) and stops
+ * after HA_MAX_NODES poses; then the pose that got closest is used (partial route, the driver plans again from
+ * its end). */
+#define HA_CELL        8
+#define HA_GRID        (VGRID * VTILE / HA_CELL)        /* 512 cells per side */
+#define HA_HEADS       32
+#define HA_MAX_NODES   60000
+#define HA_HASH        (1 << 17)
+#define HA_REV_COST    1.6f
+#define HA_SWITCH_COST 40.0f
+#define HA_TURN_COST   3.0f
+#define HA_SPIN_COST   9.0f
+#define HA_GOAL        20.0f                          /* px: a pose this close to the target is there */
+#define HA_SUBSTEPS    4
+#define HA_ESCAPE      56.0f                          /* cost (px) from the start within which a wedged start may escape */
+typedef struct { float x, y, g, f; int parent; signed char h, dir; } HaNode;
+static HaNode g_ha[HA_MAX_NODES];
+static int g_ha_n;
+static int g_ha_hkey[HA_HASH], g_ha_hnode[HA_HASH];      /* (cell, heading) + 1 -> newest node; key 0 = empty */
+static unsigned g_ha_ftest[HA_GRID * HA_GRID], g_ha_fbad[HA_GRID * HA_GRID];   /* bit h: footprint tested / bad */
+static float g_ha_h2d[VGRID * VGRID];
+static double g_ha_dx[HA_HEADS], g_ha_dy[HA_HEADS];
+static int g_ha_heap[HA_MAX_NODES * 2], g_ha_nheap;
+static float g_ha_tx, g_ha_ty;
+static int g_ha_type, g_ha_spin, g_ha_step, g_ha_best, g_ha_running, g_ha_expanded;
+static BYTE g_ha_closed_bits[(HA_GRID * HA_GRID * HA_HEADS) / 8];
+static int g_ha_phase, g_ha_sx, g_ha_sy, g_ha_h0, g_ha_box[4], g_ha_self[3], g_ha_retargeted;   /* 0 = tile distances, 1 = search */
+
+static int ha_foot_ok(float x, float y, int h)
+{
+    if (x < 0 || y < 0) return 0;
+    int cx = (int)x / HA_CELL, cy = (int)y / HA_CELL;
+    if (cx >= HA_GRID || cy >= HA_GRID) return 0;
+    int c = cy * HA_GRID + cx;
+    h &= HA_HEADS - 1;
+    unsigned bit = 1u << h;
+    if (!(g_ha_ftest[c] & bit)) {
+        g_ha_ftest[c] |= bit;
+        if (vfoot_bad(cx * HA_CELL + HA_CELL / 2, cy * HA_CELL + HA_CELL / 2, g_ha_dx[h], g_ha_dy[h]) > VEH_BAD_TILES)
+            g_ha_fbad[c] |= bit;
+    }
+    return !(g_ha_fbad[c] & bit);
+}
+/* Near the start (motions within HA_ESCAPE px of cost) a vehicle that already stands on blocked tiles (wedged, or
+ * against a fence after a partial route) may move through poses no worse than its start: otherwise every motion
+ * from a blocked start fails and it can never plan its way out (Wine 2026-11-20: jeep against the Boot Camp wire). */
+static int g_ha_start_bad;
+static int ha_foot_escape(float x, float y, int h)
+{
+    if (ha_foot_ok(x, y, h)) return 1;
+    if (g_ha_start_bad <= VEH_BAD_TILES || x < 0 || y < 0) return 0;
+    return vfoot_count(x, y, g_ha_dx[h & (HA_HEADS - 1)], g_ha_dy[h & (HA_HEADS - 1)], g_ha_start_bad) <= g_ha_start_bad;
+}
+static void ha_push(int n)
+{
+    if (g_ha_nheap >= (int)(sizeof g_ha_heap / sizeof *g_ha_heap)) return;
+    int i = g_ha_nheap++; float f = g_ha[n].f;
+    while (i > 0) { int p = (i - 1) / 2; if (g_ha[g_ha_heap[p]].f <= f) break; g_ha_heap[i] = g_ha_heap[p]; i = p; }
+    g_ha_heap[i] = n;
+}
+static int ha_pop(void)
+{
+    int top = g_ha_heap[0], n = g_ha_heap[--g_ha_nheap], i = 0;
+    float f = g_ha[n].f;
+    for (;;) {
+        int l = 2 * i + 1, r = l + 1, m = i; float mf = f;
+        if (l < g_ha_nheap && g_ha[g_ha_heap[l]].f < mf) { m = l; mf = g_ha[g_ha_heap[l]].f; }
+        if (r < g_ha_nheap && g_ha[g_ha_heap[r]].f < mf) { m = r; }
+        if (m == i) break;
+        g_ha_heap[i] = g_ha_heap[m]; i = m;
+    }
+    g_ha_heap[i] = n;
+    return top;
+}
+static int ha_key(float x, float y, int h) { return (((int)y / HA_CELL) * HA_GRID + (int)x / HA_CELL) * HA_HEADS + (h & (HA_HEADS - 1)); }
+static float ha_heur(float x, float y)
+{
+    float dx = x - g_ha_tx, dy = y - g_ha_ty, e = sqrtf(dx * dx + dy * dy);
+    int tx = (int)x / VTILE, ty = (int)y / VTILE;
+    float t = (x >= 0 && y >= 0 && tx < VGRID && ty < VGRID) ? g_ha_h2d[ty * VGRID + tx] : 1e9f;
+    if (t >= 1e8f) t = e + 400.0f;                      /* not connected on the tile grid: discourage, do not forbid */
+    return t > e ? t : e;
+}
+/* the node for (x, y, h) to be (re)opened with cost g, or -1 when a cheaper one exists / it is closed / full */
+static int ha_node_for(float x, float y, int h, float g)
+{
+    if (x < 0 || y < 0 || (int)x / HA_CELL >= HA_GRID || (int)y / HA_CELL >= HA_GRID) return -1;
+    int key = ha_key(x, y, h);
+    if (g_ha_closed_bits[key >> 3] & (1 << (key & 7))) return -1;
+    if (g_ha_n >= HA_MAX_NODES) return -1;
+    unsigned s = ((unsigned)(key + 1) * 2654435761u) & (HA_HASH - 1);
+    for (int probe = 0; probe < 64; probe++, s = (s + 1) & (HA_HASH - 1)) {
+        if (g_ha_hkey[s] == key + 1) {
+            if (g_ha[g_ha_hnode[s]].g <= g) return -1;
+            g_ha_hnode[s] = g_ha_n;
+            return g_ha_n++;
+        }
+        if (!g_ha_hkey[s]) {
+            g_ha_hkey[s] = key + 1; g_ha_hnode[s] = g_ha_n;
+            return g_ha_n++;
+        }
+    }
+    return -1;
+}
+
+/* Start a plan for vehicle `type` (VEH_TYPE - 1) from pose (sx, sy, facing 0..255) to (tx, ty).
+ * can_spin: the vehicle turns without moving. step: px per motion. Returns 0 if it cannot start. */
+int path_vehicle_plan_begin(int type, int sx, int sy, int facing, int tx, int ty, int can_spin, int step)
+{
+    const short *sz = (const short *)(intptr_t)(VEH_SIZES + 8 * (type >= 0 && type < 6 ? type : 0));
+    for (int i = 0; i < 4; i++) g_vbox[i] = sz[i];
+    if (!g_vbox[0] && !g_vbox[1]) { g_vbox[0] = 50; g_vbox[1] = 34; g_vbox[2] = 22; g_vbox[3] = 23; }
+    g_vself_x = sx; g_vself_y = sy; g_vself_f = facing & 255;
+    int w = TILES_W, hh = TILES_H;
+    g_ha_running = 0;
+    if (w <= 0 || hh <= 0 || w > VGRID || hh > VGRID || !MOVE_LAYER) return 0;
+    if (tx < 0 || ty < 0 || tx / VTILE >= w || ty / VTILE >= hh) return 0;
+    memset(g_vobj, 0, sizeof g_vobj);
+    memset(g_ha_ftest, 0, sizeof g_ha_ftest); memset(g_ha_fbad, 0, sizeof g_ha_fbad);
+    memset(g_ha_hkey, 0, sizeof g_ha_hkey); memset(g_ha_closed_bits, 0, sizeof g_ha_closed_bits);
+    for (int h = 0; h < HA_HEADS; h++) controls_facing_vector(h * (256 / HA_HEADS), &g_ha_dx[h], &g_ha_dy[h]);
+    g_ha_type = type; g_ha_spin = can_spin; g_ha_step = step < 8 ? 8 : step;
+    g_ha_tx = (float)tx; g_ha_ty = (float)ty;
+    /* tile distance to the goal around blocked tiles (Dijkstra, 8 neighbours) - reuses the tile route's heap */
+    for (int i = 0; i < VGRID * VGRID; i++) g_ha_h2d[i] = 1e9f;
+    memset(g_vclosed, 0, sizeof g_vclosed);
+    g_vnheap = 0;
+    int goal = (ty / VTILE) * VGRID + tx / VTILE;
+    g_ha_h2d[goal] = 0; vpush(goal, 0);
+    g_ha_sx = sx; g_ha_sy = sy; g_ha_h0 = ((facing + 4) & 255) / (256 / HA_HEADS);
+    memcpy(g_ha_box, g_vbox, sizeof g_ha_box); g_ha_self[0] = sx; g_ha_self[1] = sy; g_ha_self[2] = g_vself_f;
+    g_ha_start_bad = vfoot_count(sx, sy, g_ha_dx[g_ha_h0], g_ha_dy[g_ha_h0], 64);   /* wedged at the start: see ha_foot_escape */
+    g_ha_phase = 0; g_ha_retargeted = 0;   /* the Dijkstra and the search run in path_vehicle_plan_step slices */
+    g_ha_running = 1;
+    return 1;
+}
+
+/* the search's start, once the tile distances are done */
+static int ha_start(void)
+{
+    g_ha_n = 0; g_ha_nheap = 0; g_ha_expanded = 0;
+    int h0 = g_ha_h0;
+    int n0 = ha_node_for((float)g_ha_sx, (float)g_ha_sy, h0, 0);
+    if (n0 < 0) return 0;
+    HaNode *s = &g_ha[n0];
+    s->x = (float)g_ha_sx; s->y = (float)g_ha_sy; s->g = 0; s->h = (signed char)h0; s->dir = 0; s->parent = -1;
+    s->f = ha_heur(s->x, s->y);
+    g_ha_best = n0;
+    ha_push(n0);
+    g_ha_phase = 1;
+    return 1;
+}
+
+/* Run the search for up to budget_ms. Returns 0 = still searching, 1 = found, 2 = gave up (closest pose), -1 = none. */
+int path_vehicle_plan_step(double budget_ms)
+{
+    if (!g_ha_running) return -1;
+    LARGE_INTEGER t0, t, fq; QueryPerformanceCounter(&t0); QueryPerformanceFrequency(&fq);
+    /* other routes (missionpath.c driven legs) share the footprint state between slices: this plan's back */
+    memcpy(g_vbox, g_ha_box, sizeof g_vbox); g_vself_x = g_ha_self[0]; g_vself_y = g_ha_self[1]; g_vself_f = g_ha_self[2];
+    if (g_ha_phase == 0) {          /* tile distance to the goal around blocked tiles (Dijkstra, 8 neighbours) */
+        int w = TILES_W, hh = TILES_H, it = 0;
+        while (g_vnheap > 0) {
+            if ((++it & 255) == 0) {
+                QueryPerformanceCounter(&t);
+                if ((double)(t.QuadPart - t0.QuadPart) * 1000.0 / (double)fq.QuadPart > budget_ms) return 0;
+            }
+            int c = vpop();
+            if (g_vclosed[c]) continue;
+            g_vclosed[c] = 1;
+            int cx = c % VGRID, cy = c / VGRID;
+            for (int d = 0; d < 8; d++) {
+                int nx = cx + VDX[d], ny = cy + VDY[d];
+                if (nx < 0 || ny < 0 || nx >= w || ny >= hh) continue;
+                int n = ny * VGRID + nx;
+                if (g_vclosed[n] || vtile_bad(nx, ny)) continue;
+                float g = g_ha_h2d[c] + (d >= 4 ? 1.4142f : 1.0f) * VTILE;
+                if (g < g_ha_h2d[n]) { g_ha_h2d[n] = g; vpush(n, g); }
+            }
+        }
+        /* the target cannot be reached on the tile grid (behind a fence, inside a building): drive to the reachable
+         * tile nearest to it instead (flood from the start), so the search does not burn its whole budget and the
+         * driver does not plan again and again into the obstacle (Wine 2026-11-20, Boot Camp wire) */
+        int st = (g_ha_sy / VTILE) * VGRID + g_ha_sx / VTILE;
+        float sd = 1e9f;                /* the start tile itself may be blocked (against a fence): its neighbours too */
+        for (int oy = -1; oy <= 1; oy++)
+            for (int ox = -1; ox <= 1; ox++) {
+                int n = st + oy * VGRID + ox;
+                if (n >= 0 && n < VGRID * VGRID && g_ha_h2d[n] < sd) sd = g_ha_h2d[n];
+            }
+        if (sd >= 1e8f && !g_ha_retargeted) {
+            static int q[VGRID * VGRID];
+            int qh = 0, qt = 0, best = st;
+            float bd = 1e30f;
+            memset(g_vseen, 0, sizeof g_vseen);
+            q[qt++] = st; g_vseen[st] = 1;
+            while (qh < qt) {
+                int c = q[qh++], cx = c % VGRID, cy = c / VGRID;
+                float ex = cx * VTILE + 8 - g_ha_tx, ey = cy * VTILE + 8 - g_ha_ty, e = ex * ex + ey * ey;
+                if (e < bd) { bd = e; best = c; }
+                for (int d = 0; d < 8; d++) {
+                    int nx = cx + VDX[d], ny = cy + VDY[d];
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= hh) continue;
+                    int n = ny * VGRID + nx;
+                    if (g_vseen[n] || vtile_bad(nx, ny)) continue;
+                    g_vseen[n] = 1; q[qt++] = n;
+                }
+            }
+            g_ha_retargeted = 1;
+            mlog("path: vehicle target %.0f,%.0f not reachable - nearest reachable %d,%d", g_ha_tx, g_ha_ty, (best % VGRID) * VTILE + 8, (best / VGRID) * VTILE + 8);
+            g_ha_tx = (float)((best % VGRID) * VTILE + 8); g_ha_ty = (float)((best / VGRID) * VTILE + 8);
+            for (int i = 0; i < VGRID * VGRID; i++) g_ha_h2d[i] = 1e9f;
+            memset(g_vclosed, 0, sizeof g_vclosed);
+            g_vnheap = 0;
+            g_ha_h2d[best] = 0; vpush(best, 0);
+            return 0;                   /* the distances again, next slice */
+        }
+        if (!ha_start()) { g_ha_running = 0; return -1; }
+    }
+    float best_h = ha_heur(g_ha[g_ha_best].x, g_ha[g_ha_best].y);
+    int iter = 0;
+    while (g_ha_nheap > 0) {
+        if ((++iter & 31) == 0) {
+            QueryPerformanceCounter(&t);
+            if ((double)(t.QuadPart - t0.QuadPart) * 1000.0 / (double)fq.QuadPart > budget_ms) return 0;
+        }
+        int c = ha_pop();
+        HaNode cn = g_ha[c];
+        int key = ha_key(cn.x, cn.y, cn.h);
+        if (g_ha_closed_bits[key >> 3] & (1 << (key & 7))) continue;
+        g_ha_closed_bits[key >> 3] |= (BYTE)(1 << (key & 7));
+        g_ha_expanded++;
+        float dx = cn.x - g_ha_tx, dy = cn.y - g_ha_ty;
+        if (dx * dx + dy * dy <= HA_GOAL * HA_GOAL) { g_ha_best = c; g_ha_running = 0; return 1; }
+        float hb = ha_heur(cn.x, cn.y);
+        if (hb < best_h) { best_h = hb; g_ha_best = c; }
+        if (g_ha_n >= HA_MAX_NODES - 16) break;
+        for (int dir = 1; dir >= -1; dir -= 2)
+            for (int dh = -1; dh <= 1; dh++) {
+                float x = cn.x, y = cn.y; int ok = 1;
+                for (int k = 1; k <= HA_SUBSTEPS && ok; k++) {
+                    /* heading in the middle of this part (for the move) and at its end (for the footprint) */
+                    int hm = (cn.h + (int)lroundf((float)dh * (2 * k - 1) / (2 * HA_SUBSTEPS))) & (HA_HEADS - 1);
+                    int hk = (cn.h + (int)lroundf((float)dh * k / HA_SUBSTEPS)) & (HA_HEADS - 1);
+                    x += (float)(dir * g_ha_dx[hm] * g_ha_step / HA_SUBSTEPS);
+                    y += (float)(dir * g_ha_dy[hm] * g_ha_step / HA_SUBSTEPS);
+                    ok = cn.g < HA_ESCAPE ? ha_foot_escape(x, y, hk) : ha_foot_ok(x, y, hk);
+                }
+                if (!ok) continue;
+                int nh = (cn.h + dh) & (HA_HEADS - 1);
+                float g = cn.g + g_ha_step * (dir < 0 ? HA_REV_COST : 1.0f) + (dh ? HA_TURN_COST : 0)
+                        + (cn.dir && cn.dir != dir ? HA_SWITCH_COST : 0);
+                int n = ha_node_for(x, y, nh, g);
+                if (n < 0) continue;
+                HaNode *m = &g_ha[n];
+                m->x = x; m->y = y; m->h = (signed char)nh; m->dir = (signed char)dir; m->parent = c; m->g = g;
+                m->f = g + ha_heur(x, y);
+                ha_push(n);
+            }
+        if (g_ha_spin)
+            for (int dh = -1; dh <= 1; dh += 2) {
+                int nh = (cn.h + dh) & (HA_HEADS - 1);
+                if (!(cn.g < HA_ESCAPE ? ha_foot_escape(cn.x, cn.y, nh) : ha_foot_ok(cn.x, cn.y, nh))) continue;
+                float g = cn.g + HA_SPIN_COST;
+                int n = ha_node_for(cn.x, cn.y, nh, g);
+                if (n < 0) continue;
+                HaNode *m = &g_ha[n];
+                m->x = cn.x; m->y = cn.y; m->h = (signed char)nh; m->dir = 0; m->parent = c; m->g = g;
+                m->f = g + ha_heur(cn.x, cn.y);
+                ha_push(n);
+            }
+    }
+    g_ha_running = 0;
+    return g_ha[g_ha_best].parent >= 0 ? 2 : -1;
+}
+
+/* The result: poses after the start up to the end (the first max of them). Returns the count. */
+int path_vehicle_plan_result(VehPose *out, int max)
+{
+    int total = 0, nrev = 0, nspin = 0;
+    for (int c = g_ha_best; c >= 0 && g_ha[c].parent >= 0; c = g_ha[c].parent) total++;
+    int n = total > max ? max : total, skip = total - n, i = n;
+    for (int c = g_ha_best; c >= 0 && g_ha[c].parent >= 0; c = g_ha[c].parent) {
+        if (skip > 0) { skip--; continue; }
+        i--;
+        out[i].x = (short)lroundf(g_ha[c].x); out[i].y = (short)lroundf(g_ha[c].y);
+        out[i].facing = (short)(g_ha[c].h * (256 / HA_HEADS)); out[i].dir = g_ha[c].dir;
+        nrev += out[i].dir < 0; nspin += out[i].dir == 0;
+    }
+    mlog("path: vehicle plan (reverse) type %d -> %.0f,%.0f: %d poses (%d backward, %d on the spot), %d expanded, %d nodes",
+         g_ha_type, g_ha_tx, g_ha_ty, n, nrev, nspin, g_ha_expanded, g_ha_n);
+    return n;
+}
+
+/* Tiles under the footprint of vehicle type (VEH_TYPE - 1) at (x, y, facing) that block it by the game's own rule
+ * (movement layer >= 15, or a blocking object as vtile_object - not the parked-vehicle layer: a vehicle standing
+ * still is in it itself). vehicles.c: how deep a vehicle is wedged. */
+int path_vehicle_overlap(int type, double x, double y, int facing, int *objects)
+{
+    const short *sz = (const short *)(intptr_t)(VEH_SIZES + 8 * (type >= 0 && type < 6 ? type : 0));
+    int box[4]; for (int i = 0; i < 4; i++) box[i] = sz[i];
+    if (!box[0] && !box[1]) { box[0] = 50; box[1] = 34; box[2] = 22; box[3] = 23; }
+    double dx, dy; controls_facing_vector(facing, &dx, &dy);
+    double px = -dy, py = dx;
+    int reach = box[0]; for (int i = 1; i < 4; i++) if (box[i] > reach) reach = box[i];
+    int w = TILES_W, h = TILES_H, bad = 0, obj = 0;
+    if (objects) *objects = 0;
+    if (!MOVE_LAYER || w <= 0 || h <= 0) return 0;
+    for (int ty = (int)(y - reach) / VTILE; ty <= (int)(y + reach) / VTILE; ty++)
+        for (int tx = (int)(x - reach) / VTILE; tx <= (int)(x + reach) / VTILE; tx++) {
+            double cx = tx * VTILE + 8 - x, cy = ty * VTILE + 8 - y;
+            double f = cx * dx + cy * dy, s = cx * px + cy * py;
+            if (f > box[0] || f < -box[1] || s > box[3] || s < -box[2]) continue;
+            if (tx < 0 || ty < 0 || tx >= w || ty >= h || MOVE_LAYER[ty * w + tx] >= 15) bad++;
+            else if (vtile_object_now(tx, ty)) { bad++; obj++; }
+        }
+    if (objects) *objects = obj;
+    return bad;
 }
 
 void path_regions_step(void) { PROF_BEGIN(t); path_regions_step_body(); PROF_END(t, PR_REGIONS); }   /* timed (trace) */

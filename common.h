@@ -104,6 +104,9 @@ struct Config {
     int weapon_range_pct;           /* [gameplay] weapon_range_pct (default 120) */
     int downhill_hits;              /* [gameplay] downhill_hits: direct fire hits units below / above (vehicles on hills: bullets.c) */
     int drive_enemy_vehicles;       /* [gameplay] drive_enemy_vehicles: Sarge may drive empty enemy vehicles (capture.c) */
+    int vehicle_reverse;            /* [controls] vehicle_reverse: click-to-drive plans with reversing (vehicles.c) */
+    int turret_smooth;              /* [controls] turret_smooth: turret holds its aim while the hull turns, eased (vehicles.c) */
+    int vehicle_unstick;            /* [controls] vehicle_unstick: a wedged vehicle may back out; no creeping into objects */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
     int hud_corners;                /* [hud] corners: message box / minimap in the bottom corners (layout.c) */
     float hud_corner_scale;         /* [hud] corner_scale: 1 .. 3 in quarter steps (default 1.5) */
@@ -382,6 +385,19 @@ int path_find(int sx, int sy, int tx, int ty, POINT *out, int max);   /* pathfin
 int path_reachable(int sx, int sy, int tx, int ty, int budget_ms);   /* pathfind.c: 1 yes, 0 no, -1 undecided */
 void path_regions_step(void);           /* pathfind.c: one slice of the whole-map walkable areas (per gameplay frame) */
 int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int max);   /* pathfind.c: route by the vehicle footprint */
+/* vehicles.c / pathfind.c (2026-11-20): vehicle routes with reversing, smooth turret, getting unstuck */
+typedef struct { short x, y, facing; signed char dir; } VehPose;   /* dir 1 forward, -1 backward, 0 turn on the spot */
+int path_vehicle_plan_begin(int type, int sx, int sy, int facing, int tx, int ty, int can_spin, int step);
+int path_vehicle_plan_step(double budget_ms);       /* 0 searching, 1 found, 2 closest pose, -1 none */
+int path_vehicle_plan_result(VehPose *out, int max);
+int path_vehicle_overlap(int type, double x, double y, int facing, int *objects);   /* blocking tiles under the footprint (objects: of them blocking objects) */
+void vehicles_drive_start(BYTE *v, int tx, int ty, DWORD now);  /* controls.c: click to drive (vehicle_reverse) */
+int vehicles_drive(BYTE *v, DWORD now);             /* per frame while driving there: 0 = arrived / gave up */
+int vehicles_route(POINT *pts, int max);            /* the rest of the route (modern.c route line) */
+int vehicles_steer(BYTE *v, int heading, int drive, int slow);   /* hull toward heading; drive 1 / -1 / 0 */
+void vehicles_aim_turret(BYTE *v, double wx, double wy, DWORD now, int snap);   /* turret_smooth */
+void __fastcall vehicles_update(BYTE *v);           /* call 0x419c52 -> VehicleUpdate 0x4176f0 */
+void __fastcall vehicles_turret_lock(BYTE *v, int spin);   /* call 0x417ce8 -> VehicleLockTurret 0x417eb0 */
 void hdworld_shift_rows(Surf *b, int n);
 void hdworld_restore_field(Surf *b, int y, int x0, int x1);   /* hdworld.c: battlefield bytes back from the map (layout.c) */
 void hdworld_forget(Surf *s);                          /* surface.c: before freeing its references */
