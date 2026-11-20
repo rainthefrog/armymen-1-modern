@@ -76,6 +76,7 @@ void config_load(void)
     g_cfg.fix_squash = GetPrivateProfileIntA("gameplay", "fix_squash", 1, ini);
     g_cfg.see_interior = GetPrivateProfileIntA("display", "see_interior", 1, ini);
     g_cfg.menu_text = GetPrivateProfileIntA("display", "menu_text", 1, ini);
+    g_cfg.radio_overlay = GetPrivateProfileIntA("display", "radio_overlay", 1, ini);
     g_cfg.weapon_range_pct = GetPrivateProfileIntA("gameplay", "weapon_range_pct", 120, ini);
     g_cfg.map_edge_fog = GetPrivateProfileIntA("display", "map_edge_fog", 1, ini);
     g_cfg.hud_corners = GetPrivateProfileIntA("hud", "corners", 1, ini);

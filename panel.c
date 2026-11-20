@@ -83,6 +83,7 @@ static Row g_rows[] = {
     { "Building interior view",   &g_cfg.see_interior, "display", "see_interior" },
     { "Sharp menu text",          &g_cfg.menu_text, "display", "menu_text" },                  /* 19 */
     { "No corner squash",         &g_cfg.fix_squash, "gameplay", "fix_squash" },               /* 20 */
+    { "Radio messages as overlay", &g_cfg.radio_overlay, "display", "radio_overlay" },        /* 21 */
 };
 #define ROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 #define SPEED_ROW ROWS                 /* game speed */

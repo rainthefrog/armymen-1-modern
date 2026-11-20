@@ -635,6 +635,8 @@ static ID3D11Texture2D *g_ovl;
 static ID3D11ShaderResourceView *g_ovl_srv;
 static ID3D11BlendState *g_blend_pm;
 static int g_ovl_w, g_ovl_h;
+typedef struct { ID3D11Texture2D *tex; ID3D11ShaderResourceView *srv; int w, h; } Layer;   /* draw_layer */
+static Layer g_radio_layer;                                                              /* radio.c messages */
 void gpu_release(void)
 {
     release_textures();
@@ -643,6 +645,7 @@ void gpu_release(void)
     RELEASE(g_imask, ID3D11Texture2D);
     RELEASE(g_ovl_srv, ID3D11ShaderResourceView);
     RELEASE(g_ovl, ID3D11Texture2D);
+    RELEASE(g_radio_layer.srv, ID3D11ShaderResourceView); RELEASE(g_radio_layer.tex, ID3D11Texture2D); g_radio_layer.w = g_radio_layer.h = 0;
     RELEASE(g_blend_pm, ID3D11BlendState);
     g_ovl_w = g_ovl_h = 0;
     RELEASE(g_vs, ID3D11VertexShader);
@@ -667,32 +670,33 @@ void gpu_release(void)
 }
 
 /* ---------------------------------------------------------------- menu label layer (menutext.c, 2026-11-20) */
-static unsigned g_ovl_ver;
 int gpu_overlay_ready(void) { return g_ps_overlay != NULL; }
 static void draw(ID3D11DeviceContext *ctx, ID3D11PixelShader *ps, float x, float y, float w, float h);
-/* over the menu picture at dest (w x h game px): the labels, premultiplied, at window resolution */
-static void draw_overlay(ID3D11Device *dev, ID3D11DeviceContext *ctx, RECT dest, int w, int h)
+/* one premultiplied window-resolution layer over the picture at dest (w x h game px), from provider: the menu
+ * labels (menutext.c) and, under them, the radio messages (radio.c, 2026-11-20) */
+typedef int (*LayerFn)(int dw, int dh, int pw, int ph, const uint32_t **pix, unsigned *ver, RECT *dirty);
+static void draw_layer(ID3D11Device *dev, ID3D11DeviceContext *ctx, RECT dest, int w, int h, LayerFn provider, Layer *L)
 {
     if (!g_ps_overlay) return;
     int dw = dest.right - dest.left, dh = dest.bottom - dest.top;
     const uint32_t *pix = NULL; unsigned ver = 0; RECT dirty;
-    if (dw <= 0 || dh <= 0 || !menutext_overlay(dw, dh, w, h, &pix, &ver, &dirty) || !pix) return;
+    if (dw <= 0 || dh <= 0 || !provider(dw, dh, w, h, &pix, &ver, &dirty) || !pix) return;
     int fresh = 0;
-    if (!g_ovl || g_ovl_w != dw || g_ovl_h != dh) {
-        if (g_ovl_srv) { ID3D11ShaderResourceView_Release(g_ovl_srv); g_ovl_srv = NULL; }
-        if (g_ovl) { ID3D11Texture2D_Release(g_ovl); g_ovl = NULL; }
+    if (!L->tex || L->w != dw || L->h != dh) {
+        if (L->srv) { ID3D11ShaderResourceView_Release(L->srv); L->srv = NULL; }
+        if (L->tex) { ID3D11Texture2D_Release(L->tex); L->tex = NULL; }
         D3D11_TEXTURE2D_DESC td = { (UINT)dw, (UINT)dh, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, { 1, 0 }, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0 };
-        if (FAILED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &g_ovl))) { g_ovl = NULL; return; }
-        if (FAILED(ID3D11Device_CreateShaderResourceView(dev, (ID3D11Resource *)g_ovl, NULL, &g_ovl_srv))) { ID3D11Texture2D_Release(g_ovl); g_ovl = NULL; return; }
-        g_ovl_w = dw; g_ovl_h = dh; fresh = 1;
+        if (FAILED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &L->tex))) { L->tex = NULL; return; }
+        if (FAILED(ID3D11Device_CreateShaderResourceView(dev, (ID3D11Resource *)L->tex, NULL, &L->srv))) { ID3D11Texture2D_Release(L->tex); L->tex = NULL; return; }
+        L->w = dw; L->h = dh; fresh = 1;
     }
     /* only the part that changed (2026-11-20: uploading the whole window-sized layer per hover stuttered) */
-    if (fresh) ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_ovl, 0, NULL, pix, dw * 4, 0);
+    if (fresh) ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)L->tex, 0, NULL, pix, dw * 4, 0);
     else if (!IsRectEmpty(&dirty)) {
         D3D11_BOX box = { (UINT)dirty.left, (UINT)dirty.top, 0, (UINT)dirty.right, (UINT)dirty.bottom, 1 };
-        ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_ovl, 0, &box, pix + (size_t)dirty.top * dw + dirty.left, dw * 4, 0);
+        ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)L->tex, 0, &box, pix + (size_t)dirty.top * dw + dirty.left, dw * 4, 0);
     }
-    g_ovl_ver = ver;
+    (void)ver;
     if (!g_blend_pm) {
         D3D11_BLEND_DESC bd; memset(&bd, 0, sizeof bd);
         bd.RenderTarget[0].BlendEnable = TRUE;
@@ -702,11 +706,18 @@ static void draw_overlay(ID3D11Device *dev, ID3D11DeviceContext *ctx, RECT dest,
         if (FAILED(ID3D11Device_CreateBlendState(dev, &bd, &g_blend_pm))) { g_blend_pm = NULL; return; }
     }
     ID3D11DeviceContext_OMSetBlendState(ctx, g_blend_pm, NULL, 0xffffffff);
-    ID3D11DeviceContext_PSSetShaderResources(ctx, 18, 1, &g_ovl_srv);
+    ID3D11DeviceContext_PSSetShaderResources(ctx, 18, 1, &L->srv);
     draw(ctx, g_ps_overlay, (float)dest.left, (float)dest.top, (float)dw, (float)dh);
     ID3D11ShaderResourceView *none = NULL;
     ID3D11DeviceContext_PSSetShaderResources(ctx, 18, 1, &none);
     ID3D11DeviceContext_OMSetBlendState(ctx, NULL, NULL, 0xffffffff);
+}
+static void draw_overlay(ID3D11Device *dev, ID3D11DeviceContext *ctx, RECT dest, int w, int h)
+{
+    Layer menu = { g_ovl, g_ovl_srv, g_ovl_w, g_ovl_h };
+    draw_layer(dev, ctx, dest, w, h, radio_overlay, &g_radio_layer);   /* radio messages (radio.c), under the labels */
+    draw_layer(dev, ctx, dest, w, h, menutext_overlay, &menu);
+    g_ovl = menu.tex; g_ovl_srv = menu.srv; g_ovl_w = menu.w; g_ovl_h = menu.h;
 }
 
 static ID3DBlob *compile(D3DCompileFn fn, const char *entry, const char *target)

@@ -97,6 +97,7 @@ struct Config {
     int corner_shots;               /* [gameplay] corner_shots: buildings stop the player's bullets by footprint depth / aimed target */
     int leg_hits;                   /* [gameplay] leg_hits: a shot through an enemy's lower body counts */
     int menu_text;                  /* [display] menu_text: menu labels drawn by the mod at window resolution (menutext.c) */
+    int radio_overlay;              /* [display] radio_overlay: radio messages over the battlefield, text redrawn (radio.c) */
     int see_interior;               /* [display] see_interior: Sarge in a building -> its floor shown open (roofs.c, gpu.c) */
     int fix_squash;                 /* [gameplay] fix_squash: no squash death for walking onto a blocked tile (gameplay.c) */
     int longer_range;               /* [gameplay] longer_range: direct-fire weapons reach weapon_range_pct % (gameplay.c) */
@@ -560,6 +561,13 @@ int gpu_overlay_ready(void);
 #define MT_SLIDERS 8
 typedef struct { RECT r; int steps, pos, active; float fk; char value[16]; } MtSlider;   /* menutext.c: a slider (design px) */
 void menutext_set_sliders(const MtSlider *s, int n, int state);       /* modmenu.c: shown while that screen state is up */
+/* radio.c: radio messages drawn as an overlay over the battlefield ([display] radio_overlay) */
+typedef int (__fastcall *LoadSpriteFn)(void *sprite, const char *name, int flags);
+extern LoadSpriteFn radio_load_sprite_original;
+int __fastcall radio_load_sprite(void *sprite, const char *name, int flags);   /* wrap of LoadSprite FUN_00412840 */
+int radio_take(void *pic, int kind, const RECT *r);                    /* hud.c: 1 = this radio picture is drawn by the mod */
+void radio_note_screen_picture(const RECT *r);                         /* hud.c: another picture on the SCREEN (cut out) */
+int radio_overlay(int dw, int dh, int pw, int ph, const uint32_t **pix, unsigned *ver, RECT *dirty);   /* radio.c (gpu.c) */
 void modmenu_slider_mouse(UINT msg, LPARAM lp);                        /* modmenu.c (ddraw.c wndproc): drag a slider */                                          /* gpu.c: the label layer can be drawn */            /* roofs.c: Sarge inside a building -> floor plan */
 void objectives_zones(TargetZones *out);
 typedef struct { int x, y, kind, army; } ObjMark;   /* army: 0 green 1 tan 2 blue 3 grey, -1 none (pads, objects) */   /* kind: 0 destroy, 1 pick up, 2 look after, 3 go to */

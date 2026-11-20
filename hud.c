@@ -106,6 +106,10 @@ void __fastcall hud_draw_picture(UiPicture *pic, int x, int y)
     }
     int design_x = px;
     place_picture(pic, &px, &py, 1);
+    if (!is_panel) {                                 /* a radio message (briefing, script call): drawn by radio.c */
+        RECT pr = { px, py, px + picture_w(pic), py + picture_h(pic) };
+        if (radio_take(pic, 0, &pr)) return;
+    }
     void *back = BACK_BUFFER;
     if (!(pic->flags & 2)) {
         DWORD how = (pic->flags & 1) ? DDBLTFAST_WAIT : DDBLTFAST_WAIT | DDBLTFAST_SRCCOLORKEY;
@@ -159,6 +163,11 @@ void __fastcall hud_draw_picture_on_screen(UiPicture *pic, int x, int y)
             RECT on = { px, py, px + pic->src.right, py + pic->src.bottom };
             layout_note_click(&on, px - px0, py - py0);
         }
+    }
+    {   /* the mission-over radio: drawn by radio.c; what the game draws after it (buttons, panel) is cut out there */
+        RECT pr = { px, py, px + dw, py + dh };
+        if (radio_take(pic, 1, &pr)) return;
+        radio_note_screen_picture(&pr);
     }
     RECT d;
     d.left = GAME_CLIENT_SCREEN_RECT.left + px;

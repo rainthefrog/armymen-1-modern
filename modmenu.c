@@ -133,7 +133,7 @@ static const Item COMBAT[] = {
     { "Health bars", 1, MOD_HEALTH_BARS },
 };
 static const Item MENUS[] = {
-    { "Sharp menu text", 0, 19 }, { "Buttons press in", 0, 16 },
+    { "Sharp menu text", 0, 19 }, { "Buttons press in", 0, 16 }, { "Radio overlay", 0, 21 },
 };
 static const Item MODERN1[] = {
     { "Dodge roll key", 1, MOD_ROLL }, { "Sprint stamina", 1, MOD_STAMINA },

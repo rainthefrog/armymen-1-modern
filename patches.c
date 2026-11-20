@@ -222,6 +222,10 @@ void patches_apply(void)
     static const BYTE gdi_o[] = { 0x83,0xec,0x48, 0x53, 0x55 };              /* FUN_00413a30: sub esp,0x48; push ebx; push ebp */
     hud_draw_gdi_text_original = hook_wrap("ui: GDI text (FUN_00413a30) -> hud.c", 0x413a30, gdi_o, sizeof gdi_o,
                                            (void *)hud_draw_gdi_text);
+    /* radio pictures (Screens\Briefs): which sprite holds which message - radio.c */
+    static const BYTE lspr_o[] = { 0x83,0xec,0x40, 0x53, 0x55, 0x56 };     /* FUN_00412840 LoadSprite: sub esp,0x40; push ebx/ebp/esi */
+    radio_load_sprite_original = (LoadSpriteFn)hook_wrap("radio: LoadSprite (FUN_00412840) -> radio.c", 0x412840, lspr_o, sizeof lspr_o,
+                                                         (void *)radio_load_sprite);
     /* 640x480-based clamps (aim point, keyboard cursor): layout.c */
     layout_patch_limits();
 
