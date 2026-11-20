@@ -978,6 +978,26 @@ static int is_enemy_at(BYTE *it)
 #define UNIT_STRIDE 0x2c4
 typedef int (__fastcall *AnimHitFn)(BYTE *anim, short *point);
 #define ANIM_HIT ((AnimHitFn)0x42faf0)
+/* FIRING ZONE (2026-11-20, user: "firing and trying to move is still super clunky - lets instead have the area around
+ * the enemy be a firing zone too. that way the cursor needs to be further away to walk"): a point within
+ * [controls] fire_zone_px (default 24) around an enemy soldier's / vehicle's hitbox counts as that enemy (click =
+ * fire, the reticle shows); the nearest one wins. 0 = only the hitbox. */
+static int fire_zone_px(void)
+{
+    static int v = -1;
+    if (v < 0) { v = GetPrivateProfileIntA("controls", "fire_zone_px", 24, mod_ini_path()); if (v < 0) v = 0; }
+    return v;
+}
+static void zone_try(const RECT *rc, POINT pt, BYTE *it, BYTE **best, int *bestd)
+{
+    int z = fire_zone_px();
+    if (!z) return;
+    int dx = pt.x < rc->left ? rc->left - pt.x : pt.x >= rc->right ? pt.x - rc->right + 1 : 0;
+    int dy = pt.y < rc->top ? rc->top - pt.y : pt.y >= rc->bottom ? pt.y - rc->bottom + 1 : 0;
+    if (dx > z || dy > z) return;
+    int d = dx * dx + dy * dy;
+    if (d <= z * z && d < *bestd) { *bestd = d; *best = it; }
+}
 static BYTE *enemy_unit_at(int wx, int wy)
 {
     short p[2] = { (short)wx, (short)wy };
@@ -1008,6 +1028,7 @@ static BYTE *enemy_unit_at(int wx, int wy)
                  ow ? *(short *)(ow + 0x1c) : 0, ow ? *(int *)(ow + 0x68) : 0);
         }
     }
+    BYTE *zbest = NULL; int zd = 1 << 30;
     for (int a = 1; a <= 3; a++) {
         BYTE *leg = ARMY_RECORD(a);
         if (dump && leg) {
@@ -1054,8 +1075,8 @@ static BYTE *enemy_unit_at(int wx, int wy)
                 if (!anim) continue;
                 const int *r = (const int *)(anim + 0x1c);
                 RECT rc = { r[0], r[1], r[2], r[3] };
-                if (!PtInRect(&rc, pt)) continue;
-                return t;                                   /* inside the hitbox: easier than the exact pixels */
+                if (PtInRect(&rc, pt)) return t;            /* inside the hitbox: easier than the exact pixels */
+                zone_try(&rc, pt, t, &zbest, &zd);
             }
         }
         int nv = *(signed char *)(leg + 0x50);
@@ -1066,9 +1087,10 @@ static BYTE *enemy_unit_at(int wx, int wy)
             if (!m) continue;
             RECT rc = { *(int *)(m + 0x1c), *(int *)(m + 0x20), *(int *)(m + 0x24), *(int *)(m + 0x28) };
             if (PtInRect(&rc, pt)) return v;
+            zone_try(&rc, pt, v, &zbest, &zd);
         }
     }
-    return NULL;
+    return zbest;                                           /* the nearest enemy whose firing zone holds the point */
 }
 
 /* ---------------------------------------------------------------- mouse-only extras (user 2026-11-17:
