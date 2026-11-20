@@ -55,6 +55,7 @@ void gameplay_frame(void)
 {
     weapon_range();
     capture_frame();                             /* capture.c: Sarge in an enemy vehicle */
+    barricades_frame();                          /* barricades.c: Sarge stuck on a barricade */
     static BYTE *who;
     static int last_hp, since_hurt_ms;
     static double owed;                          /* fractions of a health point not yet given */
@@ -86,17 +87,74 @@ void gameplay_frame(void)
     last_hp = hp;
 }
 
-/* ---------------------------------------------------------------- no squash at fence corners (2026-11-20)
- * User: "just had an armymen hit the corner of a fence and was 'smushed'". The game's trooper update (0x43c810,
- * binary TrooperUpdate) kills a soldier with DMGTYPE_RUNOVER (= the squash death) whenever the tile
- * he is on is untrafficable (call 0x43c840 -> UntrafficableUnit 0x42a230: movement layer >= 15 or a parked
- * vehicle) - "died when terrain became untrafficable". Meant for a building collapsing on him or a vehicle parking
- * on him; but a soldier whose path clips the 16 px corner tile of a fence (its footprint marks the tile) dies too.
- * The call is redirected here (squash_stub passes the trooper, ESI there, and the tile, ECX): "blocked" only when
- * the SAME tile was free the last time this soldier was checked - it became blocked under him. A soldier who
- * walked onto a blocked tile is left alone (the game moves him on). The second kill site (0x43c9ff, destination
- * tile) is unchanged. [gameplay] fix_squash=1 (COMBAT "No corner squash"). */
-#define UNTRAFFICABLE ((int (__fastcall *)(int))0x42a230)
+/* ---------------------------------------------------------------- no squash at barricades (2026-11-20)
+ * User: "just had an armymen hit the corner of a fence and was 'smushed'", then "enemies can't get squished under
+ * [barricades]". Three places in the game kill a soldier with the squash death (DMGTYPE_RUNOVER / type 0):
+ *  1. TrooperUpdate 0x43c810 (binary), at its start: the soldier's tile (+0xc) is untrafficable
+ *     (call 0x43c840 -> UntrafficableUnit 0x42a230: movement layer >= 15 or a parked vehicle) -> TrooperAcceptDamage
+ *     0x43c350 ("died when terrain became untrafficable").
+ *  2. The same function after the step (AvatarPerform): the new point's tile AND the tile at the start are both
+ *     untrafficable (second test: call 0x43c9e3) -> 0x43c350 at 0x43c9ff ("died when he moved onto untrafficable
+ *     terrain").
+ *  3. AddObjectToMovementLayer 0x40ce70 (binary; callers 0x431701 / 0x458634 pass the object state's crush
+ *     damage, state +0x12): every tile where the object's new footprint differs from the old one hits Sarge,
+ *     soldiers, vehicles and wrecks at the tile centre with ItemDamage 0x431f60 (call 0x40cff3) - a fence or
+ *     sandbag wall changing state after being shot squashed the soldiers lying next to it.
+ * Fence / sandbag / wall footprints mark the whole 16 px tile, so a soldier whose path clips a corner (or who lies
+ * behind one) is "on" it. Kept (the real cases): a vehicle parking on / running over a soldier (the vehicle layer,
+ * and the vehicle's own crush code, untouched), buildings and other non-barricade objects collapsing (crush path
+ * from any other category; a tile still blocked without the barricades at it). Barricades = barricades.c
+ * barricade_category (ROCK 0 - sandbag rings are ROCK -, FALLEN_TREE 4, FENCE 5, WALL 6, GATE 20, WALL_GATE 21).
+ * 1 + 2: squash_stub replaces both UntrafficableUnit calls (ESI = trooper, ECX = tile): "blocked" only when the
+ * SAME tile was free the last time this soldier was checked (it became blocked under him) AND the tile is still
+ * blocked without the barricade objects at its centre / at the soldier (or a vehicle is parked there). Site 2 then
+ * never fires by itself (site 1 ran this frame on the same tile). 3: crush_stub skips the damage for Sarge and
+ * soldiers when the object is a barricade. [gameplay] fix_squash=1 (COMBAT "No corner squash"). */
+#define UNTRAFFICABLE  ((int (__fastcall *)(int))0x42a230)
+#define MOVEMENT_LAYER (*(signed char **)0x4e3554)      /* the_map.movement_layer: per tile, >= 15 untrafficable */
+#define VEHICLE_LAYER  (*(BYTE **)0x507f78)             /* parked vehicles per tile (UntrafficableUnit's 2nd test) */
+#define MAP_TILES_W    (*(unsigned short *)0x4e368c)
+#define TROOPER_X(t)   (*(short *)((t) + 0x04))
+#define TROOPER_Y(t)   (*(short *)((t) + 0x06))
+typedef BYTE *(__fastcall *GpObjectsAtFn)(short *point);
+#define GP_OBJECTS_AT  ((GpObjectsAtFn)0x42fca0)        /* GetObjectsIntersectPoint: ITEM list, next at +0x60 */
+#define GP_ITEM_TYPE1(it) ((int)((*(DWORD *)(it) >> 22) & 0xf))   /* ITEM_TYPE + 1: 5 trooper, 6 Sarge, 7/8/9 objects */
+#define GP_OBJ_CATEGORY(it) (*(short *)((it) + 0x68))
+#define GP_OBJ_MOVEMENT(it) (*(signed char *)((it) + 0x6f))
+
+/* Movement of the barricade objects whose picture holds (x, y); seen[] avoids counting one object twice. */
+static int barricade_movement(int x, int y, BYTE **seen, int *nseen)
+{
+    short p[2] = { (short)x, (short)y };
+    int sum = 0;
+    for (BYTE *it = GP_OBJECTS_AT(p); it; it = *(BYTE **)(it + 0x60)) {
+        int t = GP_ITEM_TYPE1(it);
+        if ((t != 7 && t != 8 && t != 9) || !barricade_category(GP_OBJ_CATEGORY(it))) continue;
+        int k = 0;
+        while (k < *nseen && seen[k] != it) k++;
+        if (k < *nseen) continue;
+        if (*nseen < 8) seen[(*nseen)++] = it;
+        sum += GP_OBJ_MOVEMENT(it);
+    }
+    return sum;
+}
+
+/* The tile is blocked by something that really squashes: a parked vehicle, or the movement layer minus the
+ * barricades at the tile centre and at the soldier is still >= 15. */
+static int squash_cause(BYTE *trooper, int tile, int *barr_out)
+{
+    *barr_out = 0;
+    if (VEHICLE_LAYER && VEHICLE_LAYER[tile]) return 1;
+    if (!MOVEMENT_LAYER || !MAP_TILES_W) return 1;
+    BYTE *seen[8]; int nseen = 0;
+    int tx = tile % MAP_TILES_W, ty = tile / MAP_TILES_W;
+    int barr = barricade_movement(tx * 16 + 8, ty * 16 + 8, seen, &nseen);
+    if ((TROOPER_Y(trooper) >> 4) * MAP_TILES_W + (TROOPER_X(trooper) >> 4) == tile)
+        barr += barricade_movement(TROOPER_X(trooper), TROOPER_Y(trooper), seen, &nseen);
+    *barr_out = barr;
+    return MOVEMENT_LAYER[tile] - barr >= 15;
+}
+
 #define SQ_SLOTS 128
 static struct { BYTE *trooper; int tile; BYTE blocked; } g_sq[SQ_SLOTS];
 int __cdecl squash_check(BYTE *trooper, int tile)
@@ -107,15 +165,63 @@ int __cdecl squash_check(BYTE *trooper, int tile)
     int was_free_here = g_sq[h].trooper == trooper && g_sq[h].tile == tile && !g_sq[h].blocked;
     g_sq[h].trooper = trooper; g_sq[h].tile = tile; g_sq[h].blocked = (BYTE)(blocked != 0);
     if (!blocked) return 0;
-    if (was_free_here) return 1;                         /* became blocked under him: the game's squash */
     static DWORD logged;
-    if (GetTickCount() - logged > 2000) { logged = GetTickCount(); mlog("gameplay: trooper %p on blocked tile %d (walked onto it) - not squashed", trooper, tile); }
+    int barr = 0;
+    if (was_free_here) {                                 /* became blocked under him */
+        if (squash_cause(trooper, tile, &barr)) {
+            mlog("gameplay: trooper %p at %d,%d: tile %d became blocked under him (movement %d, barricades %d) - squashed",
+                 trooper, TROOPER_X(trooper), TROOPER_Y(trooper), tile, MOVEMENT_LAYER ? MOVEMENT_LAYER[tile] : -1, barr);
+            return 1;
+        }
+        mlog("gameplay: trooper %p at %d,%d: tile %d became blocked by a barricade (movement %d, barricades %d) - not squashed",
+             trooper, TROOPER_X(trooper), TROOPER_Y(trooper), tile, MOVEMENT_LAYER ? MOVEMENT_LAYER[tile] : -1, barr);
+        return 0;
+    }
+    if (GetTickCount() - logged > 2000) {
+        logged = GetTickCount();
+        mlog("gameplay: trooper %p at %d,%d on blocked tile %d (walked onto it) - not squashed", trooper, TROOPER_X(trooper), TROOPER_Y(trooper), tile);
+    }
     return 0;
 }
 __asm__(".globl _squash_stub\n"
         "_squash_stub:\n"
         "    push %ecx\n"                                /* tile */
-        "    push %esi\n"                                /* the trooper (0x43c83d: mov ecx, [esi+0xc]) */
+        "    push %esi\n"                                /* the trooper (0x43c83d / 0x43c9e0: mov ecx, [esi+0xc]) */
         "    call _squash_check\n"
         "    add $8, %esp\n"
         "    ret\n");
+
+/* 3. The crush damage of AddObjectToMovementLayer. At the call 0x40cff3: ECX = the item hit, EDX = damage, stack
+ * (callee pops 12): damage type, SPOINT *at, UID from; the object being added is the caller's local at [esp+0x14]
+ * before the three pushes = [esp+0x24] at our entry. Returns 1 = do the game's damage. */
+int __cdecl crush_allowed(BYTE *item, int damage, BYTE *obj)
+{
+    if (!g_cfg.fix_squash || !item || !obj) return 1;
+    int t = GP_ITEM_TYPE1(item);
+    if (t != 5 && t != 6) return 1;                                /* vehicles, wrecks: the game's */
+    int cat = GP_OBJ_CATEGORY(obj);
+    if (!barricade_category(cat)) {
+        mlog("gameplay: %s %p at %d,%d crushed by object category %d (damage %d) - the game's", t == 6 ? "Sarge" : "trooper",
+             item, TROOPER_X(item), TROOPER_Y(item), cat, damage);
+        return 1;
+    }
+    mlog("gameplay: %s %p at %d,%d next to a barricade (category %d) changing shape - not crushed (damage %d)",
+         t == 6 ? "Sarge" : "trooper", item, TROOPER_X(item), TROOPER_Y(item), cat, damage);
+    return 0;
+}
+__asm__(".globl _crush_stub\n"
+        "_crush_stub:\n"
+        "    push %ecx\n"
+        "    push %edx\n"
+        "    pushl 0x2c(%esp)\n"                         /* the object: caller [esp+0x14] = our [esp+0x24], +8 pushed */
+        "    push %edx\n"
+        "    push %ecx\n"
+        "    call _crush_allowed\n"
+        "    add $12, %esp\n"
+        "    pop %edx\n"
+        "    pop %ecx\n"
+        "    test %eax, %eax\n"
+        "    jz 1f\n"
+        "    mov $0x431f60, %eax\n"                      /* ItemDamage */
+        "    jmp *%eax\n"
+        "1:  ret $12\n");

@@ -533,8 +533,11 @@ static int free_facing(BYTE *u, int f)
         for (int side = 1; side >= -1; side -= 2) {
             int g = (f + side * k) & (FACINGS - 1);
             double dx = g_units_ready ? g_unit_dx[g] : 0, dy = g_units_ready ? g_unit_dy[g] : 0;
-            if (!sarge_blocked_at(x + (int)(dx * 8), y + (int)(dy * 8)) && !sarge_blocked_at(x + (int)(dx * 14), y + (int)(dy * 14)))
-                return g;
+            /* every px up to 14 (2026-11-20: two samples at 8 / 14 px passed through holes and ragged edges of
+             * sandbag / fence masks; the game refused the first frame's step and Sarge stood wedged) */
+            int i = 1;
+            while (i <= 14 && !sarge_blocked_at(x + (int)(dx * i), y + (int)(dy * i))) i++;
+            if (i > 14) return g;
             if (!k) break;
         }
     return f;                                    /* boxed in: let the game stop him */

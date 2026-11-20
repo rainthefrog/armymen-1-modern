@@ -107,6 +107,7 @@ struct Config {
     int vehicle_reverse;            /* [controls] vehicle_reverse: click-to-drive plans with reversing (vehicles.c) */
     int turret_smooth;              /* [controls] turret_smooth: turret holds its aim while the hull turns, eased (vehicles.c) */
     int vehicle_unstick;            /* [controls] vehicle_unstick: a wedged vehicle may back out; no creeping into objects */
+    int sarge_unstick;              /* [controls] sarge_unstick: Sarge moved out when stuck on / inside a barricade (barricades.c) */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
     int hud_corners;                /* [hud] corners: message box / minimap in the bottom corners (layout.c) */
     float hud_corner_scale;         /* [hud] corner_scale: 1 .. 3 in quarter steps (default 1.5) */
@@ -578,6 +579,9 @@ int menutext_capture(void *surface, int x, int y, const char *text, int font, in
 void menutext_note_blit(const RECT *r, int desktop);                  /* menutext.c (surface.c): a picture drawn on the screen */
 void menutext_clear(void);
 void squash_stub(void);                                              /* gameplay.c: replaces the call at 0x43c840 */
+void crush_stub(void);                                              /* gameplay.c: replaces the ItemDamage call at 0x40cff3 (crush) */
+int barricade_category(int category);                               /* barricades.c: ROCK, FALLEN_TREE, FENCE, WALL, GATE, WALL_GATE */
+void barricades_frame(void);                                        /* barricades.c: Sarge never stays stuck on a barricade */
 int menutext_overlay(int dw, int dh, int pw, int ph, const uint32_t **pix, unsigned *ver, RECT *dirty);   /* menutext.c (gpu.c) */
 int gpu_overlay_ready(void);
 #define MT_SLIDERS 8

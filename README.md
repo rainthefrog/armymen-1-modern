@@ -50,6 +50,7 @@ folder first. So this DLL is two things:
 | `clock.c` | The game clock: replaces the exe's `GetTickCount`, adjustable speed, pause, hotkeys. |
 | `missionpath.c` | **Mission path** (`[hud] mission_path`): once per mission, a route from Sarge's start through the mission's waypoints in order (WAYS table from the mission scripts), built with pathfind.c over a few frames; drawn on the ground by modern.c. No game patch. |
 | `vehicles.c` | **The vehicle Sarge drives** (2026-11-20): click-to-drive routes with reversing / multi-point turns (`[controls] vehicle_reverse`, hybrid A* in pathfind.c), a steady turret (`turret_smooth`: the hull no longer drags it, eased aim), getting unstuck (`vehicle_unstick`: no creeping into sandbags / rocks, moves that lead out of an overlap are let through). Wraps the calls to VehicleUpdate (0x419c52) and VehicleLockTurret (0x417ce8). |
+| `barricades.c` | **Sarge never stays stuck on a barricade** (2026-11-20, `[controls] sarge_unstick`): inside a barricade's mask -> moved out to the nearest roomy point; walking refused although the way ahead is free (mask holes) -> moved along it; never through a barricade (segment test with the game's own Sarge rule). Per frame from gameplay_frame, no game patch. Testing aid `[debug] barricade_test` / `barricade_crush` (cheat_keys). The no-squash rules for soldiers at barricades are in `gameplay.c` (`fix_squash`). |
 
 ## Conventions for rewritten game functions
 
