@@ -108,7 +108,7 @@ static int scale64(float scale) { int q = (int)(scale * ONE + 0.5f); return q < 
 static float minimap_lock(void)
 {
     static float v = -1;
-    if (v < 0) { char t[16]; GetPrivateProfileStringA("hud", "minimap_lock", "1.5", t, sizeof t, mod_ini_path()); v = (float)atof(t); if (v < 0) v = 0; }
+    if (v < 0) { char t[16]; GetPrivateProfileStringA("hud", "minimap_lock", "0", t, sizeof t, mod_ini_path()); v = (float)atof(t); if (v < 0) v = 0; }
     return v;
 }
 static float *group_cfg(int g)
