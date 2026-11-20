@@ -431,6 +431,14 @@ static struct {
 } S;
 enum { LM_NONE, LM_PENDING, LM_WALK, LM_FIRE, LM_ENTER, LM_TURN };
 #define WALK_LOCK_AFTER_SHOT_MS  300    /* Army Men II: no walking right after a shot (mis-clicks) */
+static DWORD g_fire_cancel_at, g_fire_lock_until;
+/* modern.c: the pointer indicator - fire lock left (ms, 0 = none), just cancelled */
+void controls_fire_state(int *lock_ms_left, int *cancelled)
+{
+    DWORD now = GetTickCount();
+    *lock_ms_left = g_fire_lock_until && g_fire_lock_until > now ? (int)(g_fire_lock_until - now) : 0;
+    *cancelled = g_fire_cancel_at && now - g_fire_cancel_at < 700;
+}
 static int combat_lock_ms(void)
 {
     static int v = -1;
@@ -1989,9 +1997,26 @@ static void apply_modern_controls(void)
         if (lrelease) { S.lup_at = now; if (lmode_before == LM_FIRE) S.fire_end_at = now; S.lmode = LM_NONE; lrun = 0; }
         if (right && !S.right_was_down) S.fire_end_at = now;
         if (!right && S.right_was_down) S.fire_end_at = now;
+        /* CANCEL (2026-11-20, user: "i need a way to cancel shooting - also if I'm holding down the button. for all
+         * weapons"): pressing the OTHER button while one is held (both down) stops firing at once, ends the fire lock
+         * (the next click walks again) and ignores both buttons until both are up. A charged throw that is cancelled
+         * is held (no release = no throw) until both buttons are up, then the weapon is selected again. */
+        static int cancel_hold;
+        int both_new = left && right && (!S.right_was_down || lpress);
+        if (both_new && !cancel_hold) {
+            cancel_hold = 1; S.lmode = LM_NONE; S.fire_end_at = 0; g_fire_cancel_at = now; lrun = 0;
+            S.firing = S.pressing = 0;
+            if (g_cfg.log >= 1) mlog("controls: fire cancelled (both buttons)");
+        }
+        if (cancel_hold && !left && !right) {
+            cancel_hold = 0;
+            if (S.charging && *(signed char *)(u + 0x2c4) >= 0) { int c = *(signed char *)(u + 0x2c4); *(signed char *)(u + 0x2c4) = -1; ((int (__fastcall *)(BYTE *, int))0x448df0)(u, c); }   /* drop the charge */
+        }
+        g_fire_lock_until = S.fire_end_at && combat_lock_ms() > WALK_LOCK_AFTER_SHOT_MS ? S.fire_end_at + combat_lock_ms() : 0;
         /* what the rest of this function sees: fire = "left", walk hold / walk tap = the old right button */
         static int fire_was;
         int fire = (left && S.lmode == LM_FIRE) || (right && !rsel);
+        if (cancel_hold) { fire = 0; tap = tap_run = 0; if (S.charging) INPUT |= INPUT_FIRE; }
         right_hold = left && S.lmode == LM_WALK;
         right_tap = tap;
         S.running = right_hold && lrun;

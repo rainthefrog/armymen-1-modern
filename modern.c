@@ -644,6 +644,22 @@ static void modern_draw_body(Surf *b)
 
     g_nbarred = 0;
     if (modern_on(MOD_HEALTH_BARS)) { each_enemy(health_bar); target_health_bars(); }
+    {   /* fire lock / cancel at the pointer (2026-11-20, user: "some indicator would be helpful"): while clicks fire
+         * (fire lock after a shot) a shrinking ring + "FIRE"; just cancelled: a red X + "CANCEL" */
+        int lock, canc, ppx, ppy;
+        controls_fire_state(&lock, &canc);
+        if ((lock || canc) && controls_pointer(&ppx, &ppy)) {
+            int gx = ppx, gy = ppy;
+            if (canc) {
+                for (int k = -6; k <= 6; k++) { px(gx + k, gy + k, C_RED); px(gx + k, gy - k, C_RED); px(gx + k + 1, gy + k, C_RED); px(gx + k + 1, gy - k, C_RED); }
+                text(gx + 10, gy + 8, "CANCEL", C_RED, 1);
+            } else {
+                int r = 6 + lock * 8 / 1500;
+                circle(gx, gy, r, C_YELLOW, 1);
+                text(gx + 10, gy + 8, "FIRE", C_YELLOW, 1);
+            }
+        }
+    }
     {   /* an enemy vehicle at the pointer that Sarge cannot take: why (user: "show if vehicle is not empty on cursor") */
         int wx, wy, vx, vy;
         const char *why = controls_pointer_world(&wx, &wy) ? capture_hover_note(wx, wy, &vx, &vy) : NULL;

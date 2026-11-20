@@ -599,7 +599,8 @@ typedef struct Guard { void *jb[5]; void *seh; const char *what; struct Guard *p
 void guard_enter(Guard *g, const char *what);
 void guard_leave(Guard *g);
 #define GUARD_TRY(g, what) (guard_enter(&(g), (what)), __builtin_setjmp((g).jb) == 0)
-int controls_pointer_world(int *x, int *y);        /* controls.c: world point under the pointer */
+int controls_pointer_world(int *x, int *y);
+void controls_fire_state(int *lock_ms_left, int *cancelled);   /* controls.c: fire lock / cancel indicator */        /* controls.c: world point under the pointer */
 
 /* missionpath.c (2026-11-20): the mission route painted on the ground */
 int objectives_need(const char *need);                             /* objectives.c: briefing contains / lacks a word */
