@@ -556,7 +556,7 @@ int objectives_target(int *wx, int *wy);    /* objectives.c: centre of the objec
 typedef struct { RECT r[ZONES_MAX]; int key[ZONES_MAX][3]; int nsec, nspot, n; float fade, glow; RECT dim; int dim_on; int menu_over; RECT panel[4]; int npanel;
                  /* building interior (roofs.c): picture px of cell (0,0) of a 64x64 window of 8 px cells, strength 0..1,
                   * one bit per floor cell (row y = in_mask[2y] bits 0..31, in_mask[2y+1] 32..63), the building's image keys */
-                 int in_ox, in_oy, in_nkey, in_sx, in_sy, in_cr; float in_s; unsigned in_mask[128], in_door[128]; int in_key[8][3]; } TargetZones;
+                 int in_ox, in_oy, in_nkey, in_sx, in_sy, in_cr, in_nen, in_en[4][3]; float in_s; unsigned in_mask[128], in_door[128]; int in_key[8][3]; } TargetZones;
 void roofs_interior_note(TargetZones *z, int cx, int cy);
 int menutext_capture(void *surface, int x, int y, const char *text, int font, int *size_out);   /* menutext.c (hud.c) */
 void menutext_note_blit(const RECT *r, int desktop);                  /* menutext.c (surface.c): a picture drawn on the screen */

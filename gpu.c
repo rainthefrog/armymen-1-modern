@@ -42,7 +42,8 @@ static const char SHADERS[] =
 "  float4 tp[4];    /* open pop-ups / menu panels drawn onto the screen (layout_open_panels), ta.w of them: no battlefield art */\n"
 "  float4 ti;       /* building interior (roofs.c): xy = picture px of floor tile (0,0), z = strength, w = number of keys */\n"
 "  float4 tik[8];   /* keys of the building's images (as tk) */\n"
-"  float4 tsg;      /* the cut-away circle: xy = Sarge (picture px), z = radius (0 = no circle) */\n"
+"  float4 tsg;      /* the cut-away circle: xy = Sarge (picture px), z = radius (0 = no circle), w = enemy circles in ten */\n"
+"  float4 ten[4];   /* circles round enemies firing from under a roof: xy (picture px), z radius */\n"
 "};\n"
 "Texture2D tex : register(t0);\n"
 "SamplerState pt : register(s0);\n"
@@ -384,7 +385,12 @@ static const char SHADERS[] =
 "    col = lerp(cover, recol(c.rgb, r), ga * fa);\n"
 "  } else {\n"
 "    if (hasf) col = lerp(col, recol(fc.rgb, fq), edge_cov(fc.a));\n"
-"    if (ti.z > 0 && spr && of_building(ip, r)) {\n"
+"    /* enemy circles (two at most; no loop - the software rasteriser ran out of memory on the bigger shader) */\n"
+"    float ec = tsg.w > 0.5 ? 1 - smoothstep(ten[0].z - 12, ten[0].z, length(gp - ten[0].xy)) : 0;\n"
+"    if (tsg.w > 1.5) ec = max(ec, 1 - smoothstep(ten[1].z - 12, ten[1].z, length(gp - ten[1].xy)));\n"
+"    bool ob = spr && (ec > 0 || ti.z > 0) && of_building(ip, r);\n"
+"    if (ob && ec > 0) { col = interior(col, ec); col = lerp(col, float3(0.92, 0.86, 0.62), 0.7 * (1 - smoothstep(0.03, 0.09, abs(ec - 0.5)))); }\n"
+"    else if (ob) {\n"
 "      /* the roof over the floor opened (soft edge); walls keep their art; outline of the walkable area */\n"
 "      col = interior(col, ti.z * smoothstep(0.42, 0.52, fs));\n"
 "      col = lerp(col, float3(0.92, 0.86, 0.62), 0.7 * ti.z * floor_edge(fs));\n"
@@ -548,7 +554,7 @@ typedef HRESULT (WINAPI *D3DCompileFn)(const void *src, SIZE_T len, const char *
                                         void *include, const char *entry, const char *target, UINT f1, UINT f2,
                                         ID3DBlob **code, ID3DBlob **errors);
 
-typedef struct { float mode[4], amb[4], hd[4], op[4], uvr[4], opid[4], sub[4], zm[4], ramp[64][4], lk[4][4], lo[4][4], pm[4], mr[3][4], tz[32][4], tc[4], tk[32][4], ta[4], td[4], tp[4][4], ti[4]; float tik[8][4], tsg[4]; } Params;
+typedef struct { float mode[4], amb[4], hd[4], op[4], uvr[4], opid[4], sub[4], zm[4], ramp[64][4], lk[4][4], lo[4][4], pm[4], mr[3][4], tz[32][4], tc[4], tk[32][4], ta[4], td[4], tp[4][4], ti[4]; float tik[8][4], tsg[4], ten[4][4]; } Params;
 
 #define AMBIENT_DIM   0.3f      /* fill brightness */
 #define AMBIENT_BLUR  0.05f     /* blur step, in texture coordinates */
@@ -1218,11 +1224,13 @@ int gpu_draw(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *bb, i
         p.ta[0] = zones->fade; p.ta[1] = zones->glow; p.ta[2] = zones->menu_over ? 1.0f : 0.0f;
         int np = zones->npanel < 0 ? 0 : zones->npanel > 4 ? 4 : zones->npanel;
         p.ta[3] = (float)np;
-        if (zones->in_s > 0) {                                     /* building interior (roofs.c) */
+        if (zones->in_s > 0 || zones->in_nen > 0) {                /* building interior + enemy circles (roofs.c) */
             p.ti[0] = (float)zones->in_ox; p.ti[1] = (float)zones->in_oy; p.ti[2] = zones->in_s;
             int nk = zones->in_nkey < 0 ? 0 : zones->in_nkey > 8 ? 8 : zones->in_nkey;
             p.ti[3] = (float)nk;
             p.tsg[0] = (float)zones->in_sx; p.tsg[1] = (float)zones->in_sy; p.tsg[2] = (float)zones->in_cr;
+            p.tsg[3] = (float)zones->in_nen;
+            for (int i = 0; i < zones->in_nen && i < 4; i++) { p.ten[i][0] = (float)zones->in_en[i][0]; p.ten[i][1] = (float)zones->in_en[i][1]; p.ten[i][2] = (float)zones->in_en[i][2]; }
             for (int i = 0; i < nk; i++) { p.tik[i][0] = (float)zones->in_key[i][0]; p.tik[i][1] = (float)zones->in_key[i][1]; p.tik[i][2] = (float)zones->in_key[i][2]; }
         }
         for (int i = 0; i < np; i++) {
@@ -1256,7 +1264,7 @@ int gpu_draw(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *bb, i
         if (ambient && (dw < cw || dh < ch)) draw(ctx, g_ps_ambient, 0, 0, (float)cw, (float)ch);
         draw(ctx, g_ps_scale, (float)dest.left, (float)dest.top, (float)dw, (float)dh);
     }
-    if (world && zones && zones->in_s > 0) {             /* building floor (r) / doors (g), 64 x 64 cells (roofs.c) */
+    if (world && zones && (zones->in_s > 0 || zones->in_nen > 0)) {             /* building floor (r) / doors (g), 64 x 64 cells (roofs.c) */
         if (!g_imask) {
             D3D11_TEXTURE2D_DESC td = { 64, 64, 1, 1, DXGI_FORMAT_R8G8_UNORM, { 1, 0 }, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0 };
             if (SUCCEEDED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &g_imask)) &&

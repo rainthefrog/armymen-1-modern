@@ -52,7 +52,7 @@ DrawCellFn roofs_draw_cell_original;
 #define GHOST_EVERY 4                    /* under tall cover: 1 inside pixel in 4 of the figure kept, outline whole */
 /* rect / cover rects are COPIES taken when drawn (2026-11-20 crash: Sarge died, the game freed his cell, and the
  * next cell drawn compared itself with the freed cell's rectangle - DDRAW.dll+0x2c70e in roofs_draw_cell) */
-typedef struct { BYTE *cell, *owner; int rect[4]; int covered, ncover, ntall; int cover[MAX_COVER][4]; BYTE cover_low[MAX_COVER]; DWORD seen; } Fig;
+typedef struct { BYTE *cell, *owner; int rect[4]; int covered, ncover, ntall; int cover[MAX_COVER][4]; BYTE cover_low[MAX_COVER]; DWORD seen, shown_at; } Fig;
 static Fig g_figs[MAX_FIGS];
 
 static Fig *fig_slot(BYTE *cell, BYTE *owner, int sarge)
@@ -240,6 +240,7 @@ static void ghost_one(Surf *b, Fig *f, int sarge)
         if (!g_cfg.see_enemies || !f->ntall) return;   /* only behind tall cover (buildings, trees) */
         if (GetTickCount() - f->seen > ENEMY_FRESH_MS) { f->cell = NULL; return; }   /* not drawn lately: stale */
         if (!bullets_fired_within(*(DWORD *)f->owner, SHOW_AFTER_FIRE_MS)) return;   /* only once he shoots */
+        f->shown_at = GetTickCount();                 /* roofs_interior_note: a circle round him (user 2026-11-20) */
     }
     int *w = CELL_WRECT(f->cell);
     RECT r = { w[0] - SCREEN_L, w[1] - SCREEN_T, w[2] - SCREEN_L, w[3] - SCREEN_T };
@@ -384,6 +385,7 @@ void roofs_draw_ghost(Surf *b) { PROF_BEGIN(t); roofs_draw_ghost_body(b); PROF_E
 #define IN_NEAR       40                 /* px around a building's picture box: "near" (doors shown) */
 #define IN_HIDDEN_PCT 35
 #define UNDER_REACH   20                 /* a building-solid cell this many cells below = under the roof */
+#define ENEMY_CIRCLE  40                 /* px: the cut-away circle around an enemy firing from under a roof */
 #define CIRCLE_CELLS  9                  /* the cut-away circle around Sarge: 9 cells = 72 game px */
 #define JOIN          4                  /* walkable inside pieces up to ~2*JOIN cells apart are joined */
 #define SEAL          2                  /* blocked cells grown by this to close door gaps (sealed fill) */
@@ -627,7 +629,10 @@ static int floor_now(Floor *fl)
         static BYTE cm[IN_N][IN_N];                              /* 0 unknown, 1 floor, 2 not */
         memset(cm, 0, sizeof cm);
         int sl = *(int *)0x4e2fd4, st = *(int *)0x4e2fd8 + layout_field_shift();   /* back buffer origin in the world */
-        #define FLOOR_AT(x, y) floor_cell(fl, cm, wx0, wy0, bx0, by0, bx1, by1, sl, st, (x), (y))
+        /* 2026-11-20 (user: "the shader is still messing up - lets go back to the circle around sarge"): the flood
+         * only within CIRCLE_CELLS of Sarge (gpu.c fades the circle's edge, tsg) */
+        #define IN_CIRCLE(x, y) (((x) - c0x) * ((x) - c0x) + ((y) - c0y) * ((y) - c0y) <= (CIRCLE_CELLS + 1) * (CIRCLE_CELLS + 1))
+        #define FLOOR_AT(x, y) (IN_CIRCLE(x, y) && floor_cell(fl, cm, wx0, wy0, bx0, by0, bx1, by1, sl, st, (x), (y)))
         int fx = -1, fy = -1;
         for (int r = 0; r <= 3 && fx < 0; r++)
             for (int dy = -r; dy <= r && fx < 0; dy++) for (int dx = -r; dx <= r && fx < 0; dx++)
@@ -650,7 +655,8 @@ static int floor_now(Floor *fl)
             }
         }
         #undef FLOOR_AT
-        fl->circle = 0;                                          /* no circle limit (tsg radius 0) */
+        #undef IN_CIRCLE
+        fl->circle = 1;
         goto circle_done;
         /* 2026-11-20 (user: "the room highlight is still wrong - needs to be the entire room"): the walk mask splits a
          * room (free columns that "see" past the walls failed the four-direction test). Now a SEALED fill: every
@@ -829,7 +835,11 @@ void roofs_interior_note(TargetZones *z, int cx, int cy)
     }
     s += on ? dt : -dt;
     s = s < 0 ? 0 : s > 1 ? 1 : s;
-    if (!have || s <= 0) return;
+    if (!have || s <= 0) {                                       /* Sarge not inside: only enemy circles */
+        memset(z->in_mask, 0, sizeof z->in_mask); memset(z->in_door, 0, sizeof z->in_door);
+        z->in_s = 0; z->in_cr = 0; z->in_nkey = 0;
+        goto enemies;
+    }
     int nk = 0;                          /* keys of the building images (as objectives.c straddlers) */
     for (int i = 0; i < last.ncells && nk < 8; i++) {
         BYTE *c = last.cells[i];
@@ -843,7 +853,39 @@ void roofs_interior_note(TargetZones *z, int cx, int cy)
             nk++;
         }
     }
+    z->in_nkey = nk;                     /* Sarge's building keys first */
+enemies:
+    {
+    int nk = z->in_nkey;
+    /* enemies firing from under a roof (user 2026-11-20: "draw one around the enemy once they start shooting"): a
+     * circle on their building's texture (keys appended) */
+    z->in_nen = 0;
+    for (int i = 1; i < MAX_FIGS && z->in_nen < 2; i++) {
+        Fig *f = &g_figs[i];
+        if (!f->owner || !f->shown_at || GetTickCount() - f->shown_at > 400 || IsBadReadPtr(f->owner, 8)) continue;
+        int ex = *(short *)(f->owner + 4), ey = *(short *)(f->owner + 6);
+        int added = 0;
+        for (int k = 0; k < CELLS && nk < 8; k++) {
+            BYTE *c = live_cell(k);
+            if (!c || !building_cell(c)) continue;
+            const int *w = CELL_WRECT(c);
+            if (ex < w[0] || ex >= w[2] || ey < w[1] || ey >= w[3]) continue;
+            for (int idx = 0; idx < 8 && nk < 8; idx++) {
+                int hx, hy, sl, wl, wt;
+                int got = hdworld_cell_image(c, idx, &hx, &hy, &sl, &wl, &wt);
+                if (got < 0) break;
+                if (!got) continue;
+                z->in_key[nk][0] = (hx - (wl - cx)) & 0x7ff; z->in_key[nk][1] = (hy - (wt - cy)) & 0x7ff; z->in_key[nk][2] = sl;
+                nk++; added = 1;
+            }
+        }
+        if (!added) continue;
+        z->in_en[z->in_nen][0] = ex - cx; z->in_en[z->in_nen][1] = ey - 8 - cy; z->in_en[z->in_nen][2] = ENEMY_CIRCLE;
+        z->in_nen++;
+    }
     z->in_nkey = nk;
+    }
+    if (!have || s <= 0) return;
     z->in_s = s;
     z->in_ox = last.cx0 * IN_CELL - cx; z->in_oy = last.cy0 * IN_CELL - cy;
     memcpy(z->in_mask, last.mask, sizeof z->in_mask);
