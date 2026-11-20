@@ -62,15 +62,30 @@ int bullets_fired_within(DWORD uid, DWORD ms)
     return 0;
 }
 
+static const SPoint *vehicle_hills(BYTE *proj, const SPoint *p, SPoint *q, int *raise_to);
+#define PROJ_ANIM         (*(BYTE **)0x691900)     /* ANIM of the projectile being updated (FLOAT_OBJ +0x68) */
+#define ANIM_Z(a)         (*(short *)((a) + 0x18)) /* world_z: the height weapons 6/7/8 are tested at */
+#define NO_HEIGHT         (-0x7fff)
+static int g_true_height = NO_HEIGHT;               /* the shot's real height while ANIM_Z is raised (bullets_stops) */
+
+
 int __fastcall bullets_collide(void *point, void **hit)
 {
     BYTE *pr = PROJECTILE;
     if (pr && *(DWORD *)(pr + 0x78)) note_fired(*(DWORD *)(pr + 0x78));
+    const SPoint *p = point;
+    SPoint q;
+    int raise = NO_HEIGHT;
+    BYTE *an = PROJ_ANIM;
+    if (pr && an && g_cfg.downhill_hits) p = vehicle_hills(pr, p, &q, &raise);    /* group 4, HILLS (vehicles) */
+    short z0 = 0;
+    if (raise != NO_HEIGHT) { z0 = ANIM_Z(an); g_true_height = z0; ANIM_Z(an) = (short)raise; }
     const SPoint *saved = g_point;
-    g_point = point;
-    int r = bullets_collide_original(point, hit);
-    if (!r) r = leg_retry(point, hit);
+    g_point = p;
+    int r = bullets_collide_original((void *)p, hit);
+    if (!r) r = leg_retry(p, hit);
     g_point = saved;
+    if (raise != NO_HEIGHT) { ANIM_Z(an) = z0; g_true_height = NO_HEIGHT; }
     return r;
 }
 
@@ -303,6 +318,7 @@ static int direct_fire(int weapon) { return is_bullet(weapon) || weapon == 4 || 
 
 int __fastcall bullets_stops(BYTE *item, BYTE *proj, int height, int distance)
 {
+    if (g_true_height != NO_HEIGHT) height = g_true_height;     /* vehicle_hills raised ANIM_Z only for the ground test */
     if (g_cfg.downhill_hits && item && proj && direct_fire(PROJ_WEAPON(proj)) && UID_ARMY(*(DWORD *)proj) == ARMY_PLAYER) {   /* group 4, DOWNHILL HITS */
         int t = UID_RAW_TYPE(*(DWORD *)item);
         if (t == 3 || t == 5 || t == 6) {
@@ -313,6 +329,101 @@ int __fastcall bullets_stops(BYTE *item, BYTE *proj, int height, int distance)
     int stops = bullets_stops_original(item, proj, height, distance);
     if (stops && item && proj) note_for_modern(item, proj);
     return stops;
+}
+
+/* ---------------------------------------------------------------- vehicles on hills (group 4, [gameplay] downhill_hits)
+ * 2026-11-20, user: "all vehicles should be able to shoot enemies on 'higher' or 'lower' [ground] without issue. was
+ * fixed for tanks but needs to be fixed for everything." Game facts (binary VehicleFireWeapon,
+ * game binary ProjectileSet / UpdateProjectile / DoFloatCollisionAtPoint, checked in the exe 0x435250 / 0x435e20 /
+ * 0x435a10):
+ *   - a vehicle fires at z = its ground elevation + VEHICLE_FIRE_Z (8), whatever it aims at; the shot keeps that
+ *     height (weapons 6, 7, 8 take ANIM world_z, +0x18; dest_height is not used for them).
+ *   - ProjectileSet places the shot's ground point (shadow) z px SOUTH of the muzzle (y + z_init); the tracer is
+ *     drawn z px above it, on the muzzle line. The terrain is drawn flat, so the elevation part of z is not a
+ *     real offset on screen.
+ *   - tank cannon / bazooka (MISSILE_FLOAT) are tested at the DRAWN point (shadow y - world_z): they hit what the
+ *     tracer crosses. Jeep MMG (7) / halftrack HMG (8) (RIFLE_FLOAT) are tested at the shadow point: from a hill of
+ *     elevation E their test line runs E + 8 px south of the tracer and misses what the player aims at - with the
+ *     downhill height cap above, the tank hit soldiers below, the machine guns did not.
+ *   - ground: after the items, the shot stops where the tile's elevation ((elevation layer 0x4e355c & 0xf0) >> 2)
+ *     is >= its height; the cannon only at >= height + 4. A shot fired from low ground at a soldier on a plateau
+ *     stops at the plateau's edge.
+ * Changed, for the player's army's vehicle shots (fromUID item type vehicle; also Sarge's captured one):
+ *   1. machine guns: the point is moved up by the shooter's elevation (world_z - VEHICLE_FIRE_Z): the test line
+ *      lies 8 px below the tracer as on flat ground (the game's own offset there).
+ *   2. ground: machine guns get the cannon's margin (ground stops them only at >= height + 4), and any of these
+ *      shots (6, 7, 8) flies on over ground no higher than the ground at the spot Sarge aims at (pointer, tiles
+ *      within AIM_TILES of it; only for the vehicle Sarge drives). Ground higher than that - a ridge between -
+ *      still stops it. Done by raising ANIM world_z for that call only (DoFloatCollisionAtPoint reads it once,
+ *      0x435a6f) and giving units / objects the real height back in bullets_stops (g_true_height).
+ * Enemy vehicles, soldiers' and Sarge's own weapons are unchanged. */
+#define VEHICLE_FIRE_Z    8                         /* game binary: GetElevationHeightAtItem + 8 */
+#define CANNON_WEAPON     6
+#define CANNON_GROUND     4                         /* game binary: the cannon stops at ground >= height + 4 */
+#define ELEV_LAYER        (*(BYTE **)0x4e355c)
+#define AIM_TILES         1                         /* the aimed spot's ground: max over +-1 tile (a soldier's feet) */
+
+static int ground_elev(int x, int y)                /* -1 off the map */
+{
+    BYTE *layer = ELEV_LAYER;
+    int w = MAP_TILES_W, h = MAP_TILES_H;
+    if (!layer || x < 0 || y < 0) return -1;
+    int tx = x >> 4, ty = y >> 4;
+    if (tx >= w || ty >= h) return -1;
+    return (layer[ty * w + tx] & 0xf0) >> 2;
+}
+
+static int aimed_ground(BYTE *proj)                 /* ground elevation at Sarge's aim, -1 = not his vehicle / no aim */
+{
+    BYTE *s = SARGE_UNIT, *v = s ? *(BYTE **)(s + 0x2d0) : NULL;
+    int ax, ay, best = -1;
+    if (!v || *(DWORD *)v != FROM_UID(proj) || !controls_pointer_world(&ax, &ay)) return -1;
+    for (int dy = -AIM_TILES; dy <= AIM_TILES; dy++)
+        for (int dx = -AIM_TILES; dx <= AIM_TILES; dx++) {
+            int e = ground_elev(ax + dx * 16, ay + dy * 16);
+            if (e > best) best = e;
+        }
+    return best;
+}
+
+static int log_once(BYTE **last, DWORD *at, BYTE *proj)   /* one line per shot */
+{
+    DWORD now = GetTickCount();
+    if (g_cfg.log < 2 || (*last == proj && now - *at < 1500)) return 0;
+    *last = proj; *at = now;
+    return 1;
+}
+
+static const SPoint *vehicle_hills(BYTE *proj, const SPoint *p, SPoint *q, int *raise_to)
+{
+    int weapon = PROJ_WEAPON(proj);
+    DWORD from = FROM_UID(proj);
+    if ((weapon != CANNON_WEAPON && weapon != 7 && weapon != 8) || UID_ARMY(*(DWORD *)proj) != ARMY_PLAYER || UID_RAW_TYPE(from) != 3)
+        return p;
+    int z = ANIM_Z(PROJ_ANIM), shooter = z - VEHICLE_FIRE_Z;
+    if (weapon != CANNON_WEAPON && shooter > 0) {                       /* 1. the test line follows the tracer */
+        *q = *p;
+        q->y = (short)(p->y - shooter > 0 ? p->y - shooter : 0);
+        static BYTE *l1; static DWORD t1;
+        if (log_once(&l1, &t1, proj)) mlog("bullets: vehicle shot (weapon %d) from elevation %d: tested %d px up (%d,%d -> %d,%d)", weapon, shooter, shooter, p->x, p->y, q->x, q->y);
+        p = q;
+    }
+    int e = ground_elev(p->x, p->y);
+    if (e < 0 || e < z) return p;                                       /* the game would not stop it here */
+    if (e < z + CANNON_GROUND && weapon != CANNON_WEAPON) {            /* 2. the cannon's margin */
+        static BYTE *l3; static DWORD t3;
+        if (log_once(&l3, &t3, proj)) mlog("bullets: vehicle shot (weapon %d, height %d) at ground %d (%d,%d) -> flies on (cannon margin)", weapon, z, e, p->x, p->y);
+        *raise_to = e + 1;
+        return p;
+    }
+    if (e >= z + CANNON_GROUND) {
+        int aim = aimed_ground(proj);
+        static BYTE *l2; static DWORD t2;
+        if (aim >= e) *raise_to = e + 1;                                /* 2. up to the aimed spot's ground */
+        if (log_once(&l2, &t2, proj)) mlog("bullets: vehicle shot (weapon %d, height %d) at ground %d (%d,%d), aimed ground %d -> %s",
+                                           weapon, z, e, p->x, p->y, aim, aim >= e ? "flies on" : "stopped (the game)");
+    }
+    return p;
 }
 
 /* ---------------------------------------------------------------- legs count (2026-11-19, user: "the hitboxes on

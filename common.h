@@ -102,7 +102,7 @@ struct Config {
     int fix_squash;                 /* [gameplay] fix_squash: no squash death for walking onto a blocked tile (gameplay.c) */
     int longer_range;               /* [gameplay] longer_range: direct-fire weapons reach weapon_range_pct % (gameplay.c) */
     int weapon_range_pct;           /* [gameplay] weapon_range_pct (default 120) */
-    int downhill_hits;              /* [gameplay] downhill_hits: direct fire from high ground hits units below */
+    int downhill_hits;              /* [gameplay] downhill_hits: direct fire hits units below / above (vehicles on hills: bullets.c) */
     int drive_enemy_vehicles;       /* [gameplay] drive_enemy_vehicles: Sarge may drive empty enemy vehicles (capture.c) */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
     int hud_corners;                /* [hud] corners: message box / minimap in the bottom corners (layout.c) */
