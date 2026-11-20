@@ -442,7 +442,7 @@ void controls_fire_state(int *lock_ms_left, int *cancelled)
 static int combat_lock_ms(void)
 {
     static int v = -1;
-    if (v < 0) { v = GetPrivateProfileIntA("controls", "combat_lock_ms", 1500, mod_ini_path()); if (v <= 0) v = WALK_LOCK_AFTER_SHOT_MS; }
+    if (v < 0) { v = GetPrivateProfileIntA("controls", "combat_lock_ms", 0, mod_ini_path());   /* 0 = off (2026-11-20: replaced by the firing zone, user) */ if (v <= 0) v = WALK_LOCK_AFTER_SHOT_MS; }
     return v;
 }
 #define TURN_ONLY_RADIUS         33     /* a hold this close to Sarge, in its first 500 ms: turn only */
