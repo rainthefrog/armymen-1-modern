@@ -737,7 +737,17 @@ static void enemy_arrow(BYTE *it, int cx, int cy, int top, int veh)
     int dx = cx - *(short *)(u + 4), dy = cy - *(short *)(u + 6);
     if (dx * dx + dy * dy > ARROW_RANGE * ARROW_RANGE) return;
     int sx, sy; to_screen(cx, cy, &sx, &sy);
-    if (sx >= 0 && sy >= 0 && sx < g_cfg.width && sy < g_cfg.height - 60) return;
+    int on = sx >= 0 && sy >= 0 && sx < g_cfg.width && sy < g_cfg.height;
+    /* on screen but hidden by the (enlarged) HUD (2026-11-20, user: "make sure the enemy indicator displays if the enemy
+     * is under the UI"): a red marker pointing down, just above the HUD panel at his x */
+    if (on && (layout_on_hud_panel(sx, sy) || layout_on_hud_panel(sx, sy - 12))) {
+        int my = sy - 12;
+        for (int k = 0; k < 400 && my > 10 && (layout_on_hud_panel(sx, my) || layout_on_hud_panel(sx - 6, my) || layout_on_hud_panel(sx + 6, my)); k++) my -= 2;
+        for (int k = 0; k < 7; k++) line(sx - 6 + k, my - 8 + k, sx + 6 - k, my - 8 + k, k == 0 ? C_BLACK : C_RED, 0);   /* triangle, tip down */
+        g_near_count++;
+        return;
+    }
+    if (on && sy < g_cfg.height - 60) return;
     edge_arrow(cx, cy, C_RED);
     g_near_count++;
 }
