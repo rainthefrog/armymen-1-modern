@@ -889,3 +889,31 @@ int layout_art_margin(int d, int ry)
     if (!art || !art->bits || !art->has_ck || src.right - src.left < LAYOUT_DESIGN_W || src.bottom - src.top < PANEL_ROWS) return 0;
     return ry >= 0 && ry < PANEL_ROWS && art_margin(art, &src, d, ry);
 }
+
+/* minimap.c (2026-11-20): a HUD design point -> the first pixel of the finished frame that shows design pixel
+ * (x, y) after the groups are enlarged. The inverse of unscale_with with layout_scale_corners' own arithmetic
+ * (frame pixel X of a piece shows 1x pixel UN(X - dst_x, q), so the first X showing s is ceil(s * q / 64)): what is
+ * drawn over the enlarged minimap lines up with it and with the pointer mapping. Returns the piece's scale in
+ * 64ths (64 = not enlarged). */
+int layout_hud_point(int design_x, int design_y, int *sx, int *sy)
+{
+    int x1 = design_x, y1 = design_y;
+    if (layout_active()) {
+        int dx, dy;
+        layout_offset(ANCHOR_HUD, &dx, &dy);
+        x1 += layout_hud_dx(design_x);
+        y1 += dy;
+    }
+    *sx = x1; *sy = y1;
+    Zones z = zones();
+    if (!z.on || !layout_view_is_gameplay()) return ONE;
+    Piece p[5]; int n = pieces(&z, p), h = g_cfg.height;
+    for (int i = n - 1; i >= 0; i--) {                          /* the topmost piece first, as unscale_with */
+        if (x1 < p[i].src_x || x1 >= p[i].src_x + p[i].w1 || y1 < h - PANEL_ROWS || y1 >= h) continue;
+        int q = p[i].q, dh = SC(PANEL_ROWS, q);
+        *sx = p[i].dst_x + ((x1 - p[i].src_x) * q + ONE - 1) / ONE;
+        *sy = h - dh + ((y1 - (h - PANEL_ROWS)) * q + ONE - 1) / ONE;
+        return q;
+    }
+    return ONE;
+}

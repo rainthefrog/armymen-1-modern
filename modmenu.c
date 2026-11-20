@@ -114,7 +114,8 @@ enum { K_ON = 1, K_OFF, K_CYCLE, K_TAB, K_BACK, K_OPEN };
 #define D_A(d)     ((int)(((d) >> 12) & 0xfff))
 #define D_B(d)     ((int)((d) & 0xfff))
 
-/* rows: source 0 = panel.c row (index = its place in panel.c g_rows), 1 = modern.c feature, 2 = cycle (0 speed,
+/* rows: source 0 = panel.c row (index = its place in panel.c g_rows), 1 = modern.c feature, 3 = panel.c row found by
+ * its value (MM_VALUE), 2 = cycle (0 speed,
  * 1 zoom, 2 minimap ...). Pages = logical groups (user 2026-11-19: "consolidated into logical grouping and have
  * toggles in the mod settings"): GENERAL = picture and interface, COMBAT = the shooting / damage rules
  * (bullets.c groups 1-4, health), MODERN 1 / 2 = modern.c features. At most 18 rows a page (2 x ROWS_PER_COL). */
@@ -135,6 +136,13 @@ static const Item COMBAT[] = {
 static const Item MENUS[] = {
     { "Sharp menu text", 0, 19 }, { "Buttons press in", 0, 16 },
 };
+/* minimap.c switches: source 3 = the panel.c row holding that value (found by its pointer, so the row index
+ * does not matter - rows appended by other features before them do not shift these) */
+static int *const MM_VALUE[] = { &g_cfg.mm_blips, &g_cfg.mm_sarge, &g_cfg.mm_contrast, &g_cfg.mm_hover };
+static const Item MINIMAP[] = {
+    { "Bigger blips", 3, 0 }, { "Sarge marked", 3, 1 }, { "Map contrast", 3, 2 }, { "Hover details", 3, 3 },
+    { "Minimap size", 2, 2 },
+};
 static const Item MODERN1[] = {
     { "Dodge roll key", 1, MOD_ROLL }, { "Sprint stamina", 1, MOD_STAMINA },
     { "Side btn weapons", 1, MOD_SIDE_BUTTONS }, { "Sprint toggle", 1, MOD_SPRINT_TOGGLE },
@@ -149,7 +157,7 @@ static const Item MODERN2[] = {
 };
 #define N(a) ((int)(sizeof a / sizeof a[0]))
 static const struct { const char *tab; const Item *items; int n; } PAGES[] = {
-    { "GENERAL", GENERAL, N(GENERAL) }, { "COMBAT", COMBAT, N(COMBAT) }, { "MODERN 1", MODERN1, N(MODERN1) }, { "MODERN 2", MODERN2, N(MODERN2) }, { "MENUS", MENUS, N(MENUS) },
+    { "GENERAL", GENERAL, N(GENERAL) }, { "COMBAT", COMBAT, N(COMBAT) }, { "MODERN 1", MODERN1, N(MODERN1) }, { "MODERN 2", MODERN2, N(MODERN2) }, { "MENUS", MENUS, N(MENUS) }, { "MINIMAP", MINIMAP, N(MINIMAP) },
 };
 #define NPAGES N(PAGES)
 
@@ -161,11 +169,13 @@ static int g_ready;                /* templates copied, patches in */
 
 static int item_value(const Item *it)
 {
+    if (it->source == 3) return panel_row_value(panel_row_of(MM_VALUE[it->index]));
     return it->source == 0 ? panel_row_value(it->index) : it->source == 1 ? modern_on(it->index) : 0;
 }
 static void item_set(const Item *it, int on)
 {
-    if (it->source == 0) panel_row_set(it->index, on);
+    if (it->source == 3) panel_row_set(panel_row_of(MM_VALUE[it->index]), on);
+    else if (it->source == 0) panel_row_set(it->index, on);
     else if (it->source == 1 && modern_on(it->index) != (on != 0)) modern_toggle(it->index);
 }
 static char g_vtext[6][16];
