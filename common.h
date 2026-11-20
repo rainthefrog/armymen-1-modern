@@ -281,6 +281,7 @@ void hud_draw_picture_raw(void *picture, int x, int y);   /* hud.c: at a final s
 int layout_hud_dx(int design_x);           /* layout.c: HUD x offset (split panel) */
 int layout_hud_gap(void);                  /* layout.c: width of the spare-weapon gap in the HUD */
 int layout_on_hud_panel(int x, int y);     /* layout.c: game point on the (split) HUD panel */
+int layout_hud_top(void);                    /* layout.c: topmost row of any HUD pixel (cheap pre-test) */
 int weapons_hud_gap(void);                 /* weapons.c: the gap it needs (0 = none) */
 int weapons_ui_at(int x, int y);            /* weapons.c: game point is on the spare-weapon column */
 void weapons_click_at(int x, int y);       /* weapons.c: left click on a HUD weapon box uses it */
@@ -368,6 +369,7 @@ void hdworld_note_copy(Surf *d, RECT dr, Surf *s, RECT sr, int keyed, DWORD lo, 
 void hdworld_note_fill(Surf *d, RECT r);
 void hdworld_clear_run(Surf *d, int y, int x0, int x1);
 void hdworld_under_run(Surf *d, int y, int x0, int x1);   /* hdworld.c: ground-level overlay (route line): behind objects */
+int hdworld_under_fill(Surf *d, int y, int x0, int x1, BYTE c);   /* hdworld.c: the same for a run in colour c (0 = no mask: draw per pixel) */
 void hdworld_cell_low(int low);   /* roofs.c: the cell the game is drawing is a low object (rock, bush) */
 void hdworld_cell_top(int top);   /* hdworld.c: the cell being drawn is a vehicle turret (above its hull) */
 void hdworld_cell_sort(int y);   /* roofs.c: the drawn cell's sort row inside its image (world_pos.y - wrect.top) */
@@ -541,6 +543,7 @@ void modern_key_capture(int k);
 int modern_key_capturing(void);
 int modern_key_pressed(int vk);
 void modern_note_hit(BYTE *item);           /* bullets.c: Sarge's projectile stopped at item */
+void modern_lane(float out[4]);              /* modern.c: mission path band colours (palette indices) + opacity, for gpu.c */
 void modern_note_shot(void);                /* controls.c: Sarge fired */
 void modern_note_damage(int from_x, int from_y);   /* bullets.c: an enemy projectile hit Sarge */
 void modern_ping(int wx, int wy);

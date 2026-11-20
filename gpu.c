@@ -44,8 +44,10 @@ static const char SHADERS[] =
 "  float4 tik[8];   /* keys of the building's images (as tk) */\n"
 "  float4 tsg;      /* the cut-away circle: xy = Sarge (picture px), z = radius (0 = no circle), w = enemy circles in ten */\n"
 "  float4 ten[4];   /* circles round enemies firing from under a roof: xy (picture px), z radius */\n"
+"  float4 lane;     /* mission path band (modern_lane): x, y = palette index of fill / edge (-1 none), z, w = their opacity */\n"
 "};\n"
 "Texture2D tex : register(t0);\n"
+"Texture2D<uint> fbytes : register(t7);   /* the frame's palette indices (ps_resolve; ps_world: the lane bytes) */\n"
 "SamplerState pt : register(s0);\n"
 "SamplerState ln : register(s1);\n"
 "struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
@@ -403,8 +405,14 @@ static const char SHADERS[] =
 "  col = zpaint(col, zp.y);                                        /* target spots: on everything (door thresholds) */\n"
 "  float cov = shadowmap.SampleLevel(ln, gp / mode.zw, 0).r;\n"
 "  col *= 1 - 0.3 * cov;\n"
-"  /* ground-level overlay (route line): above the ground, behind every object, faint where one covers it */\n"
-"  if (und) { float3 game = tex.Load(int3(ip, 0)).rgb; col = (!spr && !hasf) ? game : lerp(col, game, 0.3); }\n"
+"  /* ground-level overlay (route line): above the ground, behind every object, faint where one covers it;\n"
+"     the mission path band's two bytes (lane.xy) are see-through by lane.zw (2026-11-20) */\n"
+"  if (und) {\n"
+"    float3 game = tex.Load(int3(ip, 0)).rgb;\n"
+"    int lb = (int)fbytes.Load(int3(ip, 0));\n"
+"    float la = (lane.x >= 0 && lb == (int)lane.x) ? lane.z : (lane.y >= 0 && lb == (int)lane.y) ? lane.w : 1;\n"
+"    col = (!spr && !hasf) ? lerp(col, game, la) : lerp(col, game, 0.3 * la);\n"
+"  }\n"
 "  /* the pinned objective box (objectives.c, 2026-11-20, user: \"the mission text doesn't look like it was cleanly\n"
 "     cut from the background\"): the UPSCALED battlefield darkened under it; its text is interface (game pixels) */\n"
 "  if (td.z > td.x && gp.x >= td.x && gp.y >= td.y && gp.x < td.z && gp.y < td.w) col *= 0.3;\n"
@@ -423,7 +431,7 @@ static const char SHADERS[] =
 "   ps_resolve: raw Ref (e | sx << 16, sy | expect << 16 | flags << 24) + the shown byte + the entry table\n"
 "   -> the wref format ps_world reads; ps_near: ground within 4 px of a sprite with a margin gets bit 30. */\n"
 "Texture2D<uint2> refs : register(t6);\n"
-"Texture2D<uint> fbytes : register(t7);\n"
+"/* fbytes (t7): declared at the top */\n"
 "Texture2D<uint2> ents : register(t8);\n"
 "Texture2D<uint> wref0 : register(t9);\n"
 "/* Gameplay picture coloured on the GPU (present.c uploads the 8-bit pixels, not 32-bit colours):\n"
@@ -554,7 +562,7 @@ typedef HRESULT (WINAPI *D3DCompileFn)(const void *src, SIZE_T len, const char *
                                         void *include, const char *entry, const char *target, UINT f1, UINT f2,
                                         ID3DBlob **code, ID3DBlob **errors);
 
-typedef struct { float mode[4], amb[4], hd[4], op[4], uvr[4], opid[4], sub[4], zm[4], ramp[64][4], lk[4][4], lo[4][4], pm[4], mr[3][4], tz[32][4], tc[4], tk[32][4], ta[4], td[4], tp[4][4], ti[4]; float tik[8][4], tsg[4], ten[4][4]; } Params;
+typedef struct { float mode[4], amb[4], hd[4], op[4], uvr[4], opid[4], sub[4], zm[4], ramp[64][4], lk[4][4], lo[4][4], pm[4], mr[3][4], tz[32][4], tc[4], tk[32][4], ta[4], td[4], tp[4][4], ti[4]; float tik[8][4], tsg[4], ten[4][4], lane[4]; } Params;   /* lane: the cbuffer's last float4 */
 
 #define AMBIENT_DIM   0.3f      /* fill brightness */
 #define AMBIENT_BLUR  0.05f     /* blur step, in texture coordinates */
@@ -1153,7 +1161,9 @@ static void draw_world(ID3D11Device *dev, ID3D11DeviceContext *ctx, Params *p, i
     ID3D11DeviceContext_PSSetShaderResources(ctx, 12, 1, &g_shadow_srv);
     ID3D11DeviceContext_PSSetShaderResources(ctx, 16, 1, &g_depth_srv);
     ID3D11DeviceContext_PSSetShaderResources(ctx, 17, 1, &g_pick_srv);
+    ID3D11DeviceContext_PSSetShaderResources(ctx, 7, 1, g_idx_ok ? &g_idx_srv : &g_fbytes_srv);   /* the lane bytes (ps_world) */
     draw(ctx, g_ps_world, (float)dest.left, (float)dest.top, (float)(dest.right - dest.left), (float)(dest.bottom - dest.top));
+    { ID3D11ShaderResourceView *n1 = NULL; ID3D11DeviceContext_PSSetShaderResources(ctx, 7, 1, &n1); }
 }
 
 /* The HD menu background (hdart.c) as a texture; re-uploaded when it changes. */
@@ -1209,6 +1219,7 @@ int gpu_draw(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *bb, i
                  { hd ? (hd_w - dw) / 2 / hd_w : 0, (!video && !world && w == 640 && h == 480 && (dw % w || dh % h)) ? 1.0f : 0.0f, (float)dw / w, (float)dh / h } };
     p.sub[0] = subx; p.sub[1] = suby; p.sub[2] = sub_on ? 1.0f : 0.0f;
     p.zm[0] = zcx / w; p.zm[1] = zcy / h; p.zm[2] = zoom > 1.0f ? zoom : 1.0f;
+    modern_lane(p.lane);                                   /* mission path band: see-through bytes (ps_world) */
     int nz = zones ? zones->n : 0;
     if (nz > ZONES_MAX) nz = ZONES_MAX;
     for (int i = 0; i < nz; i++) {

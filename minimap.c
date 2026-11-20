@@ -187,7 +187,12 @@ static int colours(void)
     Pal *p = g_dd ? g_dd->pal : NULL;
     if (!p) return 0;
     if (g_pal_ok && !memcmp(g_pal_seen, p->e, sizeof g_pal_seen)) return 1;   /* palette changes per terrain */
+    /* a few entries changed (the game animates some colours): only their lookup entries again - the whole table
+     * is 256 x 256 distance tests, ~1 ms per frame while colours cycled (2026-11-20 perf) */
+    BYTE changed[256]; int nch = 0;
+    for (int i = 0; i < 256; i++) { changed[i] = memcmp(&g_pal_seen[i], &p->e[i], sizeof p->e[i]) != 0; nch += changed[i]; }
     memcpy(g_pal_seen, p->e, sizeof g_pal_seen);
+    int full = !g_pal_ok || nch > 32;
     const PALETTEENTRY *e = g_pal_seen;
     C_FILL[0] = (BYTE)nearest(e, 255, 70, 70);      /* no army (the game: red) */
     C_FILL[1] = (BYTE)nearest(e, 70, 255, 70);      /* green */
@@ -201,6 +206,7 @@ static int colours(void)
     /* contrast: colours muted 35 % toward their grey, contrast x1.35 around mid grey, then darkened to 75 %,
      * so the bright blips stand out on every terrain (the desert map is all beige, the bayou all green) */
     for (int i = 0; i < 256; i++) {
+        if (!full && !changed[i]) continue;
         int r = e[i].peRed, g = e[i].peGreen, b = e[i].peBlue, l = (r * 30 + g * 59 + b * 11) / 100;
         int c[3] = { r, g, b };
         for (int k = 0; k < 3; k++) {
