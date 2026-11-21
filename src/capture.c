@@ -52,6 +52,8 @@
  *   The spare slot 49 is never left empty after a capture (blank stand-in, see slot_clear: VehicleFind crash fix).
  *   FUN_0041d800 UnitEnterVehicle (__fastcall ecx unit, edx vehicle): wrapped, refused for the captured one.
  *   call 0x4296b6 -> HandleVehicle 0x4296f0 (__fastcall ecx vehicle): skipped for the captured one.
+ *   FUN_0041a3e0 army file writer (__fastcall ecx FILE *): wrapped - the captured vehicle is written as its own army's
+ *   vehicle (own UID) and Sarge on foot (Play Again crash fix 2026-11-21, see capture_army_save).
  * ============================================================================================ */
 #include "common.h"
 
@@ -550,4 +552,31 @@ BYTE *__fastcall capture_vehicle_find(DWORD uid)
     BYTE *v = LEG_VEH(leg, idx);
     if (!v || IsBadReadPtr(v, 4) || UID(v) != uid) return NULL;
     return v;
+}
+
+/* ---- army file (2026-11-21 CRASH, user: "mission 6 crashes after I steal a tank"; EXCEPTION at 0x417337 in
+ * FUN_004196e0 on Play Again). Reproduced in Wine: Sarge drove a captured Tan tank (player UID 04c30032, slot 49)
+ * when mission 6 was won -> the game wrote the army file (<player>.asf, FUN_0046a970 -> FUN_0041a3e0) with every
+ * legion's vehicles BY UID - army 1's list held the tank under the borrowed player UID. Mission 7 continues on the
+ * same map; its Play Again reloads the map and the army file (FUN_0041a970, mission index > 0) and looks each record
+ * up with ItemFind: 04c30032 = player slot 49, empty after the reload -> NULL -> written through (0x417337).
+ * FUN_0041a3e0 (army file writer, __fastcall ecx = FILE *, caller FUN_0046a970 at 0x46aa3d): wrapped. While it writes,
+ * the captured vehicle carries its own UID again (the file names it as its army's vehicle) and Sarge is written on
+ * foot: with his vehicle link the load puts him back in and capture.c takes the vehicle again BEFORE its army's records
+ * are placed (Wine: its record then not found, crash at 0x416c26). Afterwards both are put back (Sarge still drives).
+ * Reload result (Wine): the tank back as army 1's at its saved spot, Sarge next to it on foot. Kept: everything else. */
+ArmySaveFn capture_army_save_original;
+void __fastcall capture_army_save(void *file)
+{
+    BYTE *v = g_cap.v;
+    int swap = v && UID(v) == g_cap.uid_now;
+    BYTE *s = swap ? SARGE_OF(PLAYER_ARMY) : NULL;
+    if (s && SARGE_VEHICLE(s) != v) s = NULL;
+    if (swap) {
+        UID(v) = g_cap.uid;
+        if (s) SARGE_VEHICLE(s) = NULL;
+        mlog("capture: army file written while Sarge drives vehicle %p - saved as its army's (uid %08lx), Sarge on foot", v, g_cap.uid);
+    }
+    capture_army_save_original(file);
+    if (swap) { UID(v) = g_cap.uid_now; if (s) SARGE_VEHICLE(s) = v; }
 }
