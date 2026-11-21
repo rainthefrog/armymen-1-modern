@@ -340,6 +340,12 @@ void patches_apply(void)
     hook_call("aware: trooper tick fire step (call 0x43d05b) -> aware.c", 0x43d05b, 0x43d0d0, (void *)aware_fire_step);
     hook_call("aware: unit target entry set (call 0x43aa03) -> aware.c", 0x43aa03, 0x43aa10, (void *)aware_unit_target);
     hook_call("aware: mission script ATTACK (call 0x4526ab) -> aware.c (log only)", 0x4526ab, 0x41e9c0, (void *)aware_script_attack);
+    /* patrol.c (2026-11-21, [gameplay] patrol_marches; passes everything through while off): UnitOrders FUN_0041b990
+     * (__fastcall ecx UNIT, edx order, 7 stack args, ret 0x1c) is wrapped to see every enemy unit order: a march at
+     * deploy becomes a patrol, a later order ends it */
+    static const BYTE uorder_o[] = { 0x81,0xec,0xcc,0x00,0x00,0x00 };            /* FUN_0041b990: sub esp,0CCh */
+    patrol_order_original = (UnitOrderFn)hook_wrap("patrol: UnitOrders (FUN_0041b990) -> patrol.c", 0x41b990, uorder_o, sizeof uorder_o,
+                                               (void *)patrol_order);
     /* audio.c (2026-11-21, [audio] am2_sounds; original sounds while off): in the effect buffer create FUN_0040f390,
      * the wave record lookup FUN_004107b0 (swapped for a copy with the Army Men II sound's size / format) and the
      * fread of the sound data (filled from <game>\am2_sounds instead of sounds.asd) */
@@ -357,6 +363,10 @@ void patches_apply(void)
     /* mines.c (2026-11-21, [controls] mine_click): the mine weapon's lay call in FUN_00445c70 (case 11) -> mines_lay,
      * which hands MineLay 0x446600 the tile Sarge's click asked for instead of the muzzle point (else unchanged) */
     hook_call("mines: MineLay (call 0x445f44) -> mines.c", 0x445f44, 0x446600, (void *)mines_lay);
+    /* mines.c (2026-11-21, [controls] sweeper_click; the original behaviour while off): the mine trigger FUN_004398d0
+     * rewritten - the selected sweeper no longer makes Sarge mine-proof, mines revealed by the detector are deactivated */
+    static const BYTE mstep_o[] = { 0x56, 0x57, 0x85,0xd2, 0x8b,0xf9 };          /* push esi; push edi; test edx,edx; mov edi,ecx */
+    hook_jmp("mines: mine trigger (FUN_004398d0) -> mines.c", 0x4398d0, mstep_o, sizeof mstep_o, (void *)mines_step);
 
     {   /* [gameplay] resume_wait_ms (2026-11-20, stutter hunt; default 100 = the original, nothing patched).
          * Entering play - about 50 frames into every mission, and each time a menu / pause closes - the game sets

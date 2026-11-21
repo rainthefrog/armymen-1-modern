@@ -42,16 +42,22 @@
  *   call 0x445f44 (in FUN_00445c70, case 11) -> mines_lay. Callee FUN_00446600 MineLay: __fastcall ecx = WEAPON*,
  *   edx = army index, stack = SPOINT packed (x low word, y high word), ret 4. Kept: the original is always called
  *   (any unit, any weapon); changed: for Sarge's own current weapon with a placement asked by a click, the point.
- * No other game patch. Switch: [controls] mine_click = 1 (default; 0 = the original behaviour, nothing drawn).
+ *   FUN_004398d0 (the mine trigger) -> mines_step (hook_jmp, 2026-11-21, sweeper rules below).
+ * Switches: [controls] mine_click = 1 (default; 0 = the original behaviour, nothing drawn); sweeper_click (below).
  *
  * MINESWEEPER (2026-11-21, user picked rework proposal 2; [controls] sweeper_click = 1, 0 = only the original sweeper)
  * The original (exe): weapon type 20, special, unlimited. Only while SELECTED: every avatar update scans the 20 tiles
  * round the muzzle tile (FUN_004399d0 -> FUN_00439bb0) and reveals hidden mines (+0x70 &= ~0x10, +0x7c &=
  * ~0x40000000, FUN_0042d4e0(&+0x7c, 1)); with FIRE HELD it disarms them: FUN_0040d500 (effect 0x7f at the mine),
  * FUN_0044da60(x, y, 0) (2 s marker), FUN_00446390 (sound + FUN_004463b0: off the map with FUN_0040e560, +0x70 |=
- * 0x64 = used, FUN_0042c880(old cell) refreshes the AI's mine cells). A unit of an army whose Sarge holds the
- * sweeper never sets a mine off (FUN_004398d0) - kept as it is. The original hold-fire disarm is kept too.
- * Added here (no game patch, all from the per-frame controls and the overlay):
+ * 0x64 = used, FUN_0042c880(old cell) refreshes the AI's mine cells). A Sarge whose sweeper is selected never sets a
+ * mine off (FUN_004398d0; only a Sarge reaches that test - troopers / vehicles are passed as NULL and always set
+ * mines off) - REMOVED with sweeper_click on (2026-11-21 user decision, mines_step). The hold-fire disarm is kept.
+ * Walking with the sweeper selected is slower in the original (its own animation group): normal speed + sprint with
+ * sweeper_click on (mines_sweeper_walk_mul, controls.c controls_move).
+ * Added here (the mine trigger rewrite mines_step; the rest from the per-frame controls and the overlay):
+ *   - a mine the detector REVEALS (it was hidden) is DEACTIVATED: stays, visible ("SAFE"), collectable, never goes off
+ *     again under anyone (2026-11-21, "deactivated mines" below; checked by mines_step);
  *   - detector: while Sarge CARRIES the sweeper (any of the six boxes, selected or not - weapons_carried) every laid
  *     mine within SWEEP_RADIUS of him is revealed the game's way; a newly revealed one beeps (the game's
  *     WEAPON_ACTIVATE click, FUN_00403030, rate-limited); with the sweeper SELECTED it also beeps faster the nearer
@@ -278,6 +284,41 @@ static int laid_mine(BYTE *o)
     return OBJ_CATEGORY(o) == CAT_WEAPON_OBJ && OBJ_NUMBER(o) == TYPE_MINE && !(OBJ_FLAGS(o) & (OF_IN_BAG | OF_USED)) && OBJ_CELL(o);
 }
 static int objects_ok(void) { return OBJECTS && OBJECT_COUNT > 0 && OBJECT_COUNT < 20000; }
+
+/* ---------------------------------------------------------------- deactivated mines (2026-11-21)
+ * User: "Mines - no - don't add avoidance of mines. they should be deactivated." A mine the detector REVEALS (it was
+ * hidden: enemy mines, Boot Camp's field mines) is disarmed in place: it stays on the map, visible, collectable with a
+ * click, but goes off under NOBODY any more (Sarge, his squad, the enemy - chosen: "disarmed in place" for everyone).
+ * Mines that were never hidden (the ones Sarge or his army laid) stay armed: they are traps for the enemy. The set is
+ * kept here by object index (the game has no such flag: every bit of +0x70 has a meaning) and checked by the mine
+ * trigger rewrite mines_step (FUN_004398d0); new mission / Play Again (the game clock starts again) = empty. */
+#define MAX_OBJECTS      20000
+#define GAME_PTR         (*(BYTE **)0x4b3f70)
+#define GAME_CLOCK       (*(DWORD *)(GAME_PTR + 0x44))   /* the clock the 6000 arm test uses (laid time +0xcc) */
+static BYTE g_safe[MAX_OBJECTS / 8], g_was_hidden[MAX_OBJECTS / 8];
+static struct { BYTE *objects; int count, key; DWORD clock; } g_safe_for;
+static int bit_get(const BYTE *b, int i) { return i >= 0 && i < MAX_OBJECTS && (b[i >> 3] >> (i & 7) & 1); }
+static void bit_set(BYTE *b, int i, int on) { if (i < 0 || i >= MAX_OBJECTS) return; if (on) b[i >> 3] |= (BYTE)(1 << (i & 7)); else b[i >> 3] &= (BYTE)~(1 << (i & 7)); }
+static void safe_sync(void)
+{
+    if (!GAME_PTR) return;
+    int key = (*(int *)(GAME_PTR + 0x74) << 16) ^ *(int *)(GAME_PTR + 0x70);
+    DWORD now = GAME_CLOCK;
+    if (OBJECTS != g_safe_for.objects || OBJECT_COUNT != g_safe_for.count || key != g_safe_for.key || now + 1000 < g_safe_for.clock) {
+        memset(g_safe, 0, sizeof g_safe); memset(g_was_hidden, 0, sizeof g_was_hidden);
+        g_safe_for.objects = OBJECTS; g_safe_for.count = OBJECT_COUNT; g_safe_for.key = key;
+    }
+    g_safe_for.clock = now;
+}
+static int obj_index(BYTE *o);
+static int mine_safe(BYTE *o) { return sweeper_enabled() && bit_get(g_safe, obj_index(o)); }
+static void mine_deactivate(BYTE *o, const char *how)
+{
+    int i = obj_index(o);
+    if (bit_get(g_safe, i)) return;
+    bit_set(g_safe, i, 1);
+    mlog("sweeper: mine #%d at %d,%d (army %d) DEACTIVATED (%s) - it no longer goes off", i, OBJ_X(o), OBJ_Y(o), OBJ_ARMY(o), how);
+}
 static int dist(int x0, int y0, int x1, int y1) { double dx = x1 - x0, dy = y1 - y0; return (int)sqrt(dx * dx + dy * dy); }
 static int obj_index(BYTE *o) { return (int)((o - OBJECTS) / OBJECT_SIZE); }
 
@@ -356,6 +397,7 @@ static int sweep_plan(BYTE *o)
 static void bag_mine(BYTE *o)
 {
     int cell = OBJ_CELL(o);
+    bit_set(g_safe, obj_index(o), 0); bit_set(g_was_hidden, obj_index(o), 0);   /* laid again later: armed as any new mine */
     if (cell) OFF_THE_MAP(o);
     OBJ_FLAGS(o) = (BYTE)((OBJ_FLAGS(o) | OF_IN_BAG) & ~(OF_USED | OF_PLACED | OF_HIDDEN));
     OBJ_FLAGS2(o) &= ~OF2_HIDDEN;
@@ -425,12 +467,16 @@ static int sweeper_frame(BYTE *u, DWORD now, int walking)
     if (!SW.carried) { SW.count = 0; D.obj = -1; return 0; }
     SW.selected = SARGE_WEAPON(u) && W_TYPE(SARGE_WEAPON(u)) == TYPE_SWEEPER;
     if (SW.selected) { short m[2]; MUZZLE_POINT(u, m); SW.plate_x = m[0]; SW.plate_y = m[1]; }
+    safe_sync();
     int sx = SARGE_X(u), sy = SARGE_Y(u), count = 0, nearest = 1 << 30, fresh = 0;
     for (int i = 0; i < OBJECT_COUNT; i++) {
         BYTE *o = object(i);
         if (!laid_mine(o)) continue;
+        int hidden = (OBJ_FLAGS(o) & OF_HIDDEN) || (OBJ_FLAGS2(o) & OF2_HIDDEN);
+        if (hidden) bit_set(g_was_hidden, i, 1);          /* hidden once: revealing it (ours or the game's sweep) deactivates it */
         int d = dist(sx, sy, OBJ_X(o), OBJ_Y(o));
         if (d > SWEEP_RADIUS) continue;
+        if (bit_get(g_was_hidden, i)) mine_deactivate(o, hidden ? "revealed by the detector" : "revealed, in detector range");
         count++;
         if (d < nearest) nearest = d;
         if ((OBJ_FLAGS(o) & OF_HIDDEN) || (OBJ_FLAGS2(o) & OF2_HIDDEN)) {     /* the game's reveal (FUN_00439bb0) */
@@ -477,6 +523,40 @@ static int sweeper_click(BYTE *u, int wx, int wy, DWORD now, int *walk_x, int *w
     return 2;
 }
 
+/* Walking with the sweeper SELECTED (2026-11-21, user: normal speed + sprint): the game walks Sarge with the sweeper's
+ * own animation group (avatar +0 = 4; the rifle's is 0), whose moving actions are slower (ANIM +0xac speed 60 against the
+ * rifle's 88, Wine Boot Camp: ~85 against ~150 px/s). controls.c controls_move (AnimMove wrap) multiplies this step by
+ * the factor returned here, so the walk is the rifle's: the rifle group's speed for the same action as last seen
+ * (recorded here from every rifle-group step), else SWEEP_WALK_NORMAL / SWEEP_WALK_SLOW, x SWEEP_WALK_CADENCE. The sprint comes on top
+ * (controls.c). Only while sweeper_click is on and the sweeper is the current weapon; the hold-fire sweep (state 7) does
+ * not move, so it stays as it is. */
+#define SARGE_AVATAR(u)      (*(BYTE **)((u) + 0x268))
+#define AV_GROUP(a)          (*(int *)(a))             /* animation group (FUN_0043a0f0 table index): 0 rifle, 4 sweeper */
+#define AV_ACTION(a)         (*(int *)((a) + 0x14))    /* 0..3 = the moving actions (FUN_004474c0 cases 0..3) */
+#define AV_GROUP_RIFLE       0
+#define AV_GROUP_SWEEPER     4
+#define SWEEP_WALK_NORMAL    88                        /* the rifle group's walk speed (Wine log) ... */
+#define SWEEP_WALK_SLOW      60                        /* ... and the sweeper group's */
+#define SWEEP_WALK_CADENCE   1.05f                     /* the sweeper walk still covered ~5 % less ground at the same ANIM speed (its
+                                                        * steps; Wine walking down: x1.47 132-136, x1.61 150-167, rifle 140-155 px/s) */
+float mines_sweeper_walk_mul(BYTE *u, int speed)
+{
+    static short normal[4];
+    BYTE *av = u ? SARGE_AVATAR(u) : NULL;
+    if (!av || IsBadReadPtr(av, 0x18) || speed <= 0) return 1.0f;
+    int act = AV_ACTION(av);
+    if (act < 0 || act > 3) return 1.0f;
+    if (AV_GROUP(av) == AV_GROUP_RIFLE) { normal[act] = (short)speed; return 1.0f; }
+    if (AV_GROUP(av) != AV_GROUP_SWEEPER || !sweeper_enabled() || !SARGE_WEAPON(u) || W_TYPE(SARGE_WEAPON(u)) != TYPE_SWEEPER) return 1.0f;
+    float want = normal[act] > 0 ? (float)normal[act] : (float)speed * SWEEP_WALK_NORMAL / SWEEP_WALK_SLOW;
+    float mul = want / (float)speed * SWEEP_WALK_CADENCE;
+    if (g_cfg.log >= 2) {
+        static DWORD at;
+        if (GetTickCount() - at > 2000) { at = GetTickCount(); mlog("sweeper: walking with the sweeper selected - speed %d -> %.0f (x%.2f)", speed, want, mul); }
+    }
+    return mul > 1.0f ? mul : 1.0f;
+}
+
 int mines_sweep_info(SweepInfo *si)
 {
     BYTE *u = SARGE;
@@ -506,6 +586,7 @@ int mines_sweep_marks(SweepMark *m, int max, int x0, int y0, int x1, int y1)
         if (x < x0 || x > x1 || y < y0 || y > y1) continue;
         m[n].x = (short)x; m[n].y = (short)y; m[n].own = mw && charge_slot(mw, o) >= 0;   /* Sarge's own charge (army 0 field mines in Boot Camp are not his) */
         m[n].in_range = dist(SARGE_X(u), SARGE_Y(u), x, y) <= SWEEP_RADIUS;
+        m[n].safe = (char)mine_safe(o);
         n++;
     }
     return n;
@@ -602,6 +683,67 @@ void __fastcall mines_lay(BYTE *weapon, int army, DWORD point)
     }
 }
 
+/* ---------------------------------------------------------------- the mine trigger (2026-11-21)
+ * Rewrite of FUN_004398d0 (hook_jmp; caller FUN_00439800 "something moves", once per object found at the mover's
+ * point that is a mine: call 0x439886). __fastcall ecx = the mine object, edx = the mover if it is a Sarge (an
+ * "avatar" item, UID type 6; NULL for troopers, vehicles, everything else), no stack args, plain ret.
+ * The original:
+ *   mover is a Sarge and HIS army's Sarge has the minesweeper selected (FUN_00448e60(army) -> FUN_00448d70: the type of
+ *     his current weapon == 20): a hidden mine is revealed (+0x7c &= ~0x40000000, +0x70 &= ~0x10, FUN_0042d4e0(&+0x7c,
+ *     1)); the player's Sarge (army 0) with fire held disarms it (FUN_00446390); either way it does NOT go off -
+ *     "a Sarge with the sweeper selected is mine-proof";
+ *   else: the mine's army in play (FUN_0041ac10(+0x74)) and laid more than 6000 game ms ago (clock gpGame +0x44, laid
+ *     at +0xcc) -> it goes off (FUN_00439970).
+ * Kept: all of that while [controls] sweeper_click = 0, and with it on the reveal and the hold-fire disarm (the
+ * original sweep). Changed with sweeper_click on: (B1) the sweeper no longer makes Sarge mine-proof - a mine he steps
+ * on goes off unless it is disarmed; (B3) a DEACTIVATED mine (revealed by the detector, above; a mine revealed here
+ * by stepping on it with the sweeper selected counts too) never goes off, under anyone. */
+typedef int (__fastcall *IntFn)(int v);
+#define SARGE_WEAPON_OF  ((IntFn)0x448e60)            /* army -> that army's Sarge's current weapon slot */
+#define WEAPON_TYPE_OF   ((IntFn)0x448d70)            /* weapon slot -> weapon type */
+#define ARMY_ACTIVE      ((IntFn)0x41ac10)            /* army index -> in play (bit 0) */
+#define MINE_BLOW        ((ObjFn)0x439970)            /* the mine goes off: off the map (0x446390) + blast 0x434b90 */
+#define OBJ_LAID_AT(o)   (*(DWORD *)((o) + 0xcc))
+#define MINE_ARM_MS      6000                         /* 0x1770 */
+void __fastcall mines_step(BYTE *mine, DWORD *who)
+{
+    int mod = sweeper_enabled();
+    if (who) {
+        int army = (int)((*who >> 26) & 7) - 1;
+        if (WEAPON_TYPE_OF(SARGE_WEAPON_OF(army)) == TYPE_SWEEPER) {
+            int was_hidden = (OBJ_FLAGS2(mine) & OF2_HIDDEN) != 0;
+            if (was_hidden) {                              /* the game's reveal */
+                OBJ_FLAGS2(mine) &= ~OF2_HIDDEN;
+                OBJ_FLAGS(mine) &= (BYTE)~OF_HIDDEN;
+                OBJ_DIRTY(&OBJ_FLAGS2(mine), 1);
+            }
+            if (army == 0 && (INPUT & INPUT_FIRE)) {       /* the original hold-fire sweep: disarmed (destroyed) */
+                if (mod) mlog("sweeper: Sarge steps on mine #%d with fire held - disarmed as the original", obj_index(mine));
+                MINE_DESTROY(mine);
+                return;
+            }
+            if (!mod) return;                              /* original: mine-proof */
+            if (was_hidden) { safe_sync(); mine_deactivate(mine, "revealed under Sarge's sweeper"); }
+        }
+    }
+    if (mod) {
+        safe_sync();
+        if (mine_safe(mine)) {
+            static int last; static DWORD at;
+            if (obj_index(mine) != last || GetTickCount() - at > 2000) {
+                last = obj_index(mine); at = GetTickCount();
+                mlog("sweeper: %s steps on DEACTIVATED mine #%d at %d,%d - no blast", who ? "a Sarge" : "a soldier / vehicle", last, OBJ_X(mine), OBJ_Y(mine));
+            }
+            return;
+        }
+    }
+    if ((ARMY_ACTIVE(OBJ_ARMY(mine)) & 1) && GAME_CLOCK - OBJ_LAID_AT(mine) > MINE_ARM_MS) {
+        if (mod) mlog("sweeper: mine #%d at %d,%d (army %d) goes off under %s", obj_index(mine), OBJ_X(mine), OBJ_Y(mine), OBJ_ARMY(mine),
+                      who ? "a Sarge" : "a soldier / vehicle");
+        MINE_BLOW(mine);
+    }
+}
+
 /* weapons.c (mine pack top-up, 2026-11-21): how many charges of this mine weapon really lie in the bag - its ammo may
  * never go above this (the top-up used to raise only the ammo count: "more ammo than free charges") */
 int mines_free_charges(BYTE *weapon) { return weapon ? free_charges(weapon, NULL) : 0; }
@@ -628,3 +770,4 @@ int mines_transfer(BYTE *to, BYTE *from, int n)
     }
     return moved;
 }
+

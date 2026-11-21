@@ -463,3 +463,6 @@ void __fastcall aware_script_attack(DWORD who, DWORD target, int a, int b, int c
     if (g_cfg.log >= 2) mlog("aware: mission script orders %08lx to attack %08lx%s", who, target, is_sarge_uid(target) ? " (SARGE - scripted, not delayed)" : "");
     GAME_SCRIPT_ATTACK(who, target, a, b, c, d);
 }
+
+/* patrol.c (2026-11-21): a trooper of this unit has fully noticed Sarge (a patrol ends there) */
+int aware_unit_noticed(BYTE *unit) { return on() && unit && unit_noticed(unit, NULL); }

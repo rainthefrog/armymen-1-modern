@@ -3078,12 +3078,16 @@ void __fastcall controls_move(BYTE *obj, int flag, int arg)
         if (n++ < 40) mlog("controls: move obj %p at %d,%d speed %d flag %d | sarge %d,%d +0x268 %p",
                            obj, OBJ_X(obj), OBJ_Y(obj), OBJ_SPEED(obj), flag, SARGE_X(u), SARGE_Y(u), *(void **)(u + 0x268));
     }
-    if (!S.running || !g_cfg.controls_modern || !u || SARGE_VEHICLE(u) || !obj ||
+    if (!g_cfg.controls_modern || !u || SARGE_VEHICLE(u) || !obj ||
         OBJ_X(obj) != SARGE_X(u) || OBJ_Y(obj) != SARGE_Y(u) || !OBJ_SPEED(obj)) {
         controls_move_original(obj, flag, arg);
         return;
     }
-    short speed = OBJ_SPEED(obj), fast = (short)(speed * g_cfg.controls_run_speed);
+    /* walking with the minesweeper selected: the game's sweeper walk is slower (mines.c, 2026-11-21) - normal speed */
+    float smul = mines_sweeper_walk_mul(u, OBJ_SPEED(obj));
+    if (!S.running && smul <= 1.0f) { controls_move_original(obj, flag, arg); return; }
+    float run_mul = (S.running ? g_cfg.controls_run_speed : 1.0f) * smul;
+    short speed = OBJ_SPEED(obj), fast = (short)(speed * run_mul);
     OBJ_SPEED(obj) = fast;
     short ox = OBJ_X(obj), oy = OBJ_Y(obj);
     controls_move_original(obj, flag, arg);
@@ -3100,7 +3104,7 @@ void __fastcall controls_move(BYTE *obj, int flag, int arg)
     if (sarge_blocked_at(ox, oy)) return;      /* inside a building etc.: the game moves freely there */
     if (path_blocked(ox, oy, dx, dy)) {
         /* slide along the wall: the step's x or y part alone, else a walking step, else none */
-        int wx = (int)(dx / g_cfg.controls_run_speed), wy = (int)(dy / g_cfg.controls_run_speed);
+        int wx = (int)(dx / run_mul), wy = (int)(dy / run_mul);
         int tx = 0, ty = 0;
         if (!path_blocked(ox, oy, dx, 0) && abs(dx) >= abs(dy) / 2) tx = dx;
         else if (!path_blocked(ox, oy, 0, dy) && abs(dy) >= abs(dx) / 2) ty = dy;

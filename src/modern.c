@@ -1103,6 +1103,7 @@ static void modern_draw_body(Surf *b)
          * the hand point of his animation frame), drawn last, clear of the HUD (px):
          *   - the detector radius, faint (dotted sky blue) - where carrying it reveals mines;
          *   - each visible laid mine in view: an outlined ring, enemy red (breathing 8..10 px), own green;
+         *     a deactivated one (revealed by the detector, mines.c): a steady grey ring + green "SAFE";
          *   - sweeper selected: pulses out of the plate while mines are in range, faster / red the nearer (a metal
          *     detector), a small steady green dot when nothing is in range;
          *   - the pointer: on a mine the disarm pointer (crosshair ring on the mine + what a click does, greyed with
@@ -1118,6 +1119,11 @@ static void modern_draw_body(Surf *b)
             int breathe = (int)((t / 120) % 6); breathe = breathe > 3 ? 6 - breathe : breathe;   /* 0..3..0 */
             for (int i = 0; i < n; i++) {
                 int x, y; to_screen(mk[i].x, mk[i].y, &x, &y);
+                if (mk[i].safe) {                                 /* deactivated (revealed by the detector): steady grey ring, green SAFE */
+                    circle(x, y, 9, C_BLACK, 0); circle(x, y, 8, C_GREY, 0); circle(x, y, 7, C_BLACK, 0);
+                    text(x + 11, y - 4, "SAFE", C_GREEN, 1);
+                    continue;
+                }
                 int r = mk[i].own ? 8 : 8 + breathe * 2 / 3;
                 BYTE c = mk[i].own ? C_GREEN : C_RED;
                 circle(x, y, r + 1, C_BLACK, 0); circle(x, y, r, c, 0); circle(x, y, r - 1, C_BLACK, 0);
