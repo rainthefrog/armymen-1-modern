@@ -560,6 +560,8 @@ static int wall_gap(int x, int y, int d)
     for (int k = 1; k <= GAP_REACH && !right; k++) right = cell_blocked(x - px * k, y - py * k) || cell_blocked(x + DX[d] - px * k, y + DY[d] - py * k);
     return left && right;
 }
+#define WIN_STEP 16                      /* floor_now: the window on Sarge moves in steps of this many cells */
+static int win_floor(int v) { return v >= 0 ? v / WIN_STEP * WIN_STEP : -((-v + WIN_STEP - 1) / WIN_STEP) * WIN_STEP; }
 #define BIT_SET(m, x, y) ((m)[((y) - fl->cy0) * 2 + (((x) - fl->cx0) >> 5)] |= 1u << (((x) - fl->cx0) & 31))
 #define BIT_GET(m, x, y) ((m)[((y) - fl->cy0) * 2 + (((x) - fl->cx0) >> 5)] & (1u << (((x) - fl->cx0) & 31)))
 static int floor_now(Floor *fl)
@@ -586,12 +588,21 @@ static int floor_now(Floor *fl)
         }
     if (!fl->ncells) return 0;
     int bx0 = box.left / IN_CELL, by0 = box.top / IN_CELL, bx1 = (box.right - 1) / IN_CELL, by1 = (box.bottom - 1) / IN_CELL;
-    int wx0 = (bx0 + bx1) / 2 - IN_N / 2, wy0 = (by0 + by1) / 2 - IN_N / 2;   /* window on the building */
-    static DWORD cached_at; static int cbx0 = -1, cby0, cbx1, cby1;
+    /* The IN_N window on the building - or, when the building box is wider / taller than the window, on SARGE.
+     * 2026-11-21 (user, Desert 1 town: "the shader not drawing all building"; log "no floor cell within 3 (blocked 1,
+     * bhit 0)"): the town's wooden buildings touch each other, pass 1 above chains them into one box of 124 x 134
+     * cells (Wine: box 29,243..152,376, window 58,277+64) and the window centred on that box left Sarge (cell 52,314)
+     * OUTSIDE it - every cell round him counted as blocked (cell_blocked / floor_cell: outside the window). On Sarge
+     * the window moves in steps of WIN_STEP cells (the caches below are per window), Sarge 32..47 cells from its left
+     * / top edge: the circle (CIRCLE_CELLS + 1) and the door search (NEAR_DOOR) always fit. */
+    int wx0 = (bx0 + bx1) / 2 - IN_N / 2, wy0 = (by0 + by1) / 2 - IN_N / 2;
+    if (bx1 - bx0 + 1 > IN_N) wx0 = win_floor(sx / IN_CELL - IN_N / 2);
+    if (by1 - by0 + 1 > IN_N) wy0 = win_floor(sy / IN_CELL - IN_N / 2);
+    static DWORD cached_at; static int cbx0 = -1, cby0, cbx1, cby1, cwx0, cwy0;
     g_in_now = GetTickCount();
-    if (bx0 != cbx0 || by0 != cby0 || bx1 != cbx1 || by1 != cby1 || g_in_now - cached_at > IN_REFRESH_MS) {
+    if (bx0 != cbx0 || by0 != cby0 || bx1 != cbx1 || by1 != cby1 || wx0 != cwx0 || wy0 != cwy0 || g_in_now - cached_at > IN_REFRESH_MS) {
         memset(g_enc, 0, sizeof g_enc); memset(g_bb, 0, sizeof g_bb);     /* (cell_blocked keeps its own answers per world cell) */
-        cbx0 = bx0; cby0 = by0; cbx1 = bx1; cby1 = by1; cached_at = g_in_now;
+        cbx0 = bx0; cby0 = by0; cbx1 = bx1; cby1 = by1; cwx0 = wx0; cwy0 = wy0; cached_at = g_in_now;
     }
     g_bx0 = bx0; g_by0 = by0; g_bx1 = bx1; g_by1 = by1; g_wx0 = fl->cx0 = wx0; g_wy0 = fl->cy0 = wy0;
     rooms_build();                                               /* cell_room for this call */
@@ -676,10 +687,29 @@ static int floor_now(Floor *fl)
         #define IN_CIRCLE(x, y) (((x) - c0x) * ((x) - c0x) + ((y) - c0y) * ((y) - c0y) <= (CIRCLE_CELLS + 1) * (CIRCLE_CELLS + 1))
         #define FLOOR_AT(x, y) (IN_CIRCLE(x, y) && floor_cell(fl, cm, wx0, wy0, bx0, by0, bx1, by1, sl, st, (x), (y)))
         int fx = -1, fy = -1;
-        for (int r = 0; r <= 3 && fx < 0; r++)
+        /* 2026-11-21: under the roof = what is drawn over Sarge's body is THIS building's image (map pixel refs, as
+         * floor_cell). Wine, Desert 1 depot yard (1331,946, a dead enemy lying across Sarge in front of the building's
+         * wall face): "hidden" counts any cover inside a tall cell's RECTANGLE, and the yard round him passes the floor
+         * test where the wall face hangs over it - a circle cut into the front wall. Points known to show something
+         * else (Sarge himself, ground, another sprite) and none showing the building: not under it. No image
+         * reference at all (-1 everywhere): undecided, as before (the fallback below). */
+        int feet_known = 0, feet_bld = 0;
+        {
+            static const int PX[5][2] = { { 0, -2 }, { 0, -8 }, { 0, -14 }, { -4, -8 }, { 4, -8 } };
+            for (int k = 0; k < 5; k++) {
+                int e = hdworld_entry_at(sx + PX[k][0] - sl, sy + PX[k][1] - st);
+                if (e < 0) continue;
+                feet_known++;
+                if (floor_tex_entry(e)) feet_bld++;
+            }
+        }
+        int not_under = feet_known && !feet_bld;
+        if (not_under && g_cfg.log >= 1) { static DWORD at4; if (GetTickCount() - at4 > 3000) { at4 = GetTickCount();
+            mlog("interior: Sarge %d,%d hidden %d%% but no building image over him (%d points known) - no circle", sx, sy, g_sarge_hidden, feet_known); } }
+        for (int r = 0; r <= 3 && fx < 0 && !not_under; r++)
             for (int dy = -r; dy <= r && fx < 0; dy++) for (int dx = -r; dx <= r && fx < 0; dx++)
                 if (FLOOR_AT(c0x + dx, c0y + dy)) { fx = c0x + dx; fy = c0y + dy; }
-        if (fx < 0) {
+        if (fx < 0 && !not_under) {
             /* 2026-11-20 (user: "still not drawing under building shader here"): no cell near him passed the "this
              * building's image is drawn at that map pixel" test (a part outside fl->cells, or no image reference) -
              * the circle without that test (hitbox-free cells only; the GPU still draws it on the building's art) */
@@ -688,9 +718,9 @@ static int floor_now(Floor *fl)
                 for (int dy = -r; dy <= r && fx < 0; dy++) for (int dx = -r; dx <= r && fx < 0; dx++)
                     if (FLOOR_AT(c0x + dx, c0y + dy)) { fx = c0x + dx; fy = c0y + dy; }
         }
-        if (g_cfg.log >= 1 && fx < 0) { static DWORD at; if (GetTickCount() - at > 3000) { at = GetTickCount();
-            mlog("interior: Sarge %d,%d under a roof (hidden %d%%, %d building cells) - no floor cell within 3 (blocked %d, bhit %d)", sx, sy,
-                 g_sarge_hidden, fl->ncells, cell_blocked(sx / IN_CELL, sy / IN_CELL), building_blocked(sx / IN_CELL, sy / IN_CELL)); } }
+        if (g_cfg.log >= 1 && fx < 0 && !not_under) { static DWORD at; if (GetTickCount() - at > 3000) { at = GetTickCount();
+            mlog("interior: Sarge %d,%d under a roof (hidden %d%%, %d building cells) - no floor cell within 3 (blocked %d, bhit %d) box %d,%d..%d,%d window %d,%d+%d", sx, sy,
+                 g_sarge_hidden, fl->ncells, cell_blocked(sx / IN_CELL, sy / IN_CELL), building_blocked(sx / IN_CELL, sy / IN_CELL), bx0, by0, bx1, by1, wx0, wy0, IN_N); } }
         if (fx >= 0) {
             int qn = 0, qi = 0;
             fl->mask[fy * 2 + (fx >> 5)] |= 1u << (fx & 31);
@@ -711,7 +741,39 @@ static int floor_now(Floor *fl)
         #undef FLOOR_AT
         #undef IN_CIRCLE
         g_floor_noimg = 0;
-        fl->circle = 1;
+        fl->circle = !not_under;
+        if (not_under) { fl->inside = 0; goto not_inside; }
+        /* 2026-11-21 (safeguard; the town / depot cases in Wine had their image among the first keys): the GPU opens
+         * the roof only on the images of the first 8 keys (cbuffer tik[8], roofs_interior_note takes them in fl->cells
+         * order), and fl->cells came in the order of the remembered-cell table (a hash) - in a town or a base 16 parts
+         * (Wine: 3..8 keys of 16 parts), so the image over his floor could miss the 8. Now the parts whose image is drawn on most of the floor
+         * cells come first, then the nearest to Sarge (rectangle distance). */
+        {
+            int hits[IN_MAX_CELLS] = { 0 }, dist[IN_MAX_CELLS];
+            for (int y = 0; y < IN_N; y++)
+                for (int x = 0; x < IN_N; x++) {
+                    if (!(fl->mask[y * 2 + (x >> 5)] >> (x & 31) & 1)) continue;
+                    int e = hdworld_entry_at((wx0 + x) * IN_CELL + IN_CELL / 2 - sl, (wy0 + y) * IN_CELL + IN_CELL / 2 - st);
+                    if (e < 0) continue;
+                    for (int i = 0; i < fl->ncells; i++) if (hdworld_cell_has_entry(fl->cells[i], e)) hits[i]++;
+                }
+            for (int i = 0; i < fl->ncells; i++) {
+                const int *w = CELL_WRECT(fl->cells[i]);
+                int dx = sx < w[0] ? w[0] - sx : sx >= w[2] ? sx - w[2] + 1 : 0, dy = sy < w[1] ? w[1] - sy : sy >= w[3] ? sy - w[3] + 1 : 0;
+                dist[i] = dx + dy;
+            }
+            for (int i = 0; i < fl->ncells; i++) {               /* selection sort, 16 at most */
+                int b = i;
+                for (int j = i + 1; j < fl->ncells; j++) if (hits[j] > hits[b] || (hits[j] == hits[b] && dist[j] < dist[b])) b = j;
+                if (b == i) continue;
+                BYTE *tc = fl->cells[i]; fl->cells[i] = fl->cells[b]; fl->cells[b] = tc;
+                int th = hits[i]; hits[i] = hits[b]; hits[b] = th;
+                int td = dist[i]; dist[i] = dist[b]; dist[b] = td;
+            }
+            if (g_cfg.log >= 2) { static DWORD at3; if (GetTickCount() - at3 > 2000) { at3 = GetTickCount();
+                mlog("interior: parts by floor cells shown: %d %d %d %d %d %d (of %d)", hits[0], fl->ncells > 1 ? hits[1] : 0, fl->ncells > 2 ? hits[2] : 0,
+                     fl->ncells > 3 ? hits[3] : 0, fl->ncells > 4 ? hits[4] : 0, fl->ncells > 5 ? hits[5] : 0, fl->ncells); } }
+        }
         goto circle_done;
         /* 2026-11-20 (user: "the room highlight is still wrong - needs to be the entire room"): the walk mask splits a
          * room (free columns that "see" past the walls failed the four-direction test). Now a SEALED fill: every
@@ -854,7 +916,9 @@ static int floor_now(Floor *fl)
                 if (near_door) fl->mask[y * 2 + (x >> 5)] |= 1u << (x & 31);
             }
     }
-    if (g_cfg.log >= 2) { static DWORD at; if (GetTickCount() - at > 2000) { at = GetTickCount(); mlog("interior: Sarge %d,%d hidden %d%%: %d building cell(s), %d door cells, inside %d", sx, sy, g_sarge_hidden, fl->ncells, ndoor, fl->inside); } }
+not_inside:
+    if (g_cfg.log >= 2) { static DWORD at; if (GetTickCount() - at > 2000) { at = GetTickCount(); { int nm = 0; for (int q = 0; q < IN_N * 2; q++) for (unsigned v = fl->mask[q]; v; v &= v - 1) nm++;
+        mlog("interior: Sarge %d,%d hidden %d%%: %d building cell(s), %d door cells, inside %d, floor cells %d", sx, sy, g_sarge_hidden, fl->ncells, ndoor, fl->inside, nm); } } }
     return fl->inside || ndoor > 0;
 }
 #undef BIT_SET
