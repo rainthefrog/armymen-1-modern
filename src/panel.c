@@ -101,6 +101,7 @@ static Row g_rows[] = {
     { "Enemy awareness",          &g_cfg.enemy_awareness, "modern", "enemy_awareness" },   /* aware.c (2026-11-20) */
     { "Squad sprints with Sarge", &g_cfg.squad_sprint, "gameplay", "squad_sprint" },        /* squad.c (2026-11-20) */
     { "Army Men II sounds",       &g_cfg.am2_sounds, "audio", "am2_sounds" },              /* audio.c (2026-11-21) */
+    { "Army Men II music",        &g_cfg.am2_music, "audio", "am2_music" },                /* music.c (2026-11-21) */
 };
 #define ROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 #define SPEED_ROW ROWS                 /* game speed */

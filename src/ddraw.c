@@ -90,6 +90,7 @@ void config_load(void)
     g_cfg.enemy_awareness = GetPrivateProfileIntA("modern", "enemy_awareness", GetPrivateProfileIntA("modern", "enemy_alerts", 1, ini), ini);
     g_cfg.squad_sprint = GetPrivateProfileIntA("gameplay", "squad_sprint", 1, ini);   /* squad.c (2026-11-20) */
     g_cfg.am2_sounds = GetPrivateProfileIntA("audio", "am2_sounds", 0, ini);   /* audio.c (2026-11-21) */
+    g_cfg.am2_music = GetPrivateProfileIntA("audio", "am2_music", 0, ini);     /* music.c (2026-11-21) */
     g_cfg.see_interior = GetPrivateProfileIntA("display", "see_interior", 1, ini);
     g_cfg.menu_text = GetPrivateProfileIntA("display", "menu_text", 1, ini);
     g_cfg.radio_overlay = GetPrivateProfileIntA("display", "radio_overlay", 1, ini);
@@ -419,11 +420,17 @@ static WNDPROC g_game_wndproc;
  * track from its loop. Now the streams are PAUSED for the modal loop and resumed after it: stream records at
  * *0x6a5ba8 (count 0x6a5b8c, 0x4c bytes each), +0x18 = IDirectSoundBuffer* (FUN_00469820 GetCurrentPosition /
  * Lock on it); playing ones are Stop()ped and Play(0, 0, DSBPLAY_LOOPING)ed again - the play position is kept,
- * the game's refill bookkeeping (+0x3c last position) continues where it was. */
-#define STREAMS        (*(BYTE **)0x6a5ba8)
+ * the game's refill bookkeeping (+0x3c last position) continues where it was.
+ * 2026-11-21 (music.c work): those records are the RADIO VOICE streams (play flag 4 = SND_VOICE_FLAG, FUN_00468b50);
+ * the MUSIC streams (flag 8 = SND_MUSIC_FLAG, FUN_00410d50) are a second table of the same design: *0x4e3b0c, count
+ * 0x4e3b1c, 0x48 bytes, +0xc handle, +0x14 IDirectSoundBuffer*. Both tables are paused now (before, the music kept
+ * looping its buffer - only voices were paused). */
+#define STREAMS        (*(BYTE **)0x6a5ba8)        /* radio voice streams */
 #define STREAM_COUNT   (*(unsigned *)0x6a5b8c)
 #define STREAM_SIZE    0x4c
-#define STREAM_BUFFER(s) (*(void ***)((s) + 0x18))
+#define MUSIC_STREAMS  (*(BYTE **)0x4e3b0c)        /* music streams */
+#define MUSIC_COUNT    (*(unsigned *)0x4e3b1c)
+#define MUSIC_SIZE     0x48
 #define MAX_PAUSED     16
 #define DSB_OK         0             /* dsound.h DS_OK, DSBSTATUS_PLAYING, DSBPLAY_LOOPING; vtable: 9 GetStatus, */
 #define DSB_PLAYING    1             /* 12 Play, 18 Stop (IDirectSoundBuffer) */
@@ -436,27 +443,38 @@ static DWORD g_modal_at;
 static void *g_paused[MAX_PAUSED];
 static int g_npaused;
 
+/* Stop the playing buffers of one stream table (handle_at: the record's handle, -1 = unused; buffer_at: its
+ * IDirectSoundBuffer*); returns how many were stopped. */
+static int pause_streams(const char *what, BYTE *s, unsigned count, unsigned size, unsigned handle_at, unsigned buffer_at)
+{
+    int n = 0;
+    if (g_cfg.log >= 2) mlog("modal loop: %s streams %p count %u", what, (void *)s, count);
+    if (!s || s == (BYTE *)-1) return 0;
+    for (unsigned i = 0; i < count && g_npaused < MAX_PAUSED; i++) {
+        BYTE *r = s + i * size;
+        void **b = *(void ***)(r + buffer_at);
+        DWORD st = 0;
+        if (g_cfg.log >= 2 && b) mlog("modal loop: %s stream %u: handle %d buffer %p", what, i, *(int *)(r + handle_at), (void *)b);
+        /* unused records (handle -1) and released buffers (vtable NULL - crashed when the Graphics menu opened,
+         * user 2026-11-17) are skipped */
+        if (*(int *)(r + handle_at) == -1 || !b || IsBadReadPtr(b, 4) || !*(void **)b || IsBadReadPtr(*(void **)b, 0x50)) continue;
+        if (((DsbStatusFn)(*(void ***)b)[9])(b, &st) != DSB_OK || !(st & DSB_PLAYING)) continue;
+        ((DsbStopFn)(*(void ***)b)[18])(b);
+        g_paused[g_npaused++] = b;
+        n++;
+    }
+    return n;
+}
+
 static void modal_loop(HWND h, int enter)
 {
     if (enter) {
         if (g_modal_loops++) return;
         g_modal_at = GetTickCount();
         g_npaused = 0;
-        BYTE *s = STREAMS;
-        if (g_cfg.log >= 2) mlog("modal loop: streams %p count %u", (void *)s, STREAM_COUNT);
-        if (!s || s == (BYTE *)-1) return;
-        for (unsigned i = 0; i < STREAM_COUNT && g_npaused < MAX_PAUSED; i++) {
-            void **b = STREAM_BUFFER(s + i * STREAM_SIZE);
-            DWORD st = 0;
-            if (g_cfg.log >= 2 && b) { BYTE *r = s + i * STREAM_SIZE; mlog("modal loop: stream %u: id %d flags %04x buffer %p", i, *(int *)(r + 4), *(unsigned short *)(r + 8), (void *)b); }
-            /* unused records (id -1) and released buffers (vtable NULL - crashed when the Graphics menu opened,
-             * user 2026-11-17) are skipped */
-            if (*(int *)(s + i * STREAM_SIZE + 4) == -1 || !b || IsBadReadPtr(b, 4) || !*(void **)b || IsBadReadPtr(*(void **)b, 0x50)) continue;
-            if (((DsbStatusFn)(*(void ***)b)[9])(b, &st) != DSB_OK || !(st & DSB_PLAYING)) continue;
-            ((DsbStopFn)(*(void ***)b)[18])(b);
-            g_paused[g_npaused++] = b;
-        }
-        mlog("modal loop: start, %d sound stream(s) paused", g_npaused);
+        int m = pause_streams("music", MUSIC_STREAMS, MUSIC_COUNT, MUSIC_SIZE, 0xc, 0x14);
+        int v = pause_streams("voice", STREAMS, STREAM_COUNT, STREAM_SIZE, 4, 0x18);
+        mlog("modal loop: start, %d sound stream(s) paused (%d music, %d voice)", g_npaused, m, v);
     } else if (g_modal_loops > 0 && --g_modal_loops == 0) {
         for (int i = 0; i < g_npaused; i++)
             if (!IsBadReadPtr(g_paused[i], 4) && *(void **)g_paused[i]) ((DsbPlayFn)(*(void ***)g_paused[i])[12])(g_paused[i], 0, 0, DSB_LOOPING);

@@ -123,7 +123,7 @@ typedef struct { const char *label; int source, index; } Item;
 static const Item GENERAL[] = {
     { "Modern controls", 0, 0 }, { "Upscaled art", 0, 1 }, { "CRT filter", 0, 4 }, { "Edge fog", 0, 5 },
     { "See-through roofs", 0, 6 }, { "Enemies in bldgs", 0, 15 }, { "Building interior", 0, 18 }, { "Pinned objective", 0, 7 }, { "Target sector", 0, 8 },
-    { "Target outline", 0, 10 }, { "HUD in corners", 0, 9 }, { "AM II sounds", 3, 6 },
+    { "Target outline", 0, 10 }, { "HUD in corners", 0, 9 },
     { "Game speed", 2, 0 }, { "Zoom", 2, 1 }, { "Minimap size", 2, 2 }, { "Message box size", 2, 3 },
     { "Centre HUD size", 2, 4 }, { "Air support size", 2, 5 },
 };
@@ -135,10 +135,11 @@ static const Item COMBAT[] = {
 };
 static const Item MENUS[] = {
     { "Sharp menu text", 0, 19 }, { "Buttons press in", 0, 16 }, { "Radio overlay", 0, 21 },
+    { "AM II sounds", 3, 6 }, { "AM II music", 3, 7 },    /* audio.c / music.c (2026-11-21; GENERAL is full: 18 rows) */
 };
 /* minimap.c switches: source 3 = the panel.c row holding that value (found by its pointer, so the row index
  * does not matter - rows appended by other features before them do not shift these) */
-static int *const MM_VALUE[] = { &g_cfg.mm_blips, &g_cfg.mm_sarge, &g_cfg.mm_contrast, &g_cfg.mm_hover, &g_cfg.vehicle_bailout, &g_cfg.enemy_awareness, &g_cfg.am2_sounds };
+static int *const MM_VALUE[] = { &g_cfg.mm_blips, &g_cfg.mm_sarge, &g_cfg.mm_contrast, &g_cfg.mm_hover, &g_cfg.vehicle_bailout, &g_cfg.enemy_awareness, &g_cfg.am2_sounds, &g_cfg.am2_music };
 static const Item MINIMAP[] = {
     { "Bigger blips", 3, 0 }, { "Sarge marked", 3, 1 }, { "Map contrast", 3, 2 }, { "Hover details", 3, 3 },
     { "Minimap size", 2, 2 },
@@ -157,7 +158,7 @@ static const Item MODERN2[] = {
 };
 #define N(a) ((int)(sizeof a / sizeof a[0]))
 static const struct { const char *tab; const Item *items; int n; } PAGES[] = {
-    { "GENERAL", GENERAL, N(GENERAL) }, { "COMBAT", COMBAT, N(COMBAT) }, { "MODERN 1", MODERN1, N(MODERN1) }, { "MODERN 2", MODERN2, N(MODERN2) }, { "MENUS", MENUS, N(MENUS) }, { "MINIMAP", MINIMAP, N(MINIMAP) },
+    { "GENERAL", GENERAL, N(GENERAL) }, { "COMBAT", COMBAT, N(COMBAT) }, { "MODERN 1", MODERN1, N(MODERN1) }, { "MODERN 2", MODERN2, N(MODERN2) }, { "AUDIO/UI", MENUS, N(MENUS) }, { "MINIMAP", MINIMAP, N(MINIMAP) },
 };
 #define NPAGES N(PAGES)
 

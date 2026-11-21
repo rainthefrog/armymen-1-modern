@@ -1,6 +1,6 @@
 /*
  * audio.c - Army Men II sound effects (2026-11-21, [audio] am2_sounds=1, F10 "Army Men II sounds", Mod Settings
- * GENERAL "AM II sounds"). Default 0 = the original sounds.
+ * AUDIO/UI "AM II sounds"). Default 0 = the original sounds.
  *
  * The game's effects live in Audio\sounds.asd ("V0.0" archive: u32 count, { u32 id, u32 offset } table in the
  * first 0x800 bytes; each entry = "fmt " chunk (PCMWAVEFORMAT) + "data" chunk, no RIFF header). Ids 1000..1064

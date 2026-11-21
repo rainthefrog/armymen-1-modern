@@ -95,4 +95,17 @@ if (Test-Path $snd) {
     }
     Write-Host ("copied {0} Army Men II sound files to am2_sounds\" -f $n)
 }
+# Army Men II music pack (music.c, [audio] am2_music; made by scripts\am2_music.py, ~100 MB): REA\am2_music\* ->
+# <game>\am2_music\ (when newer)
+$mus = Join-Path $root "am2_music"
+if (Test-Path $mus) {
+    $mdst = Join-Path $dst "am2_music"
+    New-Item -ItemType Directory -Force $mdst | Out-Null
+    $n = 0
+    Get-ChildItem $mus -File -Include *.wav, *.txt -Recurse | ForEach-Object {
+        $t = Join-Path $mdst $_.Name
+        if (-not (Test-Path $t) -or (Get-Item $t).LastWriteTime -lt $_.LastWriteTime) { Copy-Item $_.FullName $t -Force -ErrorAction Stop; $n++ }
+    }
+    Write-Host ("copied {0} Army Men II music files to am2_music\" -f $n)
+}
 Write-Host "Done. The first line of armymen-mod.log shows the build time once the game has started."

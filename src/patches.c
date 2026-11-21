@@ -337,6 +337,15 @@ void patches_apply(void)
      * fread of the sound data (filled from <game>\am2_sounds instead of sounds.asd) */
     hook_call("audio: sfx create, wave record (call 0x40f42d) -> audio.c", 0x40f42d, 0x4107b0, (void *)audio_find_wave_stub);
     hook_call("audio: sfx create, data fread (call 0x40f515) -> audio.c", 0x40f515, 0x470e00, (void *)audio_fread);
+    /* music.c (2026-11-21, [audio] am2_music; original music while off): the wave record lookups FUN_004107b0 of
+     * the music stream code (create, play, fill / refill, rewind for the loop) - an Army Men II track's record
+     * (its own FILE*, data start, size, format) is handed over, so the game streams it from disk */
+    hook_call("music: stream create, wave record (call 0x410df1) -> music.c", 0x410df1, 0x4107b0, (void *)music_stub_create);
+    hook_call("music: stream play, wave record (call 0x4112aa) -> music.c", 0x4112aa, 0x4107b0, (void *)music_stub_play);
+    hook_call("music: stream first fill, wave record (call 0x411e4f) -> music.c", 0x411e4f, 0x4107b0, (void *)music_stub_fill);
+    hook_call("music: stream refill, wave record (call 0x411ff9) -> music.c", 0x411ff9, 0x4107b0, (void *)music_stub_fill);
+    hook_call("music: stream rewind, wave record (call 0x411175) -> music.c", 0x411175, 0x4107b0, (void *)music_stub_rewind);
+    hook_call("music: stream restart, wave record (call 0x411043) -> music.c", 0x411043, 0x4107b0, (void *)music_stub_rewind);
 
     {   /* [gameplay] resume_wait_ms (2026-11-20, stutter hunt; default 100 = the original, nothing patched).
          * Entering play - about 50 frames into every mission, and each time a menu / pause closes - the game sets
