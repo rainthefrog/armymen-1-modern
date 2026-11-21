@@ -14,7 +14,7 @@
  *     startup script has placed its items by then). Then one leg piece per frame: path_find (pathfind.c, 8 px
  *     cells, ~40 ms bound) from the leg's current end; a partial answer continues from its last point on the next
  *     frame (long distances), at most LEG_CALLS pieces per leg. A leg "driven" (drive = a vehicle's script name:
- *     mission 3 tank) asks path_find_vehicle first with that vehicle's footprint. A leg not found (no progress,
+ *     mission 3 tank) is planned by the vehicle hybrid planner (drive_step). A leg not found (no progress,
  *     out of pieces, target closed off) is drawn straight and DASHED from where the search ended.
  *   - never recomputed while things move: only a new mission builds it again.
  * Drawing: modern.c (on the ground, under objects, like the click-to-walk route marker). [hud] mission_path.
@@ -22,6 +22,7 @@
 #include "common.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define GAME                 (*(BYTE **)0x4b3f70)
 #define GAME_TYPE(g)         (*(int *)((g) + 0x68))          /* 0 = one player */
@@ -85,6 +86,7 @@ static MissionPt g_pts[MAX_PTS];
 static int g_npts;
 static int g_key = -1, g_frames, g_phase;            /* phase 0 wait, 1 legs, 2 done */
 static int g_wx[MAX_WP], g_wy[MAX_WP], g_wveh[MAX_WP], g_nwp, g_leg, g_leg_calls, g_cx, g_cy;
+static int g_dphase, g_dpieces, g_dh, g_dfacing0[MAX_WP];   /* driven legs (drive_step): phase 0 begin a plan, 1 planning, 2 tile planner; pieces; heading; vehicle hull at resolve */
 static BYTE *g_sarge;
 
 int missionpath_points(const MissionPt **pts)
@@ -105,7 +107,7 @@ static int dist2(int ax, int ay, int bx, int by) { int dx = ax - bx, dy = ay - b
 /* the waypoints of this mission in visiting order (stages in order, nearest first inside a stage) */
 static void resolve(int m, int sx, int sy)
 {
-    int x[MAX_WP], y[MAX_WP], st[MAX_WP], veh[MAX_WP], n = 0;
+    int x[MAX_WP], y[MAX_WP], st[MAX_WP], veh[MAX_WP], fac[MAX_WP], n = 0;
     for (int i = 0; i < NWAYS && n < MAX_WP; i++) {
         const Way *w = &WAYS[i];
         if (w->mission != m || (w->need && !objectives_need(w->need))) continue;
@@ -124,10 +126,10 @@ static void resolve(int m, int sx, int sy)
             if (raw == 2 || raw == 3 || raw == 5) { if (g_cfg.log >= 1) mlog("missionpath: mission %d item %s moves - no waypoint", m, w->name); continue; }
         }
         if (px <= 0 || py <= 0 || px >= 4096 || py >= 4096) continue;
-        veh[n] = -1;
+        veh[n] = -1; fac[n] = 0;
         if (w->drive) {
             BYTE *v = NULL; int vx, vy, raw = 0;
-            if (objectives_item_ground(w->drive, &vx, &vy, &raw, &v) != -2 && v && raw == 3) veh[n] = VEH_TYPE(v) - 1;
+            if (objectives_item_ground(w->drive, &vx, &vy, &raw, &v) != -2 && v && raw == 3) { veh[n] = VEH_TYPE(v) - 1; fac[n] = *(short *)(v + 8) & 255; }
         }
         x[n] = px; y[n] = py; st[n] = w->stage; n++;
     }
@@ -142,7 +144,7 @@ static void resolve(int m, int sx, int sy)
             if (best < 0 || st[i] < st[best] || (st[i] == st[best] && dist2(cx, cy, x[i], y[i]) < dist2(cx, cy, x[best], y[best]))) best = i;
         }
         used[best] = 1;
-        g_wx[g_nwp] = x[best]; g_wy[g_nwp] = y[best]; g_wveh[g_nwp] = veh[best]; g_nwp++;
+        g_wx[g_nwp] = x[best]; g_wy[g_nwp] = y[best]; g_wveh[g_nwp] = veh[best]; g_dfacing0[g_nwp] = fac[best]; g_nwp++;
         cx = x[best]; cy = y[best];
         if (g_cfg.log >= 1) mlog("missionpath: waypoint %d at %d,%d (stage %d%s)", g_nwp, x[best], y[best], st[best], veh[best] >= 0 ? ", driven" : "");
     }
@@ -367,8 +369,126 @@ static void leg_done(int tx, int ty, int reached)
     if (!reached && g_cfg.log >= 1) mlog("missionpath: leg %d to %d,%d ends at %d,%d (closed off): the rest dashed", g_leg + 1, tx, ty, g_cx, g_cy);
     add(tx, ty, !reached, g_leg + 1);
     g_cx = tx; g_cy = ty;
-    g_leg++; g_leg_calls = 0; g_wphase = 0;
+    g_leg++; g_leg_calls = 0; g_wphase = 0; g_dphase = 0; g_dpieces = 0;
 }
+/* ---------------------------------------------------------------- driven legs: the vehicle's own planner
+ * 2026-11-20 (user, mission 3 screenshot: the leg driven in GreenTank201 to pad 75 was a straight dashed line over a
+ * gorge and rocks - "this path drawing straight over terrain instead of navigating the terrain"): driven legs asked
+ * path_find_vehicle only (one ~30000-tile A* per call, chained from its nearest point - a dead end on the near side
+ * of a gorge gave no progress and the rest was dashed). Now the HYBRID planner the click-to-drive uses (pathfind.c
+ * path_vehicle_plan_*: x, y, heading with forward / backward / on-the-spot motions, the vehicle's oriented
+ * footprint at every pose, heuristic = tile distance AROUND blocked tiles, so it heads for the bridge), resumable:
+ * D_BUDGET_MS per frame until it is done. A plan that runs out of poses (status 2, the closest pose) is continued
+ * from that pose (heading kept) up to D_PIECES times. Only if the planner cannot start or gives no route at all, the
+ * old tile planner (path_find_vehicle, chained) tries. A leg is dashed only when:
+ *   - the target is not reachable for the vehicle even on the 16 px tile grid (the planner then drives to the
+ *     nearest reachable tile and says "found" there: we compare with the real target), or
+ *   - neither planner gets on (no progress). Every case is logged with its reason.
+ * The poses (every 16-24 px) are thinned for drawing: a point is kept where the route bends more than D_TOL px from
+ * the straight line, and at every change of direction (a planned reverse shows as a back-and-forth).
+ * The planner's state is shared with vehicles.c (click to drive): used here only while Sarge is on foot (the
+ * route is built in the mission's first seconds); in a vehicle the old tile planner is used. */
+#define D_BUDGET_MS  6.0
+#define D_PIECES     8
+#define D_TOL        4.0
+#define D_STEP_TANK  16                  /* px per planned motion, as vehicles.c STEP_TANK / STEP_JEEP (Wine: 32 could not get near the mission 3 pad) */
+#define D_STEP_JEEP  24
+#define D_MAX_POSES  4000
+#define D_ARRIVE     48                  /* px: a driven leg ending this close to its target reached it (the planner stops 20 px off a pose it can stand on; a pad by a wall is further) */
+
+static int drive_spins(int type) { return type != 1 && type != 4; }     /* VEH_TYPE - 1: 1 jeep, 4 convoy turn only moving */
+
+/* thinned poses -> route points (from the current end g_cx, g_cy) */
+static void add_poses(const VehPose *p, int n)
+{
+    double ax = g_cx, ay = g_cy;                                 /* the anchor: the last point kept */
+    for (int j = 0; j < n; ) {
+        int k = j;                                              /* the farthest pose k with all poses between in D_TOL */
+        for (int t = j + 1; t < n; t++) {
+            if (p[t].dir != p[j].dir) break;                     /* the last pose before a change of direction is kept */
+            double sx = p[t].x - ax, sy = p[t].y - ay, l = sqrt(sx * sx + sy * sy);
+            int ok = l > 0.5;
+            for (int m = j; m < t && ok; m++) {
+                double d = fabs((p[m].x - ax) * sy - (p[m].y - ay) * sx) / l;
+                if (d > D_TOL) ok = 0;
+            }
+            if (!ok) break;
+            k = t;
+        }
+        add(p[k].x, p[k].y, 0, 0);
+        ax = p[k].x; ay = p[k].y; j = k + 1;
+    }
+    if (n > 0) { g_cx = p[n - 1].x; g_cy = p[n - 1].y; g_dh = p[n - 1].facing & 255; }
+}
+
+static void drive_step(int tx, int ty)
+{
+    int type = g_wveh[g_leg];
+    static VehPose poses[D_MAX_POSES];
+    static POINT out[MAX_PTS];
+    Guard gd;
+    BYTE *s = SARGE_ITEM;
+    if (g_dphase < 2 && s && *(BYTE **)(s + 0x2d0)) {             /* Sarge in a vehicle: the planner may be his */
+        if (g_cfg.log >= 1) mlog("missionpath: leg %d: Sarge is driving - tile planner instead", g_leg + 1);
+        g_dphase = 2;
+    }
+    if (g_dphase == 0) {
+        volatile int ok = 0;
+        if (GUARD_TRY(gd, "mission path, vehicle plan (missionpath.c)")) {
+            ok = path_vehicle_plan_begin(type, g_cx, g_cy, g_dh, tx, ty, drive_spins(type), drive_spins(type) ? D_STEP_TANK : D_STEP_JEEP);
+            guard_leave(&gd);
+        }
+        if (!ok) {
+            if (g_cfg.log >= 1) mlog("missionpath: leg %d (vehicle type %d): planner could not start at %d,%d - tile planner", g_leg + 1, type, g_cx, g_cy);
+            g_dphase = 2; return;
+        }
+        g_dphase = 1;
+        return;
+    }
+    if (g_dphase == 1) {
+        volatile int r = -1;
+        if (GUARD_TRY(gd, "mission path, vehicle plan (missionpath.c)")) { r = path_vehicle_plan_step(D_BUDGET_MS); guard_leave(&gd); }
+        if (r == 0) return;                                      /* next frame */
+        g_dpieces++;
+        if (r < 0) {
+            if (g_cfg.log >= 1) mlog("missionpath: leg %d (vehicle type %d): no vehicle route from %d,%d heading %d%s", g_leg + 1, type, g_cx, g_cy, g_dh,
+                                     g_dpieces == 1 ? " - tile planner" : " - rest dashed");
+            if (g_dpieces == 1) { g_dphase = 2; return; }
+            leg_done(tx, ty, 0); return;
+        }
+        int bx = g_cx, by = g_cy, bh = g_dh, bn = g_npts;
+        int n = path_vehicle_plan_result(poses, D_MAX_POSES), full = n;
+        add_poses(poses, n);
+        int left = dist2(g_cx, g_cy, tx, ty), moved = dist2(bx, by, g_cx, g_cy);
+        if (g_cfg.log >= 1) mlog("missionpath: leg %d (vehicle type %d) piece %d: %s, %d of %d poses kept, ends at %d,%d (%d px from the target)", g_leg + 1, type, g_dpieces,
+                                 r == 1 ? "found" : "out of poses (closest)", n, full, g_cx, g_cy, (int)sqrt((double)left));
+        if (left <= D_ARRIVE * D_ARRIVE) { leg_done(tx, ty, 1); return; }
+        if (r == 1) {                                            /* "found" the nearest tile the vehicle can reach */
+            if (g_cfg.log >= 1) mlog("missionpath: leg %d: target %d,%d not reachable for the vehicle (nearest reachable %d,%d) - rest dashed", g_leg + 1, tx, ty, g_cx, g_cy);
+            leg_done(tx, ty, 0); return;
+        }
+        if (moved < MIN_PROGRESS * MIN_PROGRESS) { g_npts = bn; g_cx = bx; g_cy = by; g_dh = bh; }   /* its poses only shuffle on the spot: dropped */
+        if (moved < MIN_PROGRESS * MIN_PROGRESS || g_dpieces >= D_PIECES) {
+            if (g_cfg.log >= 1) mlog("missionpath: leg %d: vehicle planner %s after %d pieces at %d,%d - rest dashed", g_leg + 1,
+                                     moved < MIN_PROGRESS * MIN_PROGRESS ? "makes no progress" : "out of pieces", g_dpieces, g_cx, g_cy);
+            leg_done(tx, ty, 0); return;
+        }
+        g_dphase = 0;                                            /* continue from the end pose */
+        return;
+    }
+    /* the tile planner (path_find_vehicle), chained from its last point */
+    volatile int n = 0;
+    if (GUARD_TRY(gd, "mission path, vehicle (missionpath.c)")) { n = path_find_vehicle(type, g_cx, g_cy, tx, ty, out, 96); guard_leave(&gd); }
+    else n = -1;
+    g_leg_calls++;
+    int before = dist2(g_cx, g_cy, tx, ty);
+    if (n > 0) { for (int i = 0; i < n; i++) add(out[i].x, out[i].y, 0, 0); g_cx = out[n - 1].x; g_cy = out[n - 1].y; }
+    int after = dist2(g_cx, g_cy, tx, ty), reached = after <= 32 * 32;
+    if (!reached && (n <= 0 || before - after < MIN_PROGRESS * MIN_PROGRESS || g_leg_calls >= LEG_CALLS) && g_cfg.log >= 1)
+        mlog("missionpath: leg %d: tile planner %s at %d,%d - rest dashed", g_leg + 1, n <= 0 ? "found no route" : g_leg_calls >= LEG_CALLS ? "out of pieces" : "makes no progress", g_cx, g_cy);
+    if (reached || n <= 0 || before - after < MIN_PROGRESS * MIN_PROGRESS || g_leg_calls >= LEG_CALLS) leg_done(tx, ty, reached);
+}
+
 static void leg_step(void)
 {
     if (g_leg >= g_nwp) { g_phase = 2; if (g_cfg.log >= 1) { mlog("missionpath: done, %d points, %d waypoints", g_npts, g_nwp); char b[600]; int o = 0; for (int i = 0; i < g_npts && o < 560; i++) o += wsprintfA(b + o, " %d,%d%s", g_pts[i].x, g_pts[i].y, g_pts[i].dashed ? "d" : ""); mlog("missionpath: points%s", b); } return; }
@@ -376,15 +496,12 @@ static void leg_step(void)
     static POINT out[MAX_PTS];
     static int wn;
     Guard gd;
-    if (g_wveh[g_leg] >= 0) {                                    /* driven */
-        volatile int n = 0;
-        if (GUARD_TRY(gd, "mission path, vehicle (missionpath.c)")) { n = path_find_vehicle(g_wveh[g_leg], g_cx, g_cy, tx, ty, out, 96); guard_leave(&gd); }
-        else n = -1;
-        g_leg_calls++;
-        int before = dist2(g_cx, g_cy, tx, ty);
-        if (n > 0) { for (int i = 0; i < n; i++) add(out[i].x, out[i].y, 0, 0); g_cx = out[n - 1].x; g_cy = out[n - 1].y; }
-        int after = dist2(g_cx, g_cy, tx, ty), reached = after <= 32 * 32;
-        if (reached || n <= 0 || before - after < MIN_PROGRESS * MIN_PROGRESS || g_leg_calls >= LEG_CALLS) leg_done(tx, ty, reached);
+    if (g_wveh[g_leg] >= 0) {                                    /* driven: drive_step */
+        if (g_dphase == 0 && g_dpieces == 0 && g_leg_calls == 0) {
+            g_dh = g_dfacing0[g_leg];
+            if (g_cfg.log >= 1) mlog("missionpath: leg %d driven (vehicle type %d) from %d,%d heading %d to %d,%d", g_leg + 1, g_wveh[g_leg], g_cx, g_cy, g_dh, tx, ty);
+        }
+        drive_step(tx, ty);
         return;
     }
     if (g_wphase == 0 && g_leg_calls < WIDE_CALLS) {
@@ -395,8 +512,10 @@ static void leg_step(void)
         static int leg_npts, leg_cx, leg_cy;
         if (g_leg_calls == 0) { leg_npts = g_npts; leg_cx = g_cx; leg_cy = g_cy; }   /* the leg's start (to drop the wide try) */
         volatile int n = 0;
+        path_vehicle_crush(0);                                  /* Sarge cannot cross fences a vehicle runs over */
         if (GUARD_TRY(gd, "mission path, wide (missionpath.c)")) { n = path_find_vehicle(WIDE_TYPE, g_cx, g_cy, tx, ty, out, 96); guard_leave(&gd); }
         else n = -1;
+        path_vehicle_crush(1);
         g_leg_calls++;
         int before = dist2(g_cx, g_cy, tx, ty);
         if (n > 0) { for (int i = 0; i < n; i++) add(out[i].x, out[i].y, 0, 0); g_cx = out[n - 1].x; g_cy = out[n - 1].y; }
@@ -437,9 +556,28 @@ static void leg_step(void)
     leg_done(tx, ty, found || dist2(g_cx, g_cy, tx, ty) <= 32 * 32);
 }
 
+/* [debug] skip_to_mission=N (testing aid, 2026-11-20): every campaign mission with a lower MissionID is won
+ * SKIP_AFTER_FRAMES play frames after its start through the game's own "Triumph" cheat handler (table 0x4c5f10
+ * entry 1, 0x46b850: gpGame +0x38 == 1 -> FUN_00424870(ecx 0) = mission won). The rig then clicks / presses
+ * through the debrief and briefing screens. Mission 3 (Desert 1_3) is not reachable through the menus otherwise. */
+#define CHEAT_TRIUMPH      ((VoidFnPtr)0x46b850)
+#define SKIP_AFTER_FRAMES  45
+static void debug_skip_mission(BYTE *g)
+{
+    static int want = -1, key = -1, frames;
+    if (want < 0) want = GetPrivateProfileIntA("debug", "skip_to_mission", 0, mod_ini_path());
+    if (want <= 0 || GAME_MISSION(g) >= want) return;
+    int k = (GAME_MISSION(g) << 16) ^ GAME_SCENARIO(g);
+    if (k != key) { key = k; frames = 0; }
+    if (++frames != SKIP_AFTER_FRAMES) return;
+    mlog("missionpath: [debug] skip_to_mission=%d: mission %d won (Triumph)", want, GAME_MISSION(g));
+    CHEAT_TRIUMPH();
+}
+
 void missionpath_frame(void)
 {
     BYTE *g = GAME, *s = SARGE_ITEM;
+    if (g && s && game_in_play() && GAME_TYPE(g) == 0) debug_skip_mission(g);
     if (!g || !s || !game_in_play() || GAME_TYPE(g) != 0) {    /* between missions (Play Again too): built anew */
         if (!game_in_play()) { g_key = -1; g_phase = 0; g_npts = 0; }
         return;
@@ -447,7 +585,7 @@ void missionpath_frame(void)
     if (!g_cfg.mission_path) return;
     int key = (GAME_MISSION(g) << 16) ^ GAME_SCENARIO(g);
     if (key != g_key || (g_phase == 0 && s != g_sarge)) {       /* first play frame of a mission: Sarge's start */
-        g_key = key; g_sarge = s; g_phase = 0; g_frames = 0; g_npts = 0; g_nwp = 0; g_leg = 0; g_leg_calls = 0;
+        g_key = key; g_sarge = s; g_phase = 0; g_frames = 0; g_npts = 0; g_nwp = 0; g_leg = 0; g_leg_calls = 0; g_dphase = 0; g_dpieces = 0;
         g_cx = *(short *)(s + 4); g_cy = *(short *)(s + 6);
         memset(g_wfree, 0, sizeof g_wfree); memset(g_wclr, 0, sizeof g_wclr); g_wphase = 0;   /* the cell answers belong to this map */
         add(g_cx, g_cy, 0, 0);

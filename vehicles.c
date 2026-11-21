@@ -115,6 +115,7 @@ typedef void (__fastcall *TurretSpriteFn)(BYTE *sprite, int direction);
 #define SPIN_DONE           6       /* facings: an on-the-spot turn is done */
 #define JEEP_BACK_FROM      96      /* facings: a jeep asked forward with the heading further off backs up while turning */
 #define JEEP_BACK_UNTIL     40      /* ... until it is this close */
+#define VEH_UTURN_FROM      64      /* facings: a forward U-turn (turning round) steers this far to its side until closer (common.h) */
 #define STEP_TANK           16      /* px per planned motion: vehicles that turn on the spot */
 #define STEP_JEEP           24      /* ... jeep / convoy (turn only while moving: wider) */
 #define TURRET_RATE         (8.0 / 60.0)    /* facings per ms at most (the original mouse turret) */
@@ -183,6 +184,60 @@ int vehicles_steer(BYTE *v, int heading, int drive, int slow)
     if (go) INPUT |= drive > 0 ? INPUT_FORWARD : INPUT_BACK;
     if (go && (slow || abs(d) > 20)) INPUT |= INPUT_SLOW;
     return d;
+}
+
+/* ---------------------------------------------------------------- turning round instead of backing up
+ * 2026-11-20 (user: "backing up a vehicle will continue backing up - make it flip around if there is enough space
+ * after backing up for too long. this is direct mouse control"): controls.c backs the vehicle up toward a pointer
+ * held behind it; the camera follows, so the pointer stays behind and it backed up for ever. After
+ * REVERSE_FLIP_MS of backing up controls.c asks this: is there room to turn the hull round to `heading`?
+ * The turn is simulated the way vehicles_steer drives it, every pose tested with the vehicle's footprint
+ * (pathfind.c path_vehicle_overlap: movement layer >= 15 + blocking objects; never more blocking tiles than the
+ * vehicle has under it now):
+ *   - tank / halftrack: on the spot, 8 facings a step, the shorter way round (the way vehicles_steer turns);
+ *   - jeep / convoy (turn only while moving, 8 facings per STEP_JEEP px - the planner's model): first a forward
+ *     U-turn, either side (Wine Desert 1: the K-turn alone backed further into the barrels - never room), else
+ *     the K-turn vehicles_steer drives (backward while the heading is more than JEEP_BACK_UNTIL off, then forward
+ *     until it is within STEER_DEAD); ROOM_STEP px per test. */
+#define ROOM_STEP 6
+/* one jeep turn simulated: uturn 0 = the K-turn vehicles_steer drives (backward while the heading is more than
+ * JEEP_BACK_FROM off, until JEEP_BACK_UNTIL), else a forward U-turn to side uturn (+1 facings up, -1 down) */
+static int jeep_turn_fits(BYTE *v, int heading, int uturn, int now)
+{
+    int type = V_TYPE(v) - 1, h = V_HULL(v);
+    double x = V_X(v), y = V_Y(v), f = h;
+    int back = !uturn && abs(wrap_dir(heading - h)) > JEEP_BACK_FROM;
+    for (int i = 0; i < 200; i++) {                          /* at most 1200 px of motion */
+        double d = wrap_dirf(heading - f);
+        if (fabs(d) <= STEER_DEAD) return 1;
+        if (fabs(d) < JEEP_BACK_UNTIL) back = 0;
+        double turn = 8.0 * ROOM_STEP / STEP_JEEP;
+        if (turn > fabs(d)) turn = fabs(d);
+        int s = uturn && fabs(d) > VEH_UTURN_FROM ? uturn : d > 0 ? 1 : -1;
+        f += s * turn;
+        double dx, dy; controls_facing_vector((int)lround(f) & 255, &dx, &dy);
+        x += (back ? -dx : dx) * ROOM_STEP; y += (back ? -dy : dy) * ROOM_STEP;
+        if (path_vehicle_overlap(type, x, y, (int)lround(f) & 255, NULL) > now) return 0;
+    }
+    return 0;
+}
+/* Returns 0 = no room, 1 = turn as vehicles_steer does (tank: on the spot; jeep: K-turn), +2 / -2 = jeep: forward
+ * U-turn turning to that side (controls.c steers the hull VEH_UTURN_FROM facings to that side until the heading
+ * is closer than that). Jeep: the U-turn is preferred (it does not back up any further), the side with room first
+ * toward the shorter way round. */
+int vehicles_turn_room(BYTE *v, int heading)
+{
+    int type = V_TYPE(v) - 1, h = V_HULL(v);
+    int now = path_vehicle_overlap(type, V_X(v), V_Y(v), h, NULL);
+    int sign = wrap_dir(heading - h) >= 0 ? 1 : -1;
+    if (!is_jeepish(v)) {
+        for (int k = 8; k < abs(wrap_dir(heading - h)) + 8; k += 8)
+            if (path_vehicle_overlap(type, V_X(v), V_Y(v), (h + sign * k) & 255, NULL) > now) return 0;
+        return 1;
+    }
+    if (jeep_turn_fits(v, heading, sign, now)) return 2 * sign;
+    if (jeep_turn_fits(v, heading, -sign, now)) return -2 * sign;
+    return jeep_turn_fits(v, heading, 0, now);
 }
 
 /* ---------------------------------------------------------------- click to drive with reversing */

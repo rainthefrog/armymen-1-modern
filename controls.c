@@ -746,6 +746,9 @@ static void steer_vehicle(BYTE *v, int heading, int drive)   /* drive: 1 forward
 #define VEH_ARRIVE_BEHIND 80       /* ... or this close with the spot already behind it */
 #define VEH_EXIT_RADIUS 24         /* px around the vehicle's centre: a click there gets out */
 #define REVERSE_UNTIL 64         /* ... until it is within ~90 deg again */
+#define REVERSE_FLIP_MS 1200     /* backing up longer than this: turn round when there is room (vehicles_turn_room) */
+#define REVERSE_ROOM_EVERY_MS 200  /* ... room tested this often while it keeps backing up */
+#define VEH_UTURN_FROM 64        /* facings: a jeep turning round forward steers this far to its side (as vehicles.c) */
 /* The pointer (screen) on the vehicle's middle: the get-out click / pointer. The game's position is the box's
  * hotspot (a jeep's is near its rear: front 57, back 7 - vehiclesizes 0x4b2b20, index VEH_TYPE - 1), so the
  * middle lies (front - back) / 2 along the hull. */
@@ -773,12 +776,28 @@ static void vehicle_controls(BYTE *u, BYTE *v, int pointer, int px, int py, int 
         } else aim_turret(v, facing_toward(px - vx, py - vy), now);
     }
     /* right held with the pointer BEHIND the vehicle: back up toward it (until it is in front again) */
-    static int reversing;
+    /* 2026-11-20 (user: "backing up a vehicle will continue backing up - make it flip around if there is enough
+     * space after backing up for too long"): the camera follows the vehicle, so a pointer held behind it stays
+     * behind and it backed up for ever. After REVERSE_FLIP_MS of backing up, with room to turn the hull round
+     * (vehicles.c vehicles_turn_room: footprint at every heading of the turn), it turns round and drives forward;
+     * it does not back up again until the pointer has been in front (or the button is let go). A short hold
+     * behind the vehicle stays a reverse. */
+    static int reversing, flipped;
+    static DWORD reverse_since, room_checked;
     if (right_hold && pointer) {
-        int rel = abs(wrap_dir(facing_toward(px - vx, py - vy) - VEH_HULL(v)));
-        if (!reversing && rel > REVERSE_FROM) reversing = 1;
+        int want = facing_toward(px - vx, py - vy), rel = abs(wrap_dir(want - VEH_HULL(v)));
+        if (flipped) { if (rel < REVERSE_UNTIL) flipped = 0; }
+        else if (!reversing && rel > REVERSE_FROM) { reversing = 1; reverse_since = now; if (g_cfg.log >= 2) mlog("controls: vehicle backs up toward the pointer (hull %d, pointer at %d)", VEH_HULL(v), want); }
         else if (reversing && rel < REVERSE_UNTIL) reversing = 0;
-    } else reversing = 0;
+        if (reversing && now - reverse_since >= REVERSE_FLIP_MS && now - room_checked >= REVERSE_ROOM_EVERY_MS) {
+            room_checked = now;
+            int room = vehicles_turn_room(v, want);
+            if (room) {
+                reversing = 0; flipped = room;   /* 1 as vehicles_steer turns, +-2 forward U-turn to that side */
+                mlog("controls: vehicle backed up %lu ms - turning round (hull %d -> %d, %s)", now - reverse_since, VEH_HULL(v), want, room == 1 ? "on the spot / K-turn" : "forward U-turn");
+            } else if (g_cfg.log >= 2) mlog("controls: vehicle backing up %lu ms - no room to turn round at %d,%d", now - reverse_since, VEH_X(v), VEH_Y(v));
+        }
+    } else reversing = flipped = 0;
     if (right_tap && pointer && VEH_MOVER(v)) {      /* click on the vehicle itself: get out (mouse only) */
         if (on_own_vehicle(v, px, py)) { g_pulse_key = game_command_key(0, SK_ENTER); right_tap = 0; mlog("controls: click on own vehicle: get out"); }
     }
@@ -795,7 +814,12 @@ static void vehicle_controls(BYTE *u, BYTE *v, int pointer, int px, int py, int 
     else if (kx || ky) steer_vehicle(v, facing_toward(kx, ky), 1);
     else if (right_hold && pointer && reversing && g_cfg.vehicle_reverse)   /* the game inverts turns while backing up */
         vehicles_steer(v, (facing_toward(px - vx, py - vy) + FACINGS / 2) & (FACINGS - 1), -1, 0);
-    else if (right_hold && pointer && g_cfg.vehicle_reverse) vehicles_steer(v, facing_toward(px - vx, py - vy), 1, 0);
+    else if (right_hold && pointer && g_cfg.vehicle_reverse) {
+        int want = facing_toward(px - vx, py - vy);
+        if ((flipped == 2 || flipped == -2) && abs(wrap_dir(want - VEH_HULL(v))) > VEH_UTURN_FROM)   /* forward U-turn: keep turning to its side */
+            want = (VEH_HULL(v) + flipped / 2 * VEH_UTURN_FROM) & (FACINGS - 1);
+        vehicles_steer(v, want, 1, 0);
+    }
     else if (right_hold && pointer) steer_vehicle(v, facing_toward(px - vx, py - vy), reversing ? -1 : 1);
     else if (S.going && g_cfg.vehicle_reverse) { if (!vehicles_drive(v, now)) S.going = 0; }
     else if (S.going) {

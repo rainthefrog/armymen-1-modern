@@ -442,11 +442,42 @@ static int vtile_self(int tx, int ty)
     return f <= g_vbox[0] + 8 && f >= -g_vbox[1] - 8 && s <= g_vbox[3] + 8 && s >= -g_vbox[2] - 8;
 }
 
+/* Tiles a vehicle drives OVER (2026-11-20, user: mission 3 route dashed - the tank waits at (320,3160) inside a yard
+ * of wooden fences, and the tile test closed the yard off): an object of class bush (1) or fence (5) makes its
+ * tiles untrafficable in the movement layer (>= 15), but VehicleUpdate lets a vehicle onto them (fewer than 4
+ * untrafficable tiles under the mask) and damageItemsInMask runs them over. Such a tile counts as free for vehicle
+ * routes when every object found on it (centre + 4 points 4 px in from the corners) is a bush / fence and there is
+ * at least one. Cached per search (g_vcrush: 0 unknown, 1 no, 2 yes). */
+static BYTE g_vcrush[VGRID * VGRID];
+static int g_vcrush_used;                                              /* per search, for the log */
+static int g_vcrush_on = 1;                                            /* off: walking routes that borrow the vehicle planner (missionpath.c wide try) */
+void path_vehicle_crush(int on) { g_vcrush_on = on; }
+static int vtile_crushable(int tx, int ty)
+{
+    if (tx < 0 || ty < 0 || tx >= VGRID || ty >= VGRID) return 0;
+    BYTE *s = &g_vcrush[ty * VGRID + tx];
+    if (!*s) {
+        static const int PX[5] = { 8, 4, 12, 4, 12 }, PY[5] = { 8, 4, 4, 12, 12 };
+        int crush = 0, other = 0;
+        for (int k = 0; k < 5 && !other; k++) {
+            short p[2] = { (short)(tx * VTILE + PX[k]), (short)(ty * VTILE + PY[k]) };
+            for (BYTE *it = V_OBJECTS_AT(p); it; it = V_ITEM_NEXT(it)) {
+                int t = V_ITEM_TYPE1(it), c = V_ITEM_CLASS(it);
+                if (t == 10) { other = 1; break; }
+                if ((t == 7 || t == 8 || t == 9) && V_OBJ_MOVEMENT(it) > 0) { if (c == 1 || c == 5) crush = 1; else { other = 1; break; } }
+            }
+        }
+        *s = crush && !other ? 2 : 1;
+        if (*s == 2) g_vcrush_used++;
+    }
+    return *s == 2;
+}
+
 static int vtile_bad(int tx, int ty)
 {
     int w = TILES_W, h = TILES_H;
     if (tx < 0 || ty < 0 || tx >= w || ty >= h || !MOVE_LAYER) return 1;
-    if (MOVE_LAYER[ty * w + tx] >= 15) return 1;
+    if (MOVE_LAYER[ty * w + tx] >= 15 && !(g_vcrush_on && vtile_crushable(tx, ty))) return 1;
     if (VEH_LAYER && VEH_LAYER[ty * w + tx] && !vtile_self(tx, ty)) return 1;
     if (vtile_object(tx, ty)) return 1;
     return 0;
@@ -525,7 +556,7 @@ int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int 
     for (int i = 0; i < 4; i++) g_vbox[i] = sz[i];
     if (!g_vbox[0] && !g_vbox[1]) { g_vbox[0] = 50; g_vbox[1] = 34; g_vbox[2] = 22; g_vbox[3] = 23; }
     g_vself_x = sx; g_vself_y = sy; g_vself_f = -1;
-    memset(g_vobj, 0, sizeof g_vobj);                           /* objects may have moved / been destroyed */
+    memset(g_vobj, 0, sizeof g_vobj); memset(g_vcrush, 0, sizeof g_vcrush); g_vcrush_used = 0;                           /* objects may have moved / been destroyed */
     int w = TILES_W, h = TILES_H;
     if (w <= 0 || h <= 0 || w > VGRID || h > VGRID || !MOVE_LAYER || max < 1) return 0;
     if (vline_ok(sx, sy, tx, ty)) {
@@ -580,7 +611,7 @@ int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int 
         out[n++] = (POINT){ (LONG)px, (LONG)py };
         cx = px; cy = py; i = j;
     }
-    mlog("path: vehicle type %d (box %d,%d,%d,%d) %d,%d -> %d,%d: %s after %d tiles, %d waypoints", type, g_vbox[0], g_vbox[1], g_vbox[2], g_vbox[3], sx, sy, tx, ty, found ? "found" : "partial", expanded, n);
+    mlog("path: vehicle type %d (box %d,%d,%d,%d) %d,%d -> %d,%d: %s after %d tiles, %d waypoints, %d fence / bush tiles driven over", type, g_vbox[0], g_vbox[1], g_vbox[2], g_vbox[3], sx, sy, tx, ty, found ? "found" : "partial", expanded, n, g_vcrush_used);
     return n;
 }
 
@@ -714,7 +745,7 @@ int path_vehicle_plan_begin(int type, int sx, int sy, int facing, int tx, int ty
     g_ha_running = 0;
     if (w <= 0 || hh <= 0 || w > VGRID || hh > VGRID || !MOVE_LAYER) return 0;
     if (tx < 0 || ty < 0 || tx / VTILE >= w || ty / VTILE >= hh) return 0;
-    memset(g_vobj, 0, sizeof g_vobj);
+    memset(g_vobj, 0, sizeof g_vobj); memset(g_vcrush, 0, sizeof g_vcrush); g_vcrush_used = 0;
     memset(g_ha_ftest, 0, sizeof g_ha_ftest); memset(g_ha_fbad, 0, sizeof g_ha_fbad);
     memset(g_ha_hkey, 0, sizeof g_ha_hkey); memset(g_ha_closed_bits, 0, sizeof g_ha_closed_bits);
     for (int h = 0; h < HA_HEADS; h++) controls_facing_vector(h * (256 / HA_HEADS), &g_ha_dx[h], &g_ha_dy[h]);
@@ -886,8 +917,8 @@ int path_vehicle_plan_result(VehPose *out, int max)
         out[i].facing = (short)(g_ha[c].h * (256 / HA_HEADS)); out[i].dir = g_ha[c].dir;
         nrev += out[i].dir < 0; nspin += out[i].dir == 0;
     }
-    mlog("path: vehicle plan (reverse) type %d -> %.0f,%.0f: %d poses (%d backward, %d on the spot), %d expanded, %d nodes",
-         g_ha_type, g_ha_tx, g_ha_ty, n, nrev, nspin, g_ha_expanded, g_ha_n);
+    mlog("path: vehicle plan (reverse) type %d -> %.0f,%.0f: %d poses (%d backward, %d on the spot), %d expanded, %d nodes, %d fence / bush tiles seen",
+         g_ha_type, g_ha_tx, g_ha_ty, n, nrev, nspin, g_ha_expanded, g_ha_n, g_vcrush_used);
     return n;
 }
 
