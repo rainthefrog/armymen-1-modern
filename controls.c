@@ -770,13 +770,15 @@ static void vehicle_controls(BYTE *u, BYTE *v, int pointer, int px, int py, int 
 {
     int vx = VEH_X(v) - CAMERA_X, vy = VEH_Y(v) - CAMERA_Y;    /* vehicle on screen */
     if (pointer && (px != vx || py != vy) && g_cfg.turret_smooth)   /* vehicles.c: world aim, eased, no fight with the hull */
-        vehicles_aim_turret(v, px + CAMERA_X, py + CAMERA_Y, now, left && !S.left_was_down && VEH_TYPE(v) != VEH_TYPE_FIXED_GUN);
+        vehicles_aim_turret(v, px + CAMERA_X, py + CAMERA_Y, now, !left || VEH_TYPE(v) == VEH_TYPE_FIXED_GUN ? 0 : !S.left_was_down ? 1 : 2);
     else if (pointer && (px != vx || py != vy)) {
+        int ox = vx, oy = vy, mx, my;                        /* the shot starts at the muzzle (vehicles_muzzle) */
+        if (vehicles_muzzle(v, &mx, &my)) { ox = mx - CAMERA_X; oy = my - CAMERA_Y; }
         if (left && !S.left_was_down && VEH_HAS_TURRET(v) && VEH_MOVER(v) && VEH_TYPE(v) != VEH_TYPE_FIXED_GUN) {
-            int dir = facing_toward(px - vx, py - vy);       /* firing: the turret points exactly at the pointer */
+            int dir = facing_toward(px - ox, py - oy);       /* firing: the turret points exactly at the pointer */
             VEH_TURRET(v) = (short)dir;
             SET_TURRET_SPRITE(VEH_MOVER(v) + 0xe4, dir);
-        } else aim_turret(v, facing_toward(px - vx, py - vy), now);
+        } else aim_turret(v, facing_toward(px - ox, py - oy), now);
     }
     /* right held with the pointer BEHIND the vehicle: back up toward it (until it is in front again) */
     /* 2026-11-20 (user: "backing up a vehicle will continue backing up - make it flip around if there is enough
@@ -842,6 +844,7 @@ static void vehicle_controls(BYTE *u, BYTE *v, int pointer, int px, int py, int 
         if (fd <= VEH_ARRIVE * VEH_ARRIVE || (behind && fd <= VEH_ARRIVE_BEHIND * VEH_ARRIVE_BEHIND)) S.going = 0;
         else steer_vehicle(v, facing_toward(dx, dy), 1);
     }
+    if (left) vehicles_aim_report(v, px + CAMERA_X, py + CAMERA_Y, left, pointer ? "" : "(pointer off)");
     if (left) {
         INPUT |= INPUT_FIRE;
         if (!S.left_was_down) INPUT |= INPUT_FIRE_PRESSED;

@@ -404,6 +404,9 @@ int vehicles_route(POINT *pts, int max);            /* the rest of the route (mo
 int vehicles_steer(BYTE *v, int heading, int drive, int slow);   /* hull toward heading; drive 1 / -1 / 0 */
 int vehicles_turn_room(BYTE *v, int heading);       /* vehicles.c: room to turn round to heading: 0 none, 1 on the spot / K-turn, +-2 jeep forward U-turn to that side */
 void vehicles_aim_turret(BYTE *v, double wx, double wy, DWORD now, int snap);   /* turret_smooth */
+void vehicles_aim_report(BYTE *v, int wx, int wy, int firing, const char *tag);   /* vehicles.c: aim diagnostic (log >= 2) */
+int vehicles_muzzle(BYTE *v, int *x, int *y);       /* vehicles.c: where VehicleFireWeapon starts the shot */
+int vehicles_aim_reachable(BYTE *v, int wx, int wy); /* vehicles.c: 0 = the gun cannot point there (halftrack arc) */
 void __fastcall vehicles_update(BYTE *v);           /* call 0x419c52 -> VehicleUpdate 0x4176f0 */
 void __fastcall vehicles_turret_lock(BYTE *v, int spin);   /* call 0x417ce8 -> VehicleLockTurret 0x417eb0 */
 void hdworld_shift_rows(Surf *b, int n);

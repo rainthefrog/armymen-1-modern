@@ -133,23 +133,35 @@ static double wrap_dirf(double d) { d = fmod(d, 256.0); if (d < 0) d += 256.0; r
 static int is_jeepish(BYTE *v) { int t = V_TYPE(v); return t == V_TYPE_JEEP || t == V_TYPE_CONVOY; }
 static BYTE *sarge_vehicle(void) { BYTE *u = SARGE; return u ? SARGE_VEHICLE(u) : NULL; }
 
-/* facing (continuous, 0..256) of the world vector (dx, dy), from the game's facing tables (controls.c) */
+/* facing (continuous, 0..256) of the world vector (dx, dy), from the game's facing tables (controls.c).
+ * 2026-11-20 (user: jeep shots miss the pointer near the window edge): the game's 256 facings are NOT evenly
+ * spaced in angle (Wine log: f32 = (-0.760, -0.652) = 40.6 deg, not 45). This used to assume even spacing from
+ * facings 0 and 64, so between the four main directions the turret was up to ~4 deg off: ~30 px beside the
+ * pointer at 400-600 px (the window edge), a few px near the vehicle. Now: the angle of every table facing,
+ * the two facings around the wanted angle, linear in between - the facing the game's own shot table
+ * (0x4ea778 / 0x4e9f78, used by the projectile) really points along. */
+static double angle_diff(double a, double b) { double d = a - b; while (d > M_PI) d -= 2 * M_PI; while (d < -M_PI) d += 2 * M_PI; return d; }
 static double facing_of(double dx, double dy)
 {
-    static double a0, s;
+    static double ang[256];
     static int ready;
     if (!ready) {
-        double x0, y0, x64, y64;
-        controls_facing_vector(0, &x0, &y0); controls_facing_vector(64, &x64, &y64);
-        if (x0 == 0 && y0 == 0) return 0;
-        a0 = atan2(y0, x0);
-        double d = atan2(y64, x64) - a0;
-        while (d > M_PI) d -= 2 * M_PI;
-        while (d < -M_PI) d += 2 * M_PI;
-        s = d > 0 ? 1 : -1;
+        for (int f = 0; f < 256; f++) {
+            double x, y; controls_facing_vector(f, &x, &y);
+            if (x == 0 && y == 0) return 0;
+            ang[f] = atan2(y, x);
+        }
         ready = 1;
     }
-    double f = (atan2(dy, dx) - a0) * s * 128.0 / M_PI;
+    double a = atan2(dy, dx);
+    int best = 0; double bd = 1e9;
+    for (int f = 0; f < 256; f++) { double d = fabs(angle_diff(a, ang[f])); if (d < bd) { bd = d; best = f; } }
+    double d = angle_diff(a, ang[best]);
+    int next = (best + 1) & 255, prev = (best - 1) & 255;
+    double step_up = angle_diff(ang[next], ang[best]), step_dn = angle_diff(ang[prev], ang[best]);
+    double f = best;
+    if (step_up != 0 && (d > 0) == (step_up > 0)) f += d / step_up;          /* between best and best + 1 */
+    else if (step_dn != 0) f -= d / step_dn;                                  /* between best and best - 1 */
     f = fmod(f, 256.0);
     return f < 0 ? f + 256.0 : f;
 }
@@ -381,7 +393,18 @@ int vehicles_route(POINT *pts, int max)
     return n;
 }
 
-/* ---------------------------------------------------------------- steady turret */
+/* ---------------------------------------------------------------- steady turret
+ * snap: 0 = ease (dead band), 1 = fire press: exactly at the aim, 2 = fire held: exactly at the aim once within
+ * TURRET_FIRE_SNAP facings (larger turns still ease at the turret's speed).
+ * 2026-11-20 (user: jeep shots not lining up with the pointer at the window edge) - the aim is the line the game's
+ * shot really takes: VehicleFireWeapon 0x416c60 starts it at the MUZZLE (FUN_00416c00: turret ANIM position + its
+ * frame's hotspot; vehicles_muzzle), not at the vehicle's position (for the jeep its rear), and flies along the
+ * turret facing; while firing the dead band (TURRET_DEAD_START, up to 1.6 facings = 2.2 deg = ~20 px at the window
+ * edge) no longer applies. Together with the table-exact facing_of above: Wine, Desert 1 jeep, miss at the
+ * pointer 19-32 px -> <= ~4 px (one facing step at that distance). */
+#define TURRET_FIRE_SNAP    3.0     /* facings: firing and the aim this close: the turret is put exactly on it */
+#define TURRET_FIRE_KEEP    0.65    /* facings: ... but kept where it is this close (the muzzle moves ~3 px with the
+                                       facing's frame: the aim then flipped between two facings every frame) */
 static struct { BYTE *v; double cur; int written, moving; DWORD last; } T;
 
 void vehicles_aim_turret(BYTE *v, double wx, double wy, DWORD now, int snap)
@@ -394,6 +417,11 @@ void vehicles_aim_turret(BYTE *v, double wx, double wy, DWORD now, int snap)
     T.last = now;
     if (dt > 100) dt = 100;
     if (dx * dx + dy * dy < TURRET_MIN_DIST * TURRET_MIN_DIST) return;
+    int mx, my;
+    if (vehicles_muzzle(v, &mx, &my)) {                         /* aim along the shot's own line */
+        double ex = wx - mx, ey = wy - my;
+        if (ex * ex + ey * ey >= TURRET_MIN_DIST * TURRET_MIN_DIST) { dx = ex; dy = ey; }
+    }
     double want = facing_of(dx, dy);
     if (V_TYPE(v) == V_TYPE_FIXED_GUN) {                       /* gun 0x20 either side of the hull */
         double rel = wrap_dirf(want - V_HULL(v));
@@ -402,7 +430,8 @@ void vehicles_aim_turret(BYTE *v, double wx, double wy, DWORD now, int snap)
         want = V_HULL(v) + rel;
     }
     double err = wrap_dirf(want - T.cur);
-    if (snap) { T.cur = want; T.moving = 0; }
+    if (snap == 2 && fabs(wrap_dirf(want - tur)) <= TURRET_FIRE_KEEP) { T.cur = tur; T.moving = 0; }   /* already on it */
+    else if (snap == 1 || (snap == 2 && fabs(err) <= TURRET_FIRE_SNAP)) { T.cur = want; T.moving = 0; }
     else {
         if (!T.moving && fabs(err) > TURRET_DEAD_START) T.moving = 1;
         if (T.moving) {
@@ -492,4 +521,53 @@ void __fastcall vehicles_update(BYTE *v)
         mlog("veh: %d,%d hull %d turret %d | full %d vel %d spin %d | in %#lx | stuck %d ms fs %d | ov %d->%d obj %d->%d%s%s",
              V_X(v), V_Y(v), V_HULL(v), V_TURRET(v) & 255, fv, V_VEL(v), spin, INPUT, U.stuck_ms, V_FRAMES_STUCK(v),
              ov_now, ov_new, obj_now, obj_new, cheat ? " CHEAT" : "", refused ? " REFUSED" : "");
+}
+
+/* ---------------------------------------------------------------- aim report (diagnostic, log >= 2) */
+/* the shot's start as VehicleFireWeapon 0x416c60 takes it (FUN_00416c00): the turret ANIM (or the hull ANIM
+ * without a turret) position + the current frame's hotspot (ANIM +0x88 frame table, +0x96 frame, 12 bytes each) */
+int vehicles_muzzle(BYTE *v, int *x, int *y)
+{
+    BYTE *a = V_ANIM(v);
+    if (!a) return 0;
+    if (V_HAS_TURRET(v)) a += 0xe4;
+    BYTE *frames = *(BYTE **)(a + 0x88);
+    if (!frames) return 0;
+    BYTE *f = frames + *(short *)(a + 0x96) * 0xc;
+    *x = *(short *)(f + 8) + *(short *)(a + 0x10);
+    *y = *(short *)(f + 10) + *(short *)(a + 0x12);
+    return 1;
+}
+
+void vehicles_aim_report(BYTE *v, int wx, int wy, int firing, const char *tag)
+{
+    static DWORD last;
+    DWORD now = GetTickCount();
+    if (g_cfg.log < 2 || now - last < 120) return;
+    last = now;
+    int mx = V_X(v), my = V_Y(v);
+    vehicles_muzzle(v, &mx, &my);
+    int tur = V_TURRET(v) & 255;
+    double ux, uy;
+    controls_facing_vector(tur, &ux, &uy);
+    double l = sqrt(ux * ux + uy * uy); if (l > 0) { ux /= l; uy /= l; }
+    double dx = wx - mx, dy = wy - my;
+    double along = dx * ux + dy * uy, miss = dx * uy - dy * ux;
+    BYTE *w = *(BYTE **)(v + 0x20);
+    int wt = w ? *(int *)w : -1, range = w && wt >= 0 && wt < 32 ? *(short *)(intptr_t)(0x50504e + wt * 0x18) * w[0x19] / 100 : -1;
+    mlog("aim%s: veh type %d at %d,%d hull %d muzzle %d,%d | pointer world %d,%d cam %d,%d | turret %d want(veh) %.1f want(muzzle) %.1f | along %.0f miss %.1f px | weapon %d range %d (table %d x %d%%)%s",
+         tag, V_TYPE(v), V_X(v), V_Y(v), V_HULL(v), mx, my, wx, wy, *(short *)0x4e2de8, *(short *)0x4e2dea, tur,
+         facing_of(wx - V_X(v), wy - V_Y(v)), facing_of(dx, dy), along, miss, wt, range, w && wt >= 0 && wt < 32 ? *(short *)(intptr_t)(0x50504e + wt * 0x18) : -1, w ? w[0x19] : -1, firing ? " FIRE" : "");
+}
+
+/* modern.c reticle: can the vehicle's gun point at the world point at all? The halftrack's gun (type 4) only turns
+ * 0x20 facings either side of the hull - beyond that its shots go along the arc's edge, not at the pointer
+ * (the reticle's range ticks turn grey, as beyond the weapon's range). */
+int vehicles_aim_reachable(BYTE *v, int wx, int wy)
+{
+    if (!v || V_TYPE(v) != V_TYPE_FIXED_GUN) return 1;
+    double dx = wx - V_X(v), dy = wy - V_Y(v);
+    int mx, my;
+    if (vehicles_muzzle(v, &mx, &my)) { dx = wx - mx; dy = wy - my; }
+    return fabs(wrap_dirf(facing_of(dx, dy) - V_HULL(v))) <= 0x20 + 0.5;
 }
