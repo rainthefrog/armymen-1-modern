@@ -110,6 +110,7 @@ struct Config {
     int vehicle_unstick;            /* [controls] vehicle_unstick: a wedged vehicle may back out; no creeping into objects */
     int sarge_unstick;              /* [controls] sarge_unstick: Sarge moved out when stuck on / inside a barricade (barricades.c) */
     int break_fences;               /* [gameplay] break_fences: Sarge's routes cross wooden fences and he breaks them (fences.c) */
+    int enemy_awareness;            /* [modern] enemy_awareness: could-see marks, exposure meter, delayed spotting, alerts (aware.c, modern.c) */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
     int hud_corners;                /* [hud] corners: message box / minimap in the bottom corners (layout.c) */
     float hud_corner_scale;         /* [hud] corner_scale: 1 .. 3 in quarter steps (default 1.5) */
@@ -555,6 +556,16 @@ void modern_note_hit(BYTE *item);           /* bullets.c: Sarge's projectile sto
 void modern_lane(float out[4]);              /* modern.c: mission path band colours (palette indices) + opacity, for gpu.c */
 void modern_note_shot(void);                /* controls.c: Sarge fired */
 void modern_note_damage(int from_x, int from_y);   /* bullets.c: an enemy projectile hit Sarge */
+/* aware.c: enemy awareness of Sarge ([modern] enemy_awareness) */
+#define AW_SEES      1                      /* aware_info: sees Sarge now (game test + stance-aware line) */
+#define AW_TARGETING 2                      /* aware_info: his victim is Sarge / the vehicle he drives */
+void aware_frame(void);                     /* modern_frame, every gameplay frame */
+void aware_note_shot(void);                 /* modern_note_shot */
+void aware_note_hit(BYTE *item);            /* modern_note_hit */
+int aware_info(BYTE *t, float *level);      /* flags or -1 (unknown / off); *level 0..1 */
+int aware_exposure(int *targeting, int *could);   /* 0..10 halves; noticed-and-targeting count, could-see count */
+int __fastcall aware_sight_tick(int *weapon, BYTE *shooter, int cell);                         /* call 0x43ccc3 */
+void __fastcall aware_fire_step(BYTE *t, BYTE *victim, int p1, int p2, int p3, int p4);        /* call 0x43d05b */
 void modern_ping(int wx, int wy);
 void modern_frame(void);                    /* controls.c dispatcher, every gameplay frame */
 int modern_no_zoom_now(void);               /* zoom.c */

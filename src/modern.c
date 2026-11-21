@@ -153,6 +153,7 @@ static int nearest(int r, int g, int b)
     return best;
 }
 static BYTE C_WHITE, C_RED, C_YELLOW, C_GREEN, C_BLACK, C_GREY, C_ORANGE, C_SKY, C_PATH, C_PATH_DARK;
+static BYTE C_DIMYEL, C_DIMYEL_BG;              /* enemy awareness: the "could see" eye, empty meter cells */
 static BYTE C_LANE_FILL, C_LANE_EDGE;            /* mission path band (lane_piece) */
 static int nearest_not(int r, int g, int b, const int ex[4])   /* nearest() without the indices in ex */
 {
@@ -185,6 +186,7 @@ static void colours(void)
     C_WHITE = (BYTE)nearest(255, 255, 255); C_RED = (BYTE)nearest(230, 30, 30); C_YELLOW = (BYTE)nearest(255, 220, 40);
     C_GREEN = (BYTE)nearest(60, 220, 60); C_BLACK = (BYTE)nearest(0, 0, 0); C_GREY = (BYTE)nearest(150, 150, 150);
     C_ORANGE = (BYTE)nearest(255, 140, 20);
+    C_DIMYEL = (BYTE)nearest(215, 185, 55); C_DIMYEL_BG = (BYTE)nearest(45, 45, 30);
     C_SKY = (BYTE)nearest(110, 190, 255);
     C_PATH = (BYTE)nearest(245, 245, 235);     /* mission path: white, 2 px + a dark edge (route marker: green dashed; target outline: yellow) */
     C_PATH_DARK = (BYTE)nearest(40, 40, 40);
@@ -446,11 +448,12 @@ static DWORD g_ping_at; static int g_ping_x, g_ping_y;
 void modern_note_hit(BYTE *item)
 {
     g_hits++;
+    aware_note_hit(item);                     /* aware.c: the trooper's unit notices Sarge */
     if (!modern_on(MOD_HIT_MARKERS)) return;
     g_hit_at = GetTickCount();
     g_hit_kill = item && *(short *)(item + 0x1c) <= 0;
 }
-void modern_note_shot(void) { g_shots++; }
+void modern_note_shot(void) { g_shots++; aware_note_shot(); }
 void modern_note_damage(int from_x, int from_y)
 {
     BYTE *u = SARGE;
@@ -489,6 +492,7 @@ void modern_frame(void)
         if (g_last_health > 0 && h > 0 && h < g_last_health) { h += (g_last_health - h) / 2; *(short *)(u + 0x1c) = (short)h; }
         g_last_health = h;
     } else g_last_health = u ? *(short *)(u + 0x1c) : -1;
+    aware_frame();                              /* aware.c: enemy awareness ([modern] enemy_awareness) */
 }
 
 /* zoom.c: no zoom while Sarge drives (vehicles move fast and need the whole view) */
@@ -1108,8 +1112,14 @@ static void modern_draw_body(Surf *b)
  * 150-tick pause +0x278 and FUN_0043d310 keeps the blocked target's UID at +0x2ec). Read once a frame:
  *   +0x2b8 == Sarge's UID or the UID of the vehicle he drives, for ALERT_DEBOUNCE frames -> "!" (red) over him;
  *   it then goes to anything else for ALERT_DEBOUNCE frames -> "?" (yellow), shown ALERT_SHOW_MS and faded by blinking.
- * Enemy = another army in play and not allied with the player (0x41a1e0). [modern] enemy_alerts=0 switches it off.
- * Units: legion (army record 0x41a160) +4 .. +8 units (stride 0x2c4, mode +0x70 3..5), troopers +0xb4[0..+0xdc]. */
+ * Enemy = another army in play and not allied with the player (0x41a1e0).
+ * Units: legion (army record 0x41a160) +4 .. +8 units (stride 0x2c4, mode +0x70 3..5), troopers +0xb4[0..+0xdc].
+ * 2026-11-20 later: part of ENEMY AWARENESS (aware.c, [modern] enemy_awareness; the old key enemy_alerts is its fallback).
+ * "Targeting" for the "!" / wedge / "?" now also needs the trooper to have NOTICED Sarge (aware_info level 1); before
+ * that, over the sprite (same place as the wedge): a yellow bar filling with his awareness, or - sees Sarge but
+ * awareness 0 - a dim yellow eye. Exposure meter: 5 segments right of the SARGE HEALTH label (design EXPO_X, EXPO_Y,
+ * the free strip above the SPRINT label / stamina bar): red = noticed and targeting (2 halves each), yellow = could
+ * see him (1 half each). */
 #define ALERT_MAX       96
 #define ALERT_DEBOUNCE  3
 #define ALERT_SHOW_MS   1500
@@ -1128,12 +1138,34 @@ static void alert_mark(int x, int y, int kind)
         text(x - 3, y, "?", c, 1);
     }
 }
+#define EXPO_X     398             /* design: right of the SARGE HEALTH label, above SPRINT (controls.c 396,400) */
+#define EXPO_Y     388
+#define EXPO_SEG_W 5             /* cells share their black border: 5 cells = 21 px */
+#define EXPO_SEGS  5
+static void expo_meter(Surf *b)
+{
+    if (!layout_view_is_gameplay()) return;
+    int targ, could, x = EXPO_X, y = EXPO_Y;
+    aware_exposure(&targ, &could);
+    layout_place(&x, &y);
+    if (x < 0 || y < 0 || x + EXPO_SEGS * (EXPO_SEG_W - 1) + 1 > b->w || y + 6 > b->h) return;
+    /* written straight into the HUD (px() leaves the interface alone), like the stamina bar.
+     * Segment i: i < targ -> red (full); then the could-see ones in halves, yellow (lower half = one enemy). */
+    for (int i = 0; i < EXPO_SEGS; i++) {
+        int x0 = x + i * (EXPO_SEG_W - 1), part = i < targ ? 2 : could - 2 * (i - targ);
+        for (int yy = 0; yy < 6; yy++) for (int xx = 0; xx < EXPO_SEG_W; xx++) {
+            int inner = yy > 0 && yy < 5 && xx > 0 && xx < EXPO_SEG_W - 1;
+            BYTE c = inner ? C_DIMYEL_BG : C_BLACK;
+            if (inner && (part >= 2 || (part == 1 && yy >= 3))) c = i < targ ? C_RED : C_YELLOW;
+            b->bits[(size_t)(y + yy) * b->pitch + x0 + xx] = c;
+        }
+    }
+}
 static void alerts_draw(Surf *b)
 {
-    static int cfg = -1;
-    if (cfg < 0) cfg = GetPrivateProfileIntA("modern", "enemy_alerts", 1, mod_ini_path());
     BYTE *s = *(BYTE **)0x697520;
-    if (!cfg || !s || !g_loaded) return;
+    if (!g_cfg.enemy_awareness || !s || !g_loaded) return;
+    expo_meter(b);
     DWORD me = *(DWORD *)s, veh = *(BYTE **)(s + 0x2d0) ? **(DWORD **)(s + 0x2d0) : 0, now = GetTickCount();
     static int seen[ALERT_MAX];
     memset(seen, 0, sizeof seen);
@@ -1154,7 +1186,9 @@ static void alerts_draw(Surf *b)
                 if (k < 0) { if (free_ < 0) continue; k = free_; memset(&g_al[k], 0, sizeof g_al[k]); g_al[k].t = t; g_al[k].uid = *(DWORD *)t; }
                 seen[k] = 1;
                 DWORD v = T_VICTIM_UID(t);
-                int on = v && (v == me || (veh && v == veh));
+                float lvl;
+                int aw = aware_info(t, &lvl);               /* -1: not tracked -> level 1 (the old behaviour) */
+                int on = v && (v == me || (veh && v == veh)) && lvl >= 1.0f;
                 if (on != g_al[k].on) {
                     if (++g_al[k].cnt >= ALERT_DEBOUNCE) {
                         g_al[k].on = on; g_al[k].cnt = 0; g_al[k].kind = on ? 1 : 2; g_al[k].at = now;
@@ -1173,6 +1207,16 @@ static void alerts_draw(Surf *b)
                 } else if (g_al[k].on) {   /* still targeting Sarge: a steady red wedge pointing down, outlined */
                     int y0 = sy - 15;
                     for (int r = 0; r < 6; r++) for (int xx = -(5 - r); xx <= 5 - r; xx++) px(sx + xx, y0 + r, (r == 0 || xx == -(5 - r) || xx == 5 - r) ? C_BLACK : C_RED);
+                } else if (aw >= 0 && lvl > 0.0f && lvl < 1.0f) {   /* noticing: a bar filling with his awareness */
+                    int y0 = sy - 14, fill = (int)(lvl * 11 + 0.5f);
+                    for (int yy = 0; yy < 5; yy++) for (int xx = -6; xx <= 6; xx++)
+                        px(sx + xx, y0 + yy, (yy == 0 || yy == 4 || xx == -6 || xx == 6) ? C_BLACK : xx + 5 < fill ? C_YELLOW : C_DIMYEL_BG);
+                } else if (aw > 0 && (aw & AW_SEES)) {      /* could see him, not noticed: a dim yellow eye */
+                    int y0 = sy - 12;
+                    static const signed char HALF[5] = { 2, 4, 5, 4, 2 };
+                    for (int r = 0; r < 5; r++) for (int xx = -HALF[r]; xx <= HALF[r]; xx++)
+                        px(sx + xx, y0 + r, (r == 0 || r == 4 || xx == -HALF[r] || xx == HALF[r]) ? C_BLACK : C_DIMYEL);
+                    px(sx, y0 + 2, C_BLACK); px(sx - 1, y0 + 2, C_BLACK); px(sx, y0 + 1, C_BLACK); px(sx, y0 + 3, C_BLACK);   /* pupil */
                 }
             }
         }
