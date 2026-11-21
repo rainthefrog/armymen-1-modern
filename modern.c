@@ -943,7 +943,9 @@ static void modern_draw_body(Surf *b)
                 int sy0 = ry - layout_field_shift();
                 if (hi > 0) {
                     int tr = controls_target_in_range();     /* a target under the pointer decides; else the pointer's distance */
-                    BYTE c = (tr >= 0 ? tr : d <= hi) ? C_RED : C_GREY;
+                    int ok = tr >= 0 ? tr : d <= hi;
+                    if (shooter != u && !vehicles_aim_reachable(shooter, rx + CAMERA_X, ry + CAMERA_Y)) ok = 0;   /* halftrack: outside its gun arc */
+                    BYTE c = ok ? C_RED : C_GREY;
                     for (int s = -1; s <= 1; s += 2)
                         for (int t = -1; t <= 1; t += 2)
                             for (int k = 0; k < 3; k++) { px(rx + s * (9 - k), sy0 + t * 9, c); px(rx + s * 9, sy0 + t * (9 - k), c); }
