@@ -791,6 +791,16 @@ enum { MINE_OK, MINE_OUT, MINE_BLOCKED, MINE_NO_WAY, MINE_CLOSE, MINE_EMPTY };  
 typedef struct { int sarge_x, sarge_y, reach, x, y, state, left, busy; } MinePreview;   /* world px; x, y = tile middle */
 int mines_preview(MinePreview *p);          /* modern.c: mines selected (modern controls, on foot): ring + marker */
 int mines_pointer_in_reach(void);           /* controls.c: the pointer is inside the ring (mine pointer, no walk ring) */
-int mines_click(int wx, int wy, DWORD now); /* controls.c: a left tap at the world point; 1 = taken (inside the ring) */
-int mines_frame(DWORD now, int *face_x, int *face_y);   /* controls.c after the on-foot controls: 1 = laying (face the spot) */
+int mines_click(int wx, int wy, DWORD now, int *walk_x, int *walk_y);   /* controls.c: a left tap at the world point; 0 = normal, 1 = taken, 2 = walk to *walk_x, *walk_y (a mine to disarm) */
+#define MF_FACE      1                      /* mines_frame: laying - face *face_x, *face_y */
+#define MF_STOP_WALK 2                      /* mines_frame: stop the walk (laying, or the mine to disarm reached) */
+int mines_frame(DWORD now, int walking, int *face_x, int *face_y);   /* controls.c after the on-foot controls, every frame */
+enum { SWEEP_COLLECT, SWEEP_FULL, SWEEP_NO_PACK, SWEEP_NO_ROOM };   /* what disarming a mine would do */
+typedef struct { int sarge_x, sarge_y, radius, selected, count, nearest, plate_x, plate_y, walking_to, hover, hover_x, hover_y, hover_plan, hover_own; } SweepInfo;
+typedef struct { short x, y; char own, in_range; } SweepMark;
+int mines_sweep_info(SweepInfo *si);       /* modern.c: the sweeper is carried (detector state, the mine under the pointer) */
+int mines_sweep_marks(SweepMark *m, int max, int x0, int y0, int x1, int y1);   /* modern.c: visible laid mines in a world box */
+int mines_sweep_hud(int *count, int *nearest);   /* weapons.c: the sweeper box lamp */
+BYTE *weapons_carried(int type, void **item); /* weapons.c: record of a carried weapon of this type (any slot / box) */
+int weapons_room_for_special(void);         /* weapons.c: a special weapon picked up now would be taken */
 void __fastcall mines_lay(BYTE *weapon, int army, DWORD point);   /* call 0x445f44 -> MineLay 0x446600 */

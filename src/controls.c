@@ -1898,6 +1898,7 @@ static int debug_fence_route(BYTE *u, int *x, int *y, DWORD now)
     return 1;
 }
 
+static int g_tap_override, g_tap_wx, g_tap_wy;   /* mines.c: this tap walks here instead of the pointer (a mine to disarm) */
 static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer, int left, int fire_was,
                            int right_hold, int right_tap, int kx, int ky, DWORD now)
 {
@@ -1905,8 +1906,9 @@ static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer,
     if ((right_tap && pointer) || dbg_tap) {
         S.stuck = 0; S.check_at = 0; S.detour_until = now;
         S.going = 1;
-        S.target_x = dbg_tap ? dbg_x : px + CAMERA_X;
-        S.target_y = dbg_tap ? dbg_y : py + CAMERA_Y;
+        S.target_x = dbg_tap ? dbg_x : g_tap_override ? g_tap_wx : px + CAMERA_X;
+        S.target_y = dbg_tap ? dbg_y : g_tap_override ? g_tap_wy : py + CAMERA_Y;
+        g_tap_override = 0;
         S.going_since = now;
         if (dbg_tap) S.route_run = g_debug_route_run;
         /* on a vehicle: walk to it and climb in */
@@ -2316,10 +2318,14 @@ static void apply_modern_controls(void)
         }
         if (sarge_pending && now - sarge_tap_at > SARGE_DBL_MS) { sarge_pending = 0; stance_cycle(u, now, "click on prone Sarge"); }
         /* mines selected: a tap inside the placement ring lays a mine on that tile (mines.c; a tap outside it walks,
-         * a hold inside it still walks toward the pointer) */
-        if (tap && lmode_before == LM_PENDING && !veh && mines_click(S.lpress_x + CAMERA_X, S.lpress_y + CAMERA_Y, now)) {
-            tap = tap_run = 0;
-            S.going = 0; S.nwp = 0; S.route_run = 0; S.running = 0;
+         * a hold inside it still walks toward the pointer). Sweeper carried: a tap on a visible mine walks to it
+         * and disarms / collects it (mines.c: the walk goes to a point short of the mine) */
+        if (tap && lmode_before == LM_PENDING && !veh) {
+            int mwx, mwy, mc = mines_click(S.lpress_x + CAMERA_X, S.lpress_y + CAMERA_Y, now, &mwx, &mwy);
+            if (mc == 1) {
+                tap = tap_run = 0;
+                S.going = 0; S.nwp = 0; S.route_run = 0; S.running = 0;
+            } else if (mc == 2) { g_tap_override = 1; g_tap_wx = mwx; g_tap_wy = mwy; }
         }
         if (lrelease) press_on_sarge = 0;
         /* right click on one of your soldiers: select his unit (no shot at him) */
@@ -2410,8 +2416,10 @@ static void apply_modern_controls(void)
         modern_on_foot(u, sx, sy, px, py, pointer, left, fire_was, right_hold, right_tap, kx, ky, now);
         {   /* a mine being laid at a clicked tile (mines.c presses / releases fire): stand, face the spot */
             int fx, fy;
-            if (mines_frame(now, &fx, &fy)) {
-                S.going = 0;
+            g_tap_override = 0;
+            int mf = mines_frame(now, S.going, &fx, &fy);
+            if (mf & MF_STOP_WALK) { S.going = 0; S.nwp = 0; }
+            if (mf & MF_FACE) {
                 if (!kx && !ky && (fx != SARGE_X(u) || fy != SARGE_Y(u))) set_facing(u, facing_toward(fx - SARGE_X(u), fy - SARGE_Y(u)));
             }
         }
