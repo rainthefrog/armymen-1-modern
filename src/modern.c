@@ -753,13 +753,16 @@ static const struct { const char *name; uintptr_t handler; const char *hint; } R
 };
 /* The STANCE ring (2026-11-20, user design): the radial opened with the press on Sarge (middle button) or the
  * pointer on Sarge (radial key) - six moves of Sarge himself, done by controls_stance_command (controls.c).
- * Clockwise from the right: ROLL R, PRONE, DIVE, ROLL L, STAND, KNEEL. Hints = the current bindings. */
+ * Clockwise from 30 deg (lower right; the ring is turned by RADIAL_A0 so a sector sits at the bottom): ROLL R, DIVE (bottom,
+ * 2026-11-21 user: "add dive to the bottom"), PRONE, KNEEL, STAND (top), ROLL L - the stances step down the left side to
+ * DIVE. Hints = the current bindings. */
 static const struct { const char *name; int cmd, act; } STANCE_RADIAL[6] = {
-    { "ROLL R", STANCE_CMD_ROLL_R, ACT_ROLL }, { "PRONE", STANCE_CMD_PRONE, ACT_PRONE }, { "DIVE", STANCE_CMD_DIVE, ACT_DIVE },
-    { "ROLL L", STANCE_CMD_ROLL_L, ACT_ROLL }, { "STAND", STANCE_CMD_STAND, ACT_STAND }, { "KNEEL", STANCE_CMD_KNEEL, ACT_KNEEL },
+    { "ROLL R", STANCE_CMD_ROLL_R, ACT_ROLL }, { "DIVE", STANCE_CMD_DIVE, ACT_DIVE }, { "PRONE", STANCE_CMD_PRONE, ACT_PRONE },
+    { "KNEEL", STANCE_CMD_KNEEL, ACT_KNEEL }, { "STAND", STANCE_CMD_STAND, ACT_STAND }, { "ROLL L", STANCE_CMD_ROLL_L, ACT_ROLL },
 };
 static int g_radial_open, g_radial_x, g_radial_y, g_radial_ox, g_radial_oy, g_radial_pick = -1, g_radial_stance, g_radial_centre;
 static int radial_n(void) { return g_radial_stance ? 6 : 8; }
+static double radial_a0(void) { return g_radial_stance ? 6.2831853 / 12 : 0; }   /* RADIAL_A0: sector 0 starts here (stance ring: 30 deg) */
 static const char *radial_name(int i) { return g_radial_stance ? STANCE_RADIAL[i].name : RADIAL[i].name; }
 /* the ring's look (drawn by radial_draw in modern_draw_body) */
 #define RADIAL_RADIUS 74          /* game px: outer radius of the ring */
@@ -791,7 +794,7 @@ void modern_radial(int open, int px, int py)
     if (open) {
         int dx = px - g_radial_ox, dy = py - g_radial_oy, n = radial_n();
         g_radial_centre = dx * dx + dy * dy < RADIAL_DEAD * RADIAL_DEAD;
-        g_radial_pick = g_radial_centre ? -1 : ((int)lround(atan2((double)dy, (double)dx) / (6.2831853 / n)) + n) % n;
+        g_radial_pick = g_radial_centre ? -1 : ((int)lround((atan2((double)dy, (double)dx) - radial_a0()) / (6.2831853 / n)) + 2 * n) % n;
         radial_hints();
         return;
     }
@@ -808,22 +811,23 @@ void modern_radial(int open, int px, int py)
 int modern_radial_open(void) { return g_radial_open; }
 
 /* The drag stance picker (2026-11-20, user design): press on Sarge and drag up / down - three small pose boxes
- * stacked above him (STAND top, KNEEL, PRONE bottom; geometry STANCE_PICKER_* in common.h, the same numbers
+ * stacked above him (STAND top, KNEEL, PRONE, DIVE bottom - DIVE 2026-11-21; geometry STANCE_PICKER_* in common.h, the same numbers
  * controls.c picks with), the selected one green, the current pose with a yellow edge; the release picks.
  * Each box: a 9 x 9 silhouette + the name. Drawn from the game's data (Sarge's world position). */
-static const char *const POSE_ICON[3][9] = {
+static const char *const POSE_ICON[STANCE_PICKER_BOXES][9] = {
     { "....#....", "...###...", "....#....", "..#####..", ".#.###.#.", "...###...", "...#.#...", "...#.#...", "..##.##.." },   /* stand */
     { ".........", ".........", "....#....", "...###...", "..#####..", "...###...", "...###...", "..#####..", ".##...##." },   /* kneel */
     { ".........", ".........", ".........", ".........", ".........", ".........", "#........", "#########", ".#######." },   /* prone */
+    { "......##.", ".....###.", "....###..", "...###...", "..###....", ".###.....", "###......", "##.......", "........." },   /* dive */
 };
 static void stance_picker_draw(void)
 {
     int wx, wy, sel, cur;
     if (!controls_stance_picker(&wx, &wy, &sel, &cur)) return;
-    static const char *const NAME[3] = { "STAND", "KNEEL", "PRONE" };
+    static const char *const NAME[STANCE_PICKER_BOXES] = { "STAND", "KNEEL", "PRONE", "DIVE" };
     int sx, sy; to_screen(wx, wy, &sx, &sy);
-    for (int i = 0; i < 3; i++) {
-        int cy = sy - STANCE_PICKER_BASE - (2 - i) * STANCE_PICKER_STEP;     /* box centre */
+    for (int i = 0; i < STANCE_PICKER_BOXES; i++) {
+        int cy = sy - STANCE_PICKER_BASE - (STANCE_PICKER_BOXES - 1 - i) * STANCE_PICKER_STEP;     /* box centre */
         int x0 = sx - STANCE_PICKER_W / 2, x1 = sx + STANCE_PICKER_W / 2, y0 = cy - STANCE_PICKER_STEP / 2 + 1, y1 = cy + STANCE_PICKER_STEP / 2;
         BYTE bg = i == sel ? C_GREEN : C_BLACK, fg = i == sel ? C_BLACK : C_WHITE;
         box(x0, y0, x1, y1, bg);
@@ -865,16 +869,16 @@ static void radial_draw(void)
             if (d2 > R1 * R1) continue;
             if (d2 <= R0 * R0) { shade(cx + x, cy + y, 2); continue; }        /* dead zone: darker */
             double a = atan2((double)y, (double)x); if (a < 0) a += TAU;
-            int sec = ((int)floor(a / (TAU / n) + 0.5)) % n;
+            int sec = ((int)floor((a - radial_a0()) / (TAU / n) + 0.5) + 2 * n) % n;
             if (sec == g_radial_pick) px(cx + x, cy + y, olive); else shade(cx + x, cy + y, 1);
         }
     for (int i = 0; i < n; i++) {                                          /* separators */
-        double a = (i + 0.5) * TAU / n;
+        double a = radial_a0() + (i + 0.5) * TAU / n;
         line(cx + (int)lround(cos(a) * (R0 + 1)), cy + (int)lround(sin(a) * (R0 + 1)), cx + (int)lround(cos(a) * R1), cy + (int)lround(sin(a) * R1), khaki, 0);
     }
     circle(cx, cy, R1, khaki, 0); circle(cx, cy, R1 - 1, khaki, 0); circle(cx, cy, R0, khaki, 0);
     if (g_radial_pick >= 0) {                                              /* light outline of the hovered sector */
-        double a0 = (g_radial_pick - 0.5) * TAU / n, a1 = (g_radial_pick + 0.5) * TAU / n;
+        double a0 = radial_a0() + (g_radial_pick - 0.5) * TAU / n, a1 = radial_a0() + (g_radial_pick + 0.5) * TAU / n;
         for (int s = 0; s < 2; s++) { double a = s ? a1 : a0; line(cx + (int)lround(cos(a) * (R0 + 1)), cy + (int)lround(sin(a) * (R0 + 1)), cx + (int)lround(cos(a) * (R1 - 1)), cy + (int)lround(sin(a) * (R1 - 1)), light, 0); }
         int steps = R1 * 2;
         for (int k = 0; k <= steps; k++) {
@@ -884,7 +888,7 @@ static void radial_draw(void)
         }
     }
     for (int i = 0; i < n; i++) {                                          /* labels + hints */
-        double a = i * TAU / n; int r = 50;
+        double a = radial_a0() + i * TAU / n; int r = 50;
         int tx = cx + (int)lround(cos(a) * r), ty = cy + (int)lround(sin(a) * r);
         int hot = i == g_radial_pick, two = g_radial_hint[i][0] != 0;
         int top = ty - (two ? 8 : 4);

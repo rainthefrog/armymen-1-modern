@@ -507,6 +507,8 @@ static int combat_lock_ms(void)
 #define SARGE_WEAPON_TYPE(u) (*(int **)((u) + 0x20) ? **(int **)((u) + 0x20) : -1)
 
 static int g_throw_pending, g_throw_wx, g_throw_wy;   /* throw at the pointer: the clicked world spot */
+static DWORD g_throw_cancel_until;                    /* ... and after both are up, held until then (or the aim ended) */
+static int g_throw_cancel;                            /* a charge / throw was cancelled (both buttons): no throw until both are up */
 static int weapon_is_hold_to_aim(BYTE *u)
 {
     int t = SARGE_WEAPON_TYPE(u);
@@ -1322,8 +1324,8 @@ static int g_picker, g_picker_sel;
 static int picker_select(BYTE *u, int pointer_wy)
 {
     int best = 0, bd = 1 << 30;
-    for (int i = 0; i < 3; i++) {
-        int cy = SARGE_Y(u) - STANCE_PICKER_BASE - (2 - i) * STANCE_PICKER_STEP, d = abs(pointer_wy - cy);
+    for (int i = 0; i < STANCE_PICKER_BOXES; i++) {
+        int cy = SARGE_Y(u) - STANCE_PICKER_BASE - (STANCE_PICKER_BOXES - 1 - i) * STANCE_PICKER_STEP, d = abs(pointer_wy - cy);
         if (d < bd) { bd = d; best = i; }
     }
     return best;
@@ -1337,7 +1339,7 @@ int controls_stance_picker(int *wx, int *wy, int *sel, int *cur)
     *cur = p == POSE_STAND ? 0 : p == POSE_KNEEL ? 1 : p == POSE_PRONE ? 2 : -1;
     return 1;
 }
-static const int PICK_POSE[3] = { POSE_STAND, POSE_KNEEL, POSE_PRONE };
+static const int PICK_POSE[STANCE_PICKER_BOXES] = { POSE_STAND, POSE_KNEEL, POSE_PRONE, 0 };   /* 0: DIVE (the game's dive key) */
 /* the radial being opened: on Sarge (stance ring) - set by modern_controls just before modern_radial opens it */
 static int g_radial_sarge;
 static int g_mpress_sarge[3];         /* Middle / Mouse4 / Mouse5: the last press started on Sarge */
@@ -1981,6 +1983,17 @@ static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer,
          * frame 2 releases: the throw goes to the pointer's distance, clamped to the weapon's range. */
         static int phase; static int pct;
         S.firing = S.pressing = 0;
+        if (g_throw_cancel) {
+            /* cancelled (both buttons, 2026-11-21 user: "right click cancel is not working for grenades"): the throw machine used
+             * to see the left button as let go and moved on to the release = the throw. Now it stops here: no release, fire
+             * stays held (the game throws on the RELEASE of fire) until both buttons are up and the weapon is selected again
+             * (cancel_hold, apply_modern_controls) - the charge is dropped without a throw. */
+            if (phase && g_cfg.log >= 1) mlog("controls: throw cancelled (phase %d) - no throw", phase);
+            phase = 0; g_throw_pending = 0; g_throw_aiming = 0;
+            INPUT |= INPUT_FIRE;
+            S.charging = 1;
+            return;
+        }
         S.charging = phase != 0;
         if (phase == 0 && left && !fire_was && aim >= 0) {
             int *w = *(int **)(u + 0x20);
@@ -2035,6 +2048,7 @@ static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer,
     } else if (weapon_is_hold_to_aim(u)) {
         /* hold = charge (the game shows the range), release = throw */
         S.firing = S.pressing = 0;
+        if (g_throw_cancel) { INPUT |= INPUT_FIRE; S.charging = 1; return; }   /* cancelled: no release = no throw */
         S.charging = left;
         if (left) {
             INPUT |= INPUT_FIRE;
@@ -2267,7 +2281,11 @@ static void apply_modern_controls(void)
             if (g_cfg.log >= 2) mlog("controls: stance picker open");
         }
         if (g_picker && left && pointer) g_picker_sel = picker_select(u, py + CAMERA_Y);
-        if (g_picker && lrelease) { g_picker = 0; stance_goto(u, PICK_POSE[g_picker_sel], now, "drag picker"); }
+        if (g_picker && lrelease) {
+            g_picker = 0;
+            if (PICK_POSE[g_picker_sel]) stance_goto(u, PICK_POSE[g_picker_sel], now, "drag picker");
+            else { pulse(game_command_key(0, SK_DIVE)); if (g_cfg.log >= 2) mlog("controls: dive (drag picker)"); }
+        }
         if (g_picker && !left) g_picker = 0;
         if (left && (S.lmode == LM_PENDING || S.lmode == LM_TURN)) {
             int dxs = px - sx, dys = py - sy;
@@ -2306,8 +2324,11 @@ static void apply_modern_controls(void)
          * (the next click walks again) and ignores both buttons until both are up. A charged throw that is cancelled
          * is held (no release = no throw) until both buttons are up, then the weapon is selected again. */
         static int cancel_hold;
-        int both_new = left && right && (!S.right_was_down || lpress);
+        /* a right CLICK while left is held counts too: pressed and let go between two frames it is never "held" (2026-11-21) */
+        int right_flash = left && !right && (rstate & 1) && !S.right_was_down;
+        int both_new = (left && right && (!S.right_was_down || lpress)) || right_flash;
         if (both_new && !cancel_hold) {
+            if (S.charging) g_throw_cancel = 1;   /* a charged throw: never released */
             cancel_hold = 1; S.lmode = LM_NONE; S.fire_end_at = 0; g_fire_cancel_at = now; lrun = 0; g_picker = 0;
             S.firing = S.pressing = 0;
             if (g_cfg.log >= 1) mlog("controls: fire cancelled (both buttons)");
@@ -2315,6 +2336,11 @@ static void apply_modern_controls(void)
         if (cancel_hold && !left && !right) {
             cancel_hold = 0;
             if (S.charging && *(signed char *)(u + 0x2c4) >= 0) { int c = *(signed char *)(u + 0x2c4); *(signed char *)(u + 0x2c4) = -1; ((int (__fastcall *)(BYTE *, int))0x448df0)(u, c); }   /* drop the charge */
+            if (g_throw_cancel) g_throw_cancel_until = now + 600;   /* fire held a little longer: the reselect ends the aim */
+        }
+        if (g_throw_cancel && !cancel_hold && g_throw_cancel_until && (now > g_throw_cancel_until || SARGE_STATE(u) != 4)) {
+            g_throw_cancel = 0; g_throw_cancel_until = 0;
+            if (g_cfg.log >= 2) mlog("controls: throw cancel done (state %d)", SARGE_STATE(u));
         }
         g_fire_lock_until = S.fire_end_at && combat_lock_ms() > WALK_LOCK_AFTER_SHOT_MS ? S.fire_end_at + combat_lock_ms() : 0;
         /* what the rest of this function sees: fire = "left", walk hold / walk tap = the old right button */

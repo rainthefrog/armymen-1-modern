@@ -596,8 +596,9 @@ void controls_stance_command(int cmd);
 int controls_radial_on_sarge(void);                       /* controls.c: the radial being opened started on Sarge */
 /* controls.c: the drag stance picker (press on Sarge + drag): Sarge's world feet, selected 0 stand / 1 kneel /
  * 2 prone, current pose the same way; 0 = not shown */
-int controls_stance_picker(int *wx, int *wy, int *sel, int *cur);
-#define STANCE_PICKER_BASE 34   /* px above Sarge's feet: centre of the lowest box (PRONE); KNEEL, STAND above it */
+int controls_stance_picker(int *wx, int *wy, int *sel, int *cur);   /* sel 3 = DIVE */
+#define STANCE_PICKER_BASE 34   /* px above Sarge's feet: centre of the lowest box (DIVE); PRONE, KNEEL, STAND above it */
+#define STANCE_PICKER_BOXES 4   /* 0 STAND, 1 KNEEL, 2 PRONE, 3 DIVE (2026-11-21, user: "add dive to the bottom") */
 #define STANCE_PICKER_STEP 15   /* px between the box centres */
 #define STANCE_PICKER_W    50   /* box width */
 #define STANCE_PICKER_DRAG 12   /* px of vertical drag from the press on Sarge that opens the picker */
@@ -670,6 +671,7 @@ int gpu_overlay_ready(void);
 #define MT_SLIDERS 8
 typedef struct { RECT r; int steps, pos, active; float fk; char value[16]; } MtSlider;   /* menutext.c: a slider (design px) */
 void menutext_set_sliders(const MtSlider *s, int n, int state);       /* modmenu.c: shown while that screen state is up */
+int modmenu_hover(char *text, int n, RECT *row);                     /* modmenu.c (menutext.c, display thread): hover info of the row under the pointer */
 /* radio.c: radio messages drawn as an overlay over the battlefield ([display] radio_overlay) */
 typedef int (__fastcall *LoadSpriteFn)(void *sprite, const char *name, int flags);
 extern LoadSpriteFn radio_load_sprite_original;

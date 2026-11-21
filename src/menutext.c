@@ -31,6 +31,7 @@
  * ============================================================================================ */
 #include "common.h"
 #include <math.h>
+#include <string.h>
 
 #define LABEL_COLOUR  (*(COLORREF *)0x4e9f70)
 #define GAME_FONTS    ((HFONT *)0x4e9f48)
@@ -338,8 +339,8 @@ static HFONT font_px(int f, float scale_y, float scale_x)
 }
 
 /* one item of the layer: a label or a slider, with the rectangle it covers (window px, shadow included) */
-typedef struct { int kind; RECT r; const TextCov *tc; int tx, ty, cr, cg, cb, sh; MtSlider s; float x0, x1, my, u, kr; const TextCov *vtc; } Item;
-#define IT_MAX (MT_MAX + MT_SLIDERS)
+typedef struct { int kind; RECT r; const TextCov *tc; int tx, ty, cr, cg, cb, sh; MtSlider s; float x0, x1, my, u, kr; const TextCov *vtc; const TextCov *tc2; int tx2, ty2; } Item;   /* kind 0 label, 1 slider, 2 hover info box */
+#define IT_MAX (MT_MAX + MT_SLIDERS + 1)
 static Item g_prev[IT_MAX]; static int g_nprev = -1;
 
 static void draw_cov(const TextCov *t, int tx, int ty, int r, int g, int b, int sh, const RECT *clip)
@@ -362,6 +363,22 @@ static void draw_cov(const TextCov *t, int tx, int ty, int r, int g, int b, int 
 
 static void draw_item(const Item *it, const RECT *clip)
 {
+    if (it->kind == 2) {                                   /* hover info (modmenu_hover): dark olive box, khaki edge, light text */
+        float x0 = (float)it->r.left, y0 = (float)it->r.top, x1 = (float)it->r.right, y1 = (float)it->r.bottom, e = (float)(it->sh > 1 ? it->sh : 1);
+        for (int y = max((int)y0, clip->top); y < min((int)y1, clip->bottom); y++)   /* SET, not "more opaque": the box covers the labels under it */
+            for (int x = max((int)x0, clip->left); x < min((int)x1, clip->right); x++) {
+                int edge = x < x0 + e || x >= x1 - e || y < y0 + e || y >= y1 - e, a = edge ? 255 : 238;
+                int r = edge ? 0xb4 : 0x1c, g = edge ? 0xa8 : 0x22, b2 = edge ? 0x78 : 0x14;
+                g_out[(size_t)y * g_ow + x] = ((uint32_t)a << 24) | ((uint32_t)(r * a / 255) << 16) | ((uint32_t)(g * a / 255) << 8) | (uint32_t)(b2 * a / 255);
+            }
+        for (int k = 0; k < 2; k++) {                       /* the text blended OVER the box (antialiased edges kept) */
+            const TextCov *t = k ? it->tc2 : it->tc; int tx = k ? it->tx2 : it->tx, ty = k ? it->ty2 : it->ty;
+            if (!t || !t->cov) continue;
+            for (int y = max(ty, clip->top); y < min(ty + t->h, clip->bottom); y++)
+                for (int x = max(tx, clip->left); x < min(tx + t->w, clip->right); x++) { int a = t->cov[(y - ty) * t->w + (x - tx)]; if (a) put_over(x, y, 0xf0, 0xea, 0xc8, a); }
+        }
+        return;
+    }
     if (it->kind == 0) { draw_cov(it->tc, it->tx, it->ty, it->cr, it->cg, it->cb, it->sh, clip); return; }
     const MtSlider *s = &it->s;
     float x0 = it->x0, x1 = it->x1, my = it->my, u = it->u, th = fmaxf(2.0f, u * 1.5f), kr = it->kr;
@@ -381,6 +398,7 @@ static void draw_item(const Item *it, const RECT *clip)
 static int item_same(const Item *a, const Item *b)
 {
     if (a->kind != b->kind || !EqualRect(&a->r, &b->r)) return 0;
+    if (a->kind == 2) return a->tc == b->tc && a->tc2 == b->tc2;
     if (a->kind == 0) return a->tc == b->tc && a->tx == b->tx && a->ty == b->ty && a->cr == b->cr && a->cg == b->cg && a->cb == b->cb;
     return !memcmp(&a->s, &b->s, sizeof a->s);
 }
@@ -395,6 +413,13 @@ int menutext_overlay(int dw, int dh, int pw, int ph, const uint32_t **pix, unsig
     SetRectEmpty(dirty);
     if (!g_cfg.menu_text || dw <= 0 || dh <= 0 || pw <= 0 || ph <= 0 || dw > 8192 || dh > 8192) return 0;
     if (!screens_on()) { if (g_n || g_nsl) menutext_clear(); g_nprev = -1; return 0; }
+    /* hover info of the Mod Settings row under the pointer (modmenu_hover, 2026-11-21): a change = a new layer version */
+    static char g_tip[160]; static RECT g_tip_row;
+    {
+        char t[160]; RECT row; SetRectEmpty(&row);
+        if (!modmenu_hover(t, sizeof t, &row)) t[0] = 0;
+        if (lstrcmpA(t, g_tip) || (t[0] && !EqualRect(&row, &g_tip_row))) { lstrcpynA(g_tip, t, sizeof g_tip); g_tip_row = row; InterlockedIncrement(&g_ver); }
+    }
     /* 2026-11-20 (user: "the menu bleeds over into the mission start"): the mission's loading / briefing pictures are
      * not menu screens and did not always replace the labels - they stayed until the next label. Every frame: a new
      * screen state, or a mission in play without one of its option screens up, drops all labels. */
@@ -471,6 +496,29 @@ int menutext_overlay(int dw, int dh, int pw, int ph, const uint32_t **pix, unsig
         int vw = it->vtc ? it->vtc->w + it->sh : 0;
         SetRect(&it->r, (int)(it->x0 - it->kr - 3), (int)(it->my - it->kr - 4), (int)(it->x1 + it->kr + it->u * 4 + vw + 3), (int)(it->my + it->kr + it->u + 4));
         if (it->vtc) { int vh = it->vtc->h / 2 + 2; it->r.top = min(it->r.top, (int)it->my - vh); it->r.bottom = max(it->r.bottom, (int)it->my + vh + it->sh); }
+    }
+    if (g_tip[0] && ni < IT_MAX) {                         /* the hover info box: under the row (above it near the bottom) */
+        RECT rr = g_tip_row; float fk = 1.0f;
+        int k = layout_view_is_gameplay() ? layout_menu_scale() : 0;
+        if (k) { int x0 = rr.left, y0 = rr.top, x1 = rr.right, y1 = rr.bottom; layout_menu_place(k, &x0, &y0); layout_menu_place(k, &x1, &y1); SetRect(&rr, x0, y0, x1, y1); fk = k / 64.0f; }
+        char l1[160], *l2 = NULL; lstrcpynA(l1, g_tip, sizeof l1);
+        char *bar = strchr(l1, '|'); if (bar) { *bar = 0; l2 = bar + 1; }
+        HFONT f = font_px(4, sy * fk * 0.95f, sx * fk * 0.95f);
+        const TextCov *t1 = f ? text_cov(l1, f) : NULL, *t2 = f && l2 ? text_cov(l2, f) : NULL;
+        if (t1) {
+            Item *it = &items[ni++]; memset(it, 0, sizeof *it);
+            it->kind = 2; it->tc = t1; it->tc2 = t2;
+            it->sh = (int)(sx * 0.5f + 0.5f); if (it->sh < 1) it->sh = 1;
+            int pad = (int)(5 * sx), w = max(t1->w, t2 ? t2->w : 0) + 2 * pad, h = t1->h + (t2 ? t2->h - 4 : 0) + pad;
+            int rx = (int)((rr.left - vx) * sx), top = (int)((rr.bottom - vy) * sy) + (int)(2 * sy), rtop = (int)((rr.top - vy) * sy);
+            if (top + h > dh) top = rtop - h - (int)(2 * sy);              /* no room under it: above the row */
+            if (rx + w > dw) rx = dw - w;
+            if (rx < 0) rx = 0;
+            if (top < 0) top = 0;
+            SetRect(&it->r, rx, top, rx + w, top + h);
+            it->tx = rx + pad - 2; it->ty = top + pad / 2 - 2;
+            if (t2) { it->tx2 = it->tx; it->ty2 = it->ty + t1->h - 4; }
+        }
     }
     /* what changed: rectangles of items that appeared, moved, changed or went */
     RECT d = { 0 };

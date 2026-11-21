@@ -98,7 +98,7 @@ void tips_draw(Surf *b)
     hud_draw_string_original(b, x0 + 5, y0 + 2, t, font, clip, colour);
 }
 
-int tips_rect(RECT *r) { if (GetTickCount() - g_tip_at > 150) return 0; *r = g_tip; return 1; }
+int tips_rect(RECT *r) { if (GetTickCount() - g_tip_at > 300) return 0;   /* 300: also seen by slow frames (hdsprites, 2026-11-21) */ *r = g_tip; return 1; }
 /* minimap.c's blip tip (never shown together with a HUD tip): kept clear of the enlarged HUD groups the same way
  * (2026-11-20, user screenshot: the air support box was drawn over a blip's details) */
 void tips_note_rect(RECT r) { g_tip = r; g_tip_at = GetTickCount(); }
