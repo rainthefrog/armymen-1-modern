@@ -800,6 +800,7 @@ void orders_set_pick(int mode, int on, const char *why);              /* picking
 int orders_picking(void);                                             /* the command cursor picks a spot now */
 int orders_minimap_click(int x, int y);                               /* controls.c: left press on the minimap while picking */
 int orders_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);           /* window hook: Esc cancels picking */
+int orders_take_click(void);                                           /* controls.c: a command click was confirmed - swallow that press */
 const char *orders_pick_label(void);                                  /* tips.c: the pointer label while picking */
 int panel_row_of(const int *value);                                   /* panel.c: row switching that value (modmenu.c) */
 void bindings_short(int action, char *s, int n);   /* bindings.c: "C", "hold C", "2x C", "Mouse4", "" */

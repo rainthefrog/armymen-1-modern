@@ -2222,6 +2222,10 @@ static void apply_modern_controls(void)
     int left = S.left_capture && lheld;
     int right = S.right_capture && rheld;
     int right_quick_click = field && !right && (rstate & 1) && !S.right_was_down;
+    /* round 2 (2026-11-21, user: "selecting a defend location will also move sarge there"): the left press that picked a
+     * command target (the game's own click handler or ours gave the order / launch: orders.c) is swallowed until the
+     * button is let go - the picking state was already off in this frame, so the press started a click walk */
+    if (orders_take_click()) { S.left_blocked = 1; S.lmode = LM_NONE; if (g_cfg.log >= 1) mlog("controls: the picking click is swallowed (no walk; Sarge at %d,%d)", SARGE_X(u), SARGE_Y(u)); }
     if (S.left_blocked) { if (lstate >= 0) S.left_blocked = 0; left = 0; }
     if (S.right_blocked) { if (rstate >= 0) S.right_blocked = 0; right = right_quick_click = 0; }
     DWORD now = GetTickCount();
@@ -2304,12 +2308,12 @@ static void apply_modern_controls(void)
                 CURSOR_X = px; CURSOR_Y = py;
                 S.cursor_x = px; S.cursor_y = py; S.have_cursor = 1;
             }
-            if (cl && pointer && field) { wait_l = 3; mode_l = COMMAND_MODE; mlog("controls: command target click at %d,%d (mode %d)", px + CAMERA_X, py + CAMERA_Y, *(int *)0x696ec8); }
-            else if (cr) wait_r = 3;
+            if (cl && pointer && field) { wait_l = 3; mode_l = COMMAND_MODE; S.left_blocked = 1; mlog("controls: command target click at %d,%d (mode %d)", px + CAMERA_X, py + CAMERA_Y, *(int *)0x696ec8); }
+            else if (cr) { wait_r = 3; S.right_blocked = 1; }    /* the cancelling right click: no walk tap afterwards */
             if (wait_l && --wait_l == 0 && COMMAND_CURSOR == 1 && COMMAND_MODE == mode_l) { ((UnitFn)COMMAND_CLICK)((BYTE *)1); mlog("controls: air support: the game did not take the click - sent"); }
             if (wait_r && --wait_r == 0 && COMMAND_CURSOR == 1) { ((UnitFn)COMMAND_TOGGLE)(NULL); mlog("controls: air support cancelled"); }
             g_hide_reticle = 0; g_cursor_kind = -1;
-            S.right_was_down = right; S.left_was_down = 0; S.lmode = LM_NONE;
+            S.right_was_down = cr ? 0 : right; S.left_was_down = 0; S.lmode = LM_NONE;
             /* W A S D still move Sarge (the camera pans toward the pointer meanwhile: controls_camera) - picking a
              * target used to lock everything (user 2026-11-17) */
             if (!veh) modern_on_foot(u, sx, sy, px, py, pointer, 0, 0, 0, 0, kx, ky, now);
@@ -3530,7 +3534,7 @@ static double lead_solve(const LeadK *K, int axis, double want)
  *   - the camera stays where it was when picking started (no lead, no spring, Sarge walking does not move it), so the
  *     world point under a still pointer never moves by itself;
  *   - it scrolls only when the player pushes the pointer into the edge band (PICK_EDGE_PX from the window edge or just
- *     above the HUD panel) and keeps it there pick_dwell (= [controls] lob_dwell_ms, default 300) - so crossing the band
+ *     above the HUD panel; also outside the window there, pick_edge) and keeps it there PICK_EDGE_DWELL_MS - so crossing the band
  *     on the way to the HUD does not scroll - at PICK_SCROLL_MIN rising to PICK_SCROLL_MAX px/s, to any spot of the map
  *     (the original map clamp only);
  *   - a minimap click picks that spot directly (controls_dispatch_body -> orders.c orders_minimap_click).
@@ -3541,16 +3545,37 @@ static double lead_solve(const LeadK *K, int axis, double want)
 #define PICK_SCROLL_MAX     1600.0             /* px/s after PICK_SCROLL_RAMP_MS in the band */
 #define PICK_SCROLL_RAMP_MS 1200
 #define PICK_RETURN_MS      2000               /* easing back to Sarge afterwards: at most this long without a snap */
+#define PICK_EDGE_DWELL_MS  150                /* in the band this long before it scrolls (round 2: was lob_dwell_ms 300) */
 static struct { int on, band, returning; double cx, cy; DWORD band_since, return_at, log_at; } P;
 
-/* the edge the pointer pushes: -1 / 0 / 1 per axis (game-screen px; not over the interface itself) */
+/* The edge the pointer pushes: -1 / 0 / 1 per axis.
+ * Round 2 (2026-11-21, user on Windows: "airstrike doesn't move the screen when moving cursor to the edges. defence/attack
+ * should also do that"): with [mouse] follow_windows_pointer=1 and [controls] keep_pointer_in_window=0 (the user's ini) the
+ * Windows pointer leaves the window at its edge - pointer_in_window then said "not in the window" and nothing scrolled
+ * (in Wine the rig's pointer stayed inside). The test is now made on the CLIENT rectangle: the band is PICK_EDGE_PX game
+ * px converted to client px (scale), and a pointer OUTSIDE the client area up to PICK_EDGE_OUTSIDE client px counts as
+ * that edge. Only the HUD panel itself (and an open panel) stops it - the mod's boxes near the edges (objectives box top
+ * left, spare weapons) no longer do. Bottom: the window bottom, or just above the HUD panel. */
+#define PICK_EDGE_OUTSIDE   400                /* client px: a pointer this far outside the window still pushes */
 static int pick_edge(int *dx, int *dy)
 {
-    int x, y, b = PICK_EDGE_PX;
     *dx = *dy = 0;
-    if (!pointer_in_window(&x, &y) || ui_at(x, y)) return 0;
-    if (x < b) *dx = -1; else if (x >= g_cfg.width - b) *dx = 1;
-    if (y < b) *dy = -1; else if (y >= g_cfg.height - b || layout_on_hud_panel(x, y + b)) *dy = 1;
+    HWND h = g_dd ? g_dd->hwnd : NULL;
+    POINT c; RECT r;
+    if (!h || GetForegroundWindow() != h || panel_is_open() || !GetCursorPos(&c) || !ScreenToClient(h, &c) || !GetClientRect(h, &r)) return 0;
+    int w = r.right - r.left, hh = r.bottom - r.top;
+    if (w <= 0 || hh <= 0 || g_cfg.width <= 0 || g_cfg.height <= 0) return 0;
+    if (c.x < -PICK_EDGE_OUTSIDE || c.y < -PICK_EDGE_OUTSIDE || c.x >= w + PICK_EDGE_OUTSIDE || c.y >= hh + PICK_EDGE_OUTSIDE) return 0;
+    int bx = PICK_EDGE_PX * w / g_cfg.width, by = PICK_EDGE_PX * hh / g_cfg.height;   /* the band in client px */
+    if (bx < 4) bx = 4;
+    if (by < 4) by = 4;
+    POINT in = { c.x < 0 ? 0 : c.x >= w ? w - 1 : c.x, c.y < 0 ? 0 : c.y >= hh ? hh - 1 : c.y };   /* clamped into the window */
+    POINT g = in; view_client_to_game(&g);
+    int inside = in.x == c.x && in.y == c.y;
+    if (inside && layout_on_hud_panel(g.x, g.y)) return 0;               /* on the HUD itself: no scroll (buttons, minimap) */
+    if (c.x < bx) *dx = -1; else if (c.x >= w - bx) *dx = 1;
+    if (c.y < by) *dy = -1;
+    else if (c.y >= hh - by || (inside && layout_on_hud_panel(g.x, g.y + PICK_EDGE_PX))) *dy = 1;
     return *dx || *dy;
 }
 
@@ -3565,7 +3590,7 @@ static int pick_camera(int pick, int fhave, double dt, double *fx, double *fy, d
 {
     DWORD now = GetTickCount();
     if (!pick) {
-        if (P.on) { P.on = 0; P.returning = 1; P.return_at = now; if (g_cfg.log >= 1) mlog("pick camera: off, easing back to Sarge"); }
+        if (P.on) { P.on = 0; P.returning = 1; P.return_at = now; if (g_cfg.log >= 1) mlog("pick camera: off, easing back to Sarge at %d,%d", SARGE_X(SARGE), SARGE_Y(SARGE)); }
         if (P.returning && (fabs(gx - *fx) + fabs(gy - *fy) < 4 || now - P.return_at > PICK_RETURN_MS)) P.returning = 0;
         return P.returning;
     }
@@ -3576,16 +3601,26 @@ static int pick_camera(int pick, int fhave, double dt, double *fx, double *fy, d
         P.cx = fhave ? *fx : gx; P.cy = fhave ? *fy : gy;         /* where the camera is now: picking starts without a move */
         int px, py;
         if (g_cfg.log >= 1) {
-            if (pointer_on_battlefield(&px, &py)) mlog("pick camera: on, centre %.1f,%.1f, pointer world %d,%d", P.cx, P.cy, px + CAMERA_X, py + CAMERA_Y);
-            else mlog("pick camera: on, centre %.1f,%.1f", P.cx, P.cy);
+            if (pointer_on_battlefield(&px, &py)) mlog("pick camera: on, centre %.1f,%.1f, pointer world %d,%d (Sarge at %d,%d)", P.cx, P.cy, px + CAMERA_X, py + CAMERA_Y, SARGE_X(SARGE), SARGE_Y(SARGE));
+            else mlog("pick camera: on, centre %.1f,%.1f (Sarge at %d,%d)", P.cx, P.cy, SARGE_X(SARGE), SARGE_Y(SARGE));
         }
     }
     int ex, ey;
-    if (pick_edge(&ex, &ey)) {
+    int edge = pick_edge(&ex, &ey);
+    static double sx0, sy0; static int scrolling, sdx, sdy;  /* log: each edge scroll (direction) from where to where */
+    if (scrolling && (!edge || ex != sdx || ey != sdy)) {
+        scrolling = 0;
+        if (g_cfg.log >= 1) mlog("pick camera: edge scroll %d,%d ended at centre %.0f,%.0f (moved %.0f,%.0f)", sdx, sdy, P.cx, P.cy, P.cx - sx0, P.cy - sy0);
+    }
+    if (edge && !scrolling && P.band && now - P.band_since >= PICK_EDGE_DWELL_MS) {
+        scrolling = 1; sx0 = P.cx; sy0 = P.cy; sdx = ex; sdy = ey;
+        if (g_cfg.log >= 1) mlog("pick camera: edge scroll %d,%d from centre %.0f,%.0f", ex, ey, P.cx, P.cy);
+    }
+    if (edge) {
         if (!P.band) { P.band = 1; P.band_since = now; }
         DWORD in = now - P.band_since;
-        if (in >= (DWORD)lob_dwell_ms() && dt > 0 && dt < 250) {
-            double t = clampd((in - lob_dwell_ms()) / (double)PICK_SCROLL_RAMP_MS, 0, 1);
+        if (in >= PICK_EDGE_DWELL_MS && dt > 0 && dt < 250) {
+            double t = clampd((in - PICK_EDGE_DWELL_MS) / (double)PICK_SCROLL_RAMP_MS, 0, 1);
             double v = (PICK_SCROLL_MIN + (PICK_SCROLL_MAX - PICK_SCROLL_MIN) * t) * dt / 1000.0;
             P.cx += ex * v; P.cy += ey * v;
         }

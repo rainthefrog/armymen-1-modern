@@ -148,6 +148,13 @@ static void squad_key(int mode)
 void __cdecl orders_attack_key(void) { squad_key(MODE_ATTACK); }
 void __cdecl orders_defend_key(void) { squad_key(MODE_DEFEND); }
 
+/* round 2 (2026-11-21): a command click was confirmed since the last call - the left press that did it is swallowed by
+ * controls.c (user: "selecting a defend location will also move sarge there"). The game's own click handler runs from the
+ * window messages, often before the controls frame sees the press: by then the picking state was off and the press was
+ * taken as a click walk. */
+static volatile int g_click_taken;
+int orders_take_click(void) { int t = g_click_taken; g_click_taken = 0; return t; }
+
 /* wrap of the command click FUN_00441000 (__fastcall ecx confirm) */
 void __fastcall orders_command_click(int confirm)
 {
@@ -166,6 +173,7 @@ void __fastcall orders_command_click(int confirm)
     int wx = CURSOR_X + CAMERA_X, wy = CURSOR_Y + CAMERA_Y;
     orders_command_click_original(confirm);
     if (on != 1 || !confirm) return;
+    g_click_taken = 1;                       /* controls.c: the press that did this must not also walk (orders_take_click) */
     BYTE *s = SARGE, *un = SELECTED_UNIT;
     int dist = s ? (int)sqrt((double)(wx - IT_X(s)) * (wx - IT_X(s)) + (double)(wy - IT_Y(s)) * (wy - IT_Y(s))) : -1;
     if ((mode == MODE_ATTACK || mode == MODE_DEFEND) && un)
