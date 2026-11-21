@@ -404,17 +404,33 @@ static int building_cell(BYTE *c)
 }
 
 typedef struct { int cx0, cy0, inside, circle; unsigned mask[IN_N * 2], door[IN_N * 2]; BYTE *cells[IN_MAX_CELLS]; int ncells; } Floor;
-static BYTE g_blk[IN_N][IN_N];           /* 0 unknown, 1 free, 2 blocked */
 static BYTE g_enc[IN_N][IN_N];           /* 0 unknown, 1 floor, 2 not */
 static int g_bx0, g_by0, g_bx1, g_by1, g_wx0, g_wy0;     /* building box and window, in cells */
 
+/* "May Sarge stand in this cell" (the game's own test, an object-list walk per cell), kept per WORLD cell.
+ * 2026-11-20 (stutter, user's log: h.obj 1.7-3.7 ms every ~5 frames while walking near a building, 8-21 ms in a
+ * base): the answers were kept per building box and ALL thrown away when the box changed (in a base it changes as
+ * parts come into / leave reach, every few steps) and every IN_REFRESH_MS - each time every cell of the box was
+ * asked again in one frame. Now an answer belongs to its world cell, whatever the box, and lives IN_REFRESH_MS / 2
+ * .. IN_REFRESH_MS (per cell, so they do not all run out in the same frame): the same answers, never older than
+ * before, asked for a few cells per call instead of all at once. The table is BLK_SPAN cells square and wraps
+ * (only cells inside the IN_N window are ever asked: no two of them share an entry); an entry names its cell. */
+#define BLK_SPAN 128                     /* power of two, >= IN_N */
+typedef struct { short x, y; BYTE v; DWORD until; } BlkCell;     /* v: 0 nothing, 1 free, 2 blocked */
+static BlkCell g_blkc[BLK_SPAN][BLK_SPAN];
+static DWORD g_in_now;                   /* GetTickCount when this floor_now call began (one time for the whole call) */
 static int cell_blocked(int x, int y)    /* absolute cell; outside the box / window = blocked */
 {
     if (x < g_bx0 || x > g_bx1 || y < g_by0 || y > g_by1) return 1;
     int i = x - g_wx0, j = y - g_wy0;
     if (i < 0 || j < 0 || i >= IN_N || j >= IN_N) return 1;
-    if (!g_blk[j][i]) g_blk[j][i] = controls_sarge_blocked_at(x * IN_CELL + IN_CELL / 2, y * IN_CELL + IN_CELL / 2) ? 2 : 1;
-    return g_blk[j][i] == 2;
+    BlkCell *c = &g_blkc[y & (BLK_SPAN - 1)][x & (BLK_SPAN - 1)];
+    if (!c->v || c->x != x || c->y != y || (LONG)(g_in_now - c->until) >= 0) {
+        c->x = (short)x; c->y = (short)y;
+        c->v = controls_sarge_blocked_at(x * IN_CELL + IN_CELL / 2, y * IN_CELL + IN_CELL / 2) ? 2 : 1;
+        c->until = g_in_now + IN_REFRESH_MS / 2 + (((unsigned)x * 73856093u ^ (unsigned)y * 19349663u) >> 8) % (IN_REFRESH_MS / 2);
+    }
+    return c->v == 2;
 }
 /* the cell lies on a building FOOTPRINT: the movement layer (16 px tiles, 0x4e3554) marks a building's whole
  * area blocked (Wine: 47 under the depot floor), walls and floor alike */
@@ -486,20 +502,42 @@ static int floor_cell(const void *flv, BYTE (*cm)[IN_N], int wx0, int wy0, int b
 /* a ROOM cell: free for Sarge and walled in (blocked) in all four directions inside the box - where he can walk
  * under the roof. (Wine 2026-11-20: the depot's room is NOT marked in the movement layer - only the solid parts of a
  * building are; opening the footprint opened everything but his room.) */
-static int cell_room(int x, int y)
+/* 2026-11-20 (stutter): the answer for every cell of the box is worked out ONCE per floor_now call (rooms_build)
+ * with four sweeps, instead of four rays of cell_blocked calls every time a cell was asked (the door search asks
+ * each cell and its neighbours; Wine, Boot Camp depot, box 51 x 39 cells, all answers known: 0.25 ms for one pass
+ * over the cells the old way, 0.025 ms for the table; checked equal cell by cell). Same rule:
+ * a ray leaves the box = open; a cell of the box outside the IN_N window counts as blocked (cell_blocked), so a box
+ * wider than the window closes the ray at the window's edge. */
+static BYTE g_room[IN_N][IN_N];          /* this call: 1 = room cell (window cells inside the box) */
+static void rooms_build(void)
 {
-    if (cell_blocked(x, y)) return 0;
-    static const int DX[4] = { 1, -1, 0, 0 }, DY[4] = { 0, 0, 1, -1 };
-    for (int d = 0; d < 4; d++) {
-        int cx = x, cy = y, hit = 0;
-        for (int k = 0; k < IN_N && !hit; k++) {
-            cx += DX[d]; cy += DY[d];
-            if (cx < g_bx0 || cx > g_bx1 || cy < g_by0 || cy > g_by1) break;
-            hit = cell_blocked(cx, cy);
-        }
-        if (!hit) return 0;
+    static BYTE blk[IN_N][IN_N], hit[IN_N][IN_N];            /* blocked; rays closed so far (bit per direction) */
+    memset(g_room, 0, sizeof g_room);
+    int i0 = max(g_bx0, g_wx0) - g_wx0, i1 = min(g_bx1, g_wx0 + IN_N - 1) - g_wx0;
+    int j0 = max(g_by0, g_wy0) - g_wy0, j1 = min(g_by1, g_wy0 + IN_N - 1) - g_wy0;
+    if (i1 < i0 || j1 < j0) return;
+    for (int j = j0; j <= j1; j++)
+        for (int i = i0; i <= i1; i++) { blk[j][i] = (BYTE)cell_blocked(g_wx0 + i, g_wy0 + j); hit[j][i] = 0; }
+    int beyond_l = g_bx0 < g_wx0, beyond_r = g_bx1 > g_wx0 + IN_N - 1, beyond_u = g_by0 < g_wy0, beyond_d = g_by1 > g_wy0 + IN_N - 1;
+    for (int j = j0; j <= j1; j++) {
+        int seen = beyond_l;
+        for (int i = i0; i <= i1; i++) { if (seen) hit[j][i] |= 1; if (blk[j][i]) seen = 1; }
+        seen = beyond_r;
+        for (int i = i1; i >= i0; i--) { if (seen) hit[j][i] |= 2; if (blk[j][i]) seen = 1; }
     }
-    return 1;
+    for (int i = i0; i <= i1; i++) {
+        int seen = beyond_u;
+        for (int j = j0; j <= j1; j++) { if (seen) hit[j][i] |= 4; if (blk[j][i]) seen = 1; }
+        seen = beyond_d;
+        for (int j = j1; j >= j0; j--) { if (seen) hit[j][i] |= 8; if (blk[j][i]) seen = 1; }
+    }
+    for (int j = j0; j <= j1; j++)
+        for (int i = i0; i <= i1; i++) g_room[j][i] = (BYTE)(!blk[j][i] && hit[j][i] == 15);
+}
+static int cell_room(int x, int y)       /* absolute cell; valid inside floor_now after rooms_build */
+{
+    int i = x - g_wx0, j = y - g_wy0;
+    return i >= 0 && j >= 0 && i < IN_N && j < IN_N && g_room[j][i];
 }
 /* a BACK door: it opens upward on the screen (free outside ground just above it) - hidden behind the roof. Front
  * and side doors are seen anyway (user 2026-11-20: "don't draw the threshold for front facing building. only the back") */
@@ -550,11 +588,13 @@ static int floor_now(Floor *fl)
     int bx0 = box.left / IN_CELL, by0 = box.top / IN_CELL, bx1 = (box.right - 1) / IN_CELL, by1 = (box.bottom - 1) / IN_CELL;
     int wx0 = (bx0 + bx1) / 2 - IN_N / 2, wy0 = (by0 + by1) / 2 - IN_N / 2;   /* window on the building */
     static DWORD cached_at; static int cbx0 = -1, cby0, cbx1, cby1;
-    if (bx0 != cbx0 || by0 != cby0 || bx1 != cbx1 || by1 != cby1 || GetTickCount() - cached_at > IN_REFRESH_MS) {
-        memset(g_blk, 0, sizeof g_blk); memset(g_enc, 0, sizeof g_enc); memset(g_bb, 0, sizeof g_bb);
-        cbx0 = bx0; cby0 = by0; cbx1 = bx1; cby1 = by1; cached_at = GetTickCount();
+    g_in_now = GetTickCount();
+    if (bx0 != cbx0 || by0 != cby0 || bx1 != cbx1 || by1 != cby1 || g_in_now - cached_at > IN_REFRESH_MS) {
+        memset(g_enc, 0, sizeof g_enc); memset(g_bb, 0, sizeof g_bb);     /* (cell_blocked keeps its own answers per world cell) */
+        cbx0 = bx0; cby0 = by0; cbx1 = bx1; cby1 = by1; cached_at = g_in_now;
     }
     g_bx0 = bx0; g_by0 = by0; g_bx1 = bx1; g_by1 = by1; g_wx0 = fl->cx0 = wx0; g_wy0 = fl->cy0 = wy0;
+    rooms_build();                                               /* cell_room for this call */
     memset(fl->mask, 0, sizeof fl->mask); memset(fl->door, 0, sizeof fl->door);
     int ndoor = 0;
     for (int y = max(by0, wy0); y <= min(by1, wy0 + IN_N - 1); y++)          /* doors */

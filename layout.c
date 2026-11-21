@@ -460,9 +460,15 @@ void layout_draw_resize_icon(Surf *b)
 /* ---------------------------------------------------------------- the zoom's interface mask (present.c) */
 
 /* One row of "interface" bytes, exact: a pixel is interface where the (enlarged) HUD panel art is not
- * see-through (the minimap's picture always), or in the spare-weapon column. Zones are worked out once per
- * row, so this is cheap enough to rebuild the whole band when the layout changes (sizes animating). */
+ * see-through (the minimap's picture always), or in the spare-weapon column.
+ * 2026-11-20 (stutter): everything that is the same for the whole row is worked out ONCE per row - the zones, the
+ * enlarged pieces this row crosses with the 1x row each one shows (what unscale_with did per pixel: pieces() and
+ * four divisions for every pixel), the art's margin table. Same answers as before (checked row by row against the
+ * old per-pixel code in Wine at several group sizes, sizes animating too), ~0.035 ms -> ~0.004 ms per row. Rows above every
+ * HUD piece return at once. Callers: present.c (zoom mask, display thread) and modern.c (overlay pixels; it keeps
+ * the rows between frames, layout_hud_mask_signature). */
 static int art_margin(const Surf *art, const RECT *src, int d, int ry);
+static const short *art_tops(const Surf *art, const RECT *src);
 void layout_hud_mask_row(int y, BYTE *row, int w)
 {
     memset(row, 0, w);
@@ -473,36 +479,83 @@ void layout_hud_mask_row(int y, BYTE *row, int w)
     void *art_v; RECT src;
     Surf *art = hud_panel_art(&art_v, &src) ? (Surf *)art_v : NULL;
     if (art && (!art->bits || !art->has_ck || src.right - src.left < LAYOUT_DESIGN_W || src.bottom - src.top < PANEL_ROWS)) art = NULL;
+    const short *tops = art ? art_tops(art, &src) : NULL;     /* first solid panel row per design column (rows above = margin) */
     static const int starts[] = { 0, ZONE_MID_X, LAYOUT_HUD_SPLIT_X, ZONE_AIR_X, ZONE_MAP_X, ZONE_KNOB_X, LAYOUT_DESIGN_W };
     int off[6];
     for (int i = 0; i < 6; i++) off[i] = layout_hud_dx(starts[i]);
     RECT wr; int has_w = weapons_ui_rect(&wr);
+    /* the enlarged pieces this row crosses, topmost first, each with the 1x row it shows here (unscale_with) */
+    struct { int x0, x1, src_x, w1, q, sy; } act[5]; int na = 0;
+    if (z.on) {
+        Piece p[5]; int n = pieces(&z, p);
+        for (int i = n - 1; i >= 0; i--) {
+            int dw = SC(p[i].w1, p[i].q), dh = SC(PANEL_ROWS, p[i].q);
+            if (y < h - dh) continue;
+            int sy = UN(y - (h - dh), p[i].q);
+            if (sy >= PANEL_ROWS) sy = PANEL_ROWS - 1;
+            act[na].x0 = p[i].dst_x; act[na].x1 = p[i].dst_x + dw; act[na].src_x = p[i].src_x; act[na].w1 = p[i].w1; act[na].q = p[i].q;
+            act[na].sy = h - PANEL_ROWS + sy; na++;
+        }
+    }
+    int top1 = LAYOUT_HUD_PANEL_Y + dy;                       /* the 1x panel's rows on the screen: top1 .. top1 + PANEL_ROWS */
+    if (!na && (y < top1 || y >= top1 + PANEL_ROWS) && !(has_w && y >= wr.top && y < wr.bottom)) return;   /* no HUD pixel on this row */
     for (int x = 0; x < w; x++) {
         int sx = x, sy = y;
-        if (z.on) unscale_with(&z, &sx, &sy);
+        for (int k = 0; k < na; k++) {
+            if (x < act[k].x0 || x >= act[k].x1) continue;
+            sx = UN(x - act[k].x0, act[k].q);
+            if (sx >= act[k].w1) sx = act[k].w1 - 1;
+            sx += act[k].src_x; sy = act[k].sy;
+            break;
+        }
         if (has_w && sx >= wr.left && sx < wr.right && sy >= wr.top && sy < wr.bottom) {   /* the spare-weapon column: a copy of the weapon column - its margin */
-            int ry2 = sy - dy - LAYOUT_HUD_PANEL_Y;
-            if (!(art && ry2 >= 0 && ry2 < PANEL_ROWS && art_margin(art, &src, WEAPON_COL_SRC_X + (sx - wr.left), ry2))) row[x] = 1;
+            int ry2 = sy - top1, d2 = WEAPON_COL_SRC_X + (sx - wr.left);
+            if (!(tops && ry2 >= 0 && ry2 < PANEL_ROWS && d2 >= 0 && d2 < LAYOUT_DESIGN_W && ry2 < tops[d2])) row[x] = 1;
             continue;
         }
-        int ry = sy - dy - LAYOUT_HUD_PANEL_Y;
+        int ry = sy - top1;
         if (ry < 0 || ry >= PANEL_ROWS) continue;
         int d = -1;
         for (int i = 0; i < 6; i++) { int t = sx - off[i]; if (t >= starts[i] && t < starts[i + 1]) { d = t; break; } }
         if (d < 0) continue;
-        if (art && art_margin(art, &src, d, ry)) continue;
+        if (tops && ry < tops[d]) continue;                   /* (d is inside 0 .. LAYOUT_DESIGN_W here) */
         row[x] = 1;
     }
-    (void)h;
+}
+/* Everything layout_hud_mask_row's answer depends on, as one number: the zones (sizes may be animating), the HUD
+ * anchor, the panel art (surface, its pixels' address, key, source rectangle) and the spare-weapon column. While it
+ * stays the same a row made earlier is still right (modern.c keeps its rows between frames: making ~40..345 rows
+ * again every frame was most of its time - user's log 2026-11-20: 4.5 ms a frame, 10-49 ms with large HUD groups). */
+unsigned layout_hud_mask_signature(void)
+{
+    unsigned s = layout_hud_signature();
+    #define SIG_MIX(v) (s = (s ^ (unsigned)(v)) * 16777619u)
+    static const int starts[] = { 0, ZONE_MID_X, LAYOUT_HUD_SPLIT_X, ZONE_AIR_X, ZONE_MAP_X, ZONE_KNOB_X };
+    int dx, dy; layout_offset(ANCHOR_HUD, &dx, &dy);
+    Zones z = zones();
+    SIG_MIX(layout_active()); SIG_MIX(g_cfg.width); SIG_MIX(g_cfg.height); SIG_MIX(dx); SIG_MIX(dy);
+    SIG_MIX(z.mid_x); SIG_MIX(z.mid_src); SIG_MIX(z.air_x); SIG_MIX(z.map_x); SIG_MIX(z.knob_x);
+    for (int i = 0; i < 6; i++) SIG_MIX(layout_hud_dx(starts[i]));
+    void *art_v; RECT src;
+    Surf *art = hud_panel_art(&art_v, &src) ? (Surf *)art_v : NULL;
+    SIG_MIX((uintptr_t)art);
+    if (art) {
+        SIG_MIX((uintptr_t)art->bits); SIG_MIX(art->pitch); SIG_MIX(art->has_ck); SIG_MIX(art->ck_lo); SIG_MIX(art->ck_hi);
+        SIG_MIX(src.left); SIG_MIX(src.top); SIG_MIX(src.right); SIG_MIX(src.bottom);
+    }
+    RECT wr; int has_w = weapons_ui_rect(&wr);
+    SIG_MIX(has_w);
+    if (has_w) { SIG_MIX(wr.left); SIG_MIX(wr.top); SIG_MIX(wr.right); SIG_MIX(wr.bottom); }
+    #undef SIG_MIX
+    return s;
 }
 /* Is design pixel (d, panel row ry) a see-through MARGIN of the panel art (above the first solid pixel of
  * its column)? See-through pixels BELOW that are holes the game fills with other pictures (the logo, the
  * minimap, the message window): they are part of the interface and are copied when enlarged. */
-/* the first solid row of design column d of the panel art (rows above it are margin) */
-static int art_top(const Surf *art, const RECT *src, int d)
+/* the first solid row of every design column of the panel art (rows above it are margin); kept per art picture */
+static const short *art_tops(const Surf *art, const RECT *src)
 {
     static short top[LAYOUT_DESIGN_W]; static const BYTE *cached_bits; static RECT cached_src;
-    if (d < 0 || d >= LAYOUT_DESIGN_W) return 0;
     if (art->bits != cached_bits || !EqualRect(src, &cached_src)) {
         cached_bits = art->bits; cached_src = *src;
         for (int c = 0; c < LAYOUT_DESIGN_W; c++) {
@@ -514,7 +567,12 @@ static int art_top(const Surf *art, const RECT *src, int d)
             top[c] = (short)r;
         }
     }
-    return top[d];
+    return top;
+}
+static int art_top(const Surf *art, const RECT *src, int d)
+{
+    if (d < 0 || d >= LAYOUT_DESIGN_W) return 0;
+    return art_tops(art, src)[d];
 }
 static int art_margin(const Surf *art, const RECT *src, int d, int ry) { return ry < art_top(art, src, d); }
 

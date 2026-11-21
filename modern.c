@@ -198,10 +198,20 @@ static void colours(void)
 }
 static int g_hud_top;                         /* layout_hud_top() for this draw (hud_rows_reset) */
 /* Interface test per pixel (2026-11-20 perf): above g_hud_top there is no HUD pixel; below it, a whole row of the
- * interface mask is made once per draw (layout_hud_mask_row - the same test the zoom mask uses) instead of
- * layout_on_hud_panel + weapons_ui_at per pixel (zones() several times each: the mission path band behind the
- * HUD cost 6+ ms). Without the layout (640x480) the per-pixel test as before. */
-static BYTE *g_hrow; static int g_hrow_w, g_hrow_h, g_hrow_on; static BYTE g_hrow_done[2048];
+ * interface mask is made (layout_hud_mask_row - the same test the zoom mask uses) instead of layout_on_hud_panel +
+ * weapons_ui_at per pixel. Without the layout (640x480) the per-pixel test as before.
+ * 2026-11-20 later (stutter): the rows were made again in EVERY draw, ~0.04 ms a row, and with enlarged HUD groups
+ * the HUD band is the lower half of the screen (minimap x2: rows 310..539; x2.5 / x3: from 252 / 195), so the
+ * mission-path band, health bars and labels down there paid for up to 230-345 rows a frame. User's log: this
+ * overlay took 0.1-0.2 ms until the mission path appeared and 4.5 ms a frame from then on (of 5.8 ms game work),
+ * 10-49 ms in the worst stretch; Wine (Desert 1, minimap x2): ~170 rows = 6.4 of 8.2 ms a frame. Now a row is KEPT
+ * between frames while layout_hud_mask_signature() (everything the mask depends on) is unchanged; as a guard
+ * against anything that number misses, a kept row is made again after HROW_KEEP (+ up to 63, staggered per row)
+ * draws - one or two rows a frame. Wine, same scene: 8.2 -> 1.8 ms a frame (median 7.9 -> 0.8). */
+#define HROW_KEEP 120                          /* draws (about 2 s) a kept row is trusted */
+static BYTE *g_hrow; static int g_hrow_w, g_hrow_h, g_hrow_on;
+static unsigned g_hrow_sig, g_hrow_draw;       /* signature of the kept rows; draw counter */
+static unsigned g_hrow_made[2048];             /* draw number + 1 at which row y was made; 0 = not made */
 static void hud_rows_reset(void)
 {
     g_hud_top = layout_hud_top();
@@ -209,16 +219,20 @@ static void hud_rows_reset(void)
     if (g_hrow_on && (g_hrow_w != g_cfg.width || g_hrow_h != g_cfg.height)) {
         free(g_hrow); g_hrow = malloc((size_t)g_cfg.width * g_cfg.height);
         g_hrow_w = g_hrow ? g_cfg.width : 0; g_hrow_h = g_hrow ? g_cfg.height : 0;
+        memset(g_hrow_made, 0, sizeof g_hrow_made);
     }
     if (!g_hrow) g_hrow_on = 0;
-    memset(g_hrow_done, 0, sizeof g_hrow_done);
+    unsigned sig = g_hrow_on ? layout_hud_mask_signature() : 0;
+    if (sig != g_hrow_sig) { g_hrow_sig = sig; memset(g_hrow_made, 0, sizeof g_hrow_made); }
+    if (++g_hrow_draw == 0xffffffffu) { g_hrow_draw = 1; memset(g_hrow_made, 0, sizeof g_hrow_made); }
 }
 static int on_interface(int x, int y)
 {
     if (y < g_hud_top) return 0;
     if (!g_hrow_on || y >= g_hrow_h || x < 0 || x >= g_hrow_w) return layout_on_hud_panel(x, y) || weapons_ui_at(x, y);
     BYTE *row = g_hrow + (size_t)y * g_hrow_w;
-    if (!g_hrow_done[y]) { layout_hud_mask_row(y, row, g_hrow_w); g_hrow_done[y] = 1; }
+    unsigned made = g_hrow_made[y];
+    if (!made || g_hrow_draw + 1 - made > (unsigned)(HROW_KEEP + (y & 63))) { layout_hud_mask_row(y, row, g_hrow_w); g_hrow_made[y] = g_hrow_draw + 1; }
     return row[x];
 }
 /* "Under the sprites" drawing (route line / marker): pixels where a world sprite is solid are left

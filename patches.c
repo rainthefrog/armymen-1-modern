@@ -317,6 +317,29 @@ void patches_apply(void)
     hook_call("vehicles: VehicleUpdate (call 0x419c52) -> vehicles.c", 0x419c52, 0x4176f0, (void *)vehicles_update);
     hook_call("vehicles: VehicleLockTurret (call 0x417ce8) -> vehicles.c", 0x417ce8, 0x417eb0, (void *)vehicles_turret_lock);
 
+    {   /* [gameplay] resume_wait_ms (2026-11-20, stutter hunt; default 100 = the original, nothing patched).
+         * Entering play - about 50 frames into every mission, and each time a menu / pause closes - the game sets
+         * a deadline GetTickCount() + 100 in gpGame +0x34 (FUN_00441fe0 at 0x44204e, FUN_00463580 at 0x463612:
+         * "add eax, 64h") and until it has passed the frame loop FUN_00407460 does nothing at all (FUN_00424c70
+         * returns 1: no update, no drawing, no Flip): the picture stands still for 100 ms. That is the ~100-110 ms
+         * frame in every log right after a mission start or a pause ("work" 100+, none of it in the mod's stages;
+         * found with [debug] stall_sample_ms). The original does the same; this key only makes the wait shorter
+         * (0..100 ms) for whoever wants to try without it. */
+        int ms = GetPrivateProfileIntA("gameplay", "resume_wait_ms", 100, mod_ini_path());
+        if (ms < 0) ms = 0;
+        if (ms < 100) {
+            static const BYTE wait_o[] = { 0x83, 0xc0, 0x64 };            /* add eax, 100 */
+            static BYTE wait_n[] = { 0x83, 0xc0, 0x64 };
+            wait_n[2] = (BYTE)ms;
+            const Patch w[] = {
+                { "gameplay: wait when play starts (0x44204e)",        0x44204e, wait_o, wait_n, 3 },
+                { "gameplay: wait when play resumes (0x463612)",       0x463612, wait_o, wait_n, 3 },
+            };
+            for (size_t k = 0; k < sizeof w / sizeof w[0]; k++) apply(&w[k]);
+            mlog("gameplay: the game's 100 ms stand-still when play starts / resumes is %d ms ([gameplay] resume_wait_ms)", ms);
+        }
+    }
+
     clock_install();
     hdvideo_install();
 
