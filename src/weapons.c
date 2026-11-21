@@ -128,6 +128,7 @@ static int activate(BYTE *u, int b)
 {
     Weapon w = box_weapon(u, b);
     if (!w.type) return 0;
+    allies_cancel("weapon chosen");               /* allies.c: choosing a weapon puts the medkit away */
     int c = slot_of_box(b);
     if (c < 0) {                                 /* kept in the box: swap into its kind's slot */
         c = ITEM_CATEGORY(w.item);
@@ -302,6 +303,7 @@ void weapons_quick_swap(void)
         valid(u); sync(u);
         if (box_weapon(u, g_prev).type) activate(u, g_prev);
     } else if (g_prev < SLOTS && SLOT_ITEM(u, g_prev)) {
+        allies_cancel("weapon chosen");
         SELECT_SLOT(u, g_prev);
     }
     track_current(u);
@@ -313,6 +315,7 @@ void weapons_wheel(int notches)
 {
     BYTE *u = SARGE;
     if (!notches || !u || SARGE_VEHICLE(u) || (INPUT & INPUT_FIRE)) return;
+    allies_cancel("mouse wheel");                 /* allies.c: the wheel always puts the medkit away (also with one weapon) */
     if (!six()) return;
     valid(u);
     sync(u);
@@ -731,31 +734,39 @@ int weapons_room_for_special(void)
     return first_free_box(u) >= 0;
 }
 
-/* Medkits carried (allies.c, 2026-11-21): a red cross on a white plate + the count in the top-right corner of the rifle
- * box (A1); while the medkit is selected (heal pointer) the plate blinks green. Drawn every frame into the game's HUD
- * rows like the sweeper lamp. */
+/* Medkits carried (allies.c, 2026-11-21; moved 2026-11-21, user: "they should stack somewhere else in the UI that is
+ * unobtrusive"): a small medkit (9x9: red cross on a plate) + "xN" at the right end of the VEHICLE HEALTH row of the
+ * HUD (design MEDKIT_X / MEDKIT_Y, right of the vehicle pips, clear of the panel art and numbers; the row is unused on
+ * foot, and the kits are hidden in a vehicle). Only while kits are carried; dim (dark plate, dull cross, khaki count)
+ * while not selected, bright (white plate, red cross, yellow count) while the medkit is selected. Placed through
+ * layout_place like the SPRINT label one row up, so it follows the HUD layout; drawn in game pixels (whole multiples). */
+#define MEDKIT_X 400
+#define MEDKIT_Y 424
 static void draw_medkit_badge(Surf *back, BYTE *u)
 {
     int n = allies_kits();
     if (!u || n <= 0 || SARGE_VEHICLE(u)) return;
-    RECT r = box_rect(0);
-    int cx = r.right - 8, cy = r.top + 6;
-    BYTE black = (BYTE)nearest_colour(0, 0, 0), red = (BYTE)nearest_colour(225, 25, 25);
-    BYTE plate = allies_heal_mode() && (GetTickCount() / 300) % 2 ? (BYTE)nearest_colour(80, 230, 80) : (BYTE)nearest_colour(245, 245, 245);
-    for (int y = -5; y <= 5; y++)
-        for (int x = -5; x <= 5; x++) {
-            int edge = x == -5 || x == 5 || y == -5 || y == 5;
-            int cross = (x >= -1 && x <= 1 && y >= -3 && y <= 3) || (y >= -1 && y <= 1 && x >= -3 && x <= 3);
-            put_px(back, cx + x, cy + y, edge ? black : cross ? red : plate);
+    int x0 = MEDKIT_X, y0 = MEDKIT_Y;
+    layout_place(&x0, &y0);
+    if (x0 < 0 || y0 < 0 || x0 + 20 > back->w || y0 + 9 > back->h) return;
+    int on = allies_heal_mode();
+    BYTE edge = (BYTE)nearest_colour(0, 0, 0);
+    BYTE plate = on ? (BYTE)nearest_colour(245, 245, 245) : (BYTE)nearest_colour(70, 78, 60);
+    BYTE cross = on ? (BYTE)nearest_colour(225, 25, 25) : (BYTE)nearest_colour(150, 50, 40);
+    BYTE ink = on ? (BYTE)nearest_colour(255, 220, 40) : (BYTE)nearest_colour(170, 165, 120);
+    for (int y = 0; y < 9; y++)
+        for (int x = 0; x < 9; x++) {
+            int e = x == 0 || x == 8 || y == 0 || y == 8;
+            int c = (x >= 3 && x <= 5 && y >= 2 && y <= 6) || (y >= 3 && y <= 5 && x >= 2 && x <= 6);
+            put_px(back, x0 + x, y0 + y, e ? edge : c ? cross : plate);
         }
-    char s[4]; wsprintfA(s, "%d", n > 9 ? 9 : n);   /* the digit left of it, white on a black edge */
-    int x = cx - 11;
+    static const BYTE X3x5[5] = { 0, 5, 2, 5, 0 };   /* a small "x" */
+    int d = n > 9 ? 9 : n, tx = x0 + 11, ty = y0 + 2;
     for (int row = 0; row < 5; row++)
-        for (int k = 0; k < 3; k++)
-            for (int oy = -1; oy <= 1; oy++) for (int ox = -1; ox <= 1; ox++) put_px(back, x + k + ox, cy - 2 + row + oy, black);
-    for (int row = 0; row < 5; row++)
-        for (int k = 0; k < 3; k++)
-            if (DIGIT3x5[s[0] - '0'][row] & (4 >> k)) put_px(back, x + k, cy - 2 + row, (BYTE)nearest_colour(255, 255, 255));
+        for (int k = 0; k < 3; k++) {
+            if (X3x5[row] & (4 >> k)) put_px(back, tx + k, ty + row, ink);
+            if (DIGIT3x5[d][row] & (4 >> k)) put_px(back, tx + 4 + k, ty + row, ink);
+        }
 }
 
 /* Called with the finished game picture (before it is shown). */

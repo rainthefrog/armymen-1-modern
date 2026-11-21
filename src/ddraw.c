@@ -507,6 +507,7 @@ static LRESULT CALLBACK wndproc_hook(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_MOUSEWHEEL && controls_wheel(GET_WHEEL_DELTA_WPARAM(wp))) return 0;   /* controls.c: weapons */
     if (overlay_message(h, msg, wp, lp)) return 0;                     /* panel.c: F9, F10, clicks on mod boxes */
     if (orders_message(h, msg, wp, lp)) return 0;                      /* orders.c: Esc cancels picking a command target */
+    if (allies_message(h, msg, wp, lp)) return 0;                      /* allies.c: Esc puts the medkit away (no pause menu) */
     if (mouse_filter_message(h, msg, &wp, lp, &handled)) return handled;   /* mouse.c pointer mode */
     if (window_fullscreen_message(h, msg, wp, lp)) return 0;           /* window.c: maximise, Alt+Enter, F11 */
     if (msg == WM_ACTIVATE && g_cfg.borderless_fs && dd_is_windowed()) {   /* remembered fullscreen: once */

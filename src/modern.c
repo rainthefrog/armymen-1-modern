@@ -1135,6 +1135,7 @@ static void modern_draw_body(Surf *b)
             else if (hi.state == HEAL_FULL) text(mx + 14, my + 6, "FULL HEALTH", C_GREY, 1);
             else if (hi.state == HEAL_NO_WAY) text(mx + 14, my + 6, "TOO FAR", C_GREY, 1);
             else { wsprintfA(s, "MEDKIT x%d: CLICK A SOLDIER", hi.kits); text(mx + 14, my + 6, s, C_WHITE, 1); }
+            text(mx + 14, my + 16, "RIGHT CLICK: CANCEL", C_GREY, 1);   /* 2026-11-21 user: "med kits don't cancel" (also H, Esc, a weapon) */
         }
     }
     {   /* the minesweeper carried (mines.c, 2026-11-21): from the game's data (Sarge, the mine objects, the plate =

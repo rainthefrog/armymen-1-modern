@@ -844,6 +844,9 @@ int __fastcall allies_pickup_test(BYTE *item, BYTE *sarge);       /* call 0x4398
 int allies_kits(void);                      /* medkits carried (weapons.c HUD badge) */
 int allies_heal_mode(void);                 /* the medkit is selected */
 void allies_toggle_heal(void);              /* controls.c: the heal key (ACT_HEAL) */
+int allies_cancel(const char *why);         /* put the medkit away (right click, weapon chosen ...); 1 = it was selected */
+int allies_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);   /* window hook: Esc puts the selected medkit away */
+int allies_take_esc(int down);               /* controls.c kb_get_state: Esc down now; 1 = it put the medkit away - hide it from the game */
 enum { HEAL_OK, HEAL_FULL, HEAL_NO_KITS, HEAL_NOBODY, HEAL_NO_WAY };
 int allies_hover(int wx, int wy, int unreachable);   /* controls.c / modern.c: what a heal click at the world point would do (HEAL_*) */
 int allies_click(int wx, int wy, DWORD now, int *walk_x, int *walk_y);   /* controls.c: a left tap; 0 = normal, 1 = taken, 2 = walk to *walk_x, *walk_y first */

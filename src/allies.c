@@ -250,6 +250,37 @@ static void set_mode(int on, const char *why)
     mlog("allies: medkit %s (%s), %d kit(s)", on ? "selected" : "put away", why, K.n);
 }
 
+/* Ways out (2026-11-21, user: "med kits don't cancel"): H again, right click (controls.c, no shot), Esc (window hook
+ * below, the key does not reach the game so no pause menu), choosing a weapon (weapons.c activate / quick swap; a
+ * changed current weapon too), a vehicle, no kits left. After a heal the medkit stays selected only while kits remain AND
+ * someone (a soldier on the map or Sarge) is still hurt - otherwise it is put away. */
+int allies_cancel(const char *why)
+{
+    if (!g_heal) return 0;
+    set_mode(0, why);
+    return 1;
+}
+/* Esc: the window message (allies_message) and the DirectInput keyboard state the game reads (controls.c kb_get_state ->
+ * allies_take_esc) - whichever sees the press first puts the medkit away; the key is then taken out of the game's
+ * keyboard state until released, so the pause menu does not open (Wine 2026-11-21: the message alone was not enough). */
+static int g_esc_eaten;
+int allies_message(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void)h; (void)lp;
+    if (msg != WM_KEYDOWN || wp != VK_ESCAPE) return 0;
+    if (g_esc_eaten) return 1;                                          /* the same press (auto-repeat) */
+    if (!allies_heal_mode()) return 0;
+    allies_cancel("Esc");
+    g_esc_eaten = 1;
+    return 1;
+}
+int allies_take_esc(int down)
+{
+    if (!down) { g_esc_eaten = 0; return 0; }
+    if (!g_esc_eaten && allies_heal_mode()) { allies_cancel("Esc"); g_esc_eaten = 1; }
+    return g_esc_eaten;
+}
+
 void allies_toggle_heal(void)
 {
     BYTE *u = SARGE;
@@ -275,11 +306,16 @@ int __fastcall allies_pickup_test(BYTE *item, BYTE *sarge)
 }
 
 static int kit_pct(void) { return K.n > 0 ? K.pct[K.n - 1] : 0; }
+static int g_any_hurt;
+static void hurt_one(BYTE *t, int cx, int cy, int top, int veh) { (void)cx; (void)cy; (void)top; (void)veh; if (HEALTH(t) < MAX_HEALTH(t)) g_any_hurt = 1; }
 static void use_kit(void)
 {
     if (K.n > 0) K.n--;
     PLAY_VOICE(SND_MEDKIT, 100);
-    if (K.n == 0) set_mode(0, "no kits left");
+    if (K.n == 0) { set_mode(0, "no kits left"); return; }
+    g_any_hurt = SARGE && HEALTH(SARGE) < MAX_HEALTH(SARGE);
+    allies_each(hurt_one);
+    if (!g_any_hurt) set_mode(0, "nobody else hurt");
 }
 static int heal_amount(BYTE *it)
 {

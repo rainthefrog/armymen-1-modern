@@ -398,6 +398,8 @@ static HRESULT WINAPI kb_get_state(void *dev, DWORD size, void *data)
         if (was_open && !open) closed_at = GetTickCount();
         was_open = open;
         int just_closed = !open && closed_at && GetTickCount() - closed_at < 300;   /* the closing key went to the panel as a message */
+        /* allies.c: an Esc that put the medkit away (window hook, or seen here first) never reaches the game - no pause menu */
+        if (allies_take_esc((keys[0x01] & 0x80) != 0)) swallow[0x01] = 1;
         for (int i = 0; i < 256; i++) {
             if ((open || just_closed) && (keys[i] & 0x80)) swallow[i] = 1;
             else if (swallow[i] && !(keys[i] & 0x80)) swallow[i] = 0;
@@ -2401,8 +2403,11 @@ static void apply_modern_controls(void)
         /* right click on one of your soldiers: select his unit (no shot at him) */
         static int rsel;
         if (right && !S.right_was_down && pointer && field && !veh) {
-            BYTE *un = own_unit_at(px + CAMERA_X, py + CAMERA_Y);
-            if (un) { SELECT_UNIT(un); rsel = 1; mlog("controls: right click selected unit %p", un); }
+            if (allies_cancel("right click")) rsel = 1;   /* allies.c: right click puts the medkit away (no shot) */
+            else {
+                BYTE *un = own_unit_at(px + CAMERA_X, py + CAMERA_Y);
+                if (un) { SELECT_UNIT(un); rsel = 1; mlog("controls: right click selected unit %p", un); }
+            }
         }
         if (!right) rsel = 0;
         if (lrelease) { S.lup_at = now; if (lmode_before == LM_FIRE) S.fire_end_at = now; S.lmode = LM_NONE; lrun = 0; }
