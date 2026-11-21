@@ -540,7 +540,10 @@ static void note_sprite(int x, int y, const BYTE *data, int x0, int y0, int x1, 
     BYTE *ov = s == MAP_SURF ? NULL : over_buf(s);        /* drawn on the screen itself (roofs x-ray) */
     if (ov) {
         /* the box takes over the map's references first (through this frame's links), so the screen's
-         * own references there are complete - as before links - and the box is overridden as a whole */
+         * own references there are complete - as before links. Only the pixels the sprite really draws are
+         * marked overridden (the run loop below), the box's see-through pixels still show the map through the
+         * link: 2026-11-20, the whole box marked 1 cut a rectangle out of the mission-path lane round Sarge
+         * (roofs.c redraws him onto the screen every frame he is covered; the lane leaves mask-1 pixels alone). */
         RECT c = { 0, 0, s->w, s->h }, bb;
         Surf *m = MAP_SURF;
         Ref *mr = m ? m->hd_ref : NULL;
@@ -558,7 +561,6 @@ static void note_sprite(int x, int y, const BYTE *data, int x0, int y0, int x1, 
                         break;
                     }
                     ref_row(s, r, yy)[xx] = v;
-                    *o = 1;
                 }
             UnionRect(&g_obox[g_oi], &g_obox[g_oi], &bb);
         }
@@ -580,6 +582,7 @@ static void note_sprite(int x, int y, const BYTE *data, int x0, int y0, int x1, 
                 int dx = x + sx - x0;
                 if (dx < 0 || dx >= s->w) continue;
                 Ref *q = &row[dx];
+                if (ov) { BYTE *o = &ov[(size_t)dy * s->w + dx]; if (*o == 0 || *o == 2) *o = 1; }   /* drawn on the screen */
 
                 if (shadow) { if (q->e) { q->fl |= FL_SHADOW; q->expect = pix[dx]; } continue; }
                 if (e < 0) { q->e = 0; continue; }
