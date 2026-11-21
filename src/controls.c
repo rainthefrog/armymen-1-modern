@@ -1489,7 +1489,7 @@ static int hover_at(BYTE *u, BYTE *veh, int wx, int wy, BYTE **thing)
  * The game's reticle is hidden while the walk / enter pointer shows (its two draw calls, 0x43eeb6
  * in a vehicle and 0x43eee4 on foot, call FUN_004130e0 with ecx = the gunsight picture: redirected
  * to controls_draw_gunsight). */
-static HCURSOR g_cur_walk, g_cur_enter, g_cur_nowalk, g_cur_exit, g_cur_weapon[4];
+static HCURSOR g_cur_walk, g_cur_enter, g_cur_nowalk, g_cur_exit, g_cur_weapon[4], g_cur_heal[2];
 #define CUR_NOWALK 10                           /* pointer kind: ground Sarge cannot reach (pathfind.c) */
 #define CUR_EXIT   11                           /* pointer kind: on your own vehicle while driving = get out */
 #define CUR_GRENADE 12                          /* aiming pointers per weapon: grenade, mortar round, rocket */
@@ -1497,6 +1497,8 @@ static HCURSOR g_cur_walk, g_cur_enter, g_cur_nowalk, g_cur_exit, g_cur_weapon[4
 #define CUR_ROCKET  14
 #define CUR_TANKROUND 15
 #define CUR_MINE    16                          /* inside the mine placement ring: no Windows pointer, modern.c draws the marker */
+#define CUR_HEAL    17                          /* medkit selected (allies.c): red cross - a click heals the soldier under it */
+#define CUR_HEAL_OFF 18                         /* ... grey cross: nobody to heal there (full health, no soldier, no way) */
 static int g_cur_size;
 static volatile int g_hide_reticle;             /* this frame: walk / enter pointer, no reticle */
 static volatile int g_cursor_kind = -1;         /* HOVER_* shown, -1 = the game's (no Windows pointer) */
@@ -1572,6 +1574,14 @@ static HCURSOR make_cursor(int kind, int size)
                 if (in > 0) { a = in > 1 ? 1 : in; rgb = 0x7cf07c; }
                 else if (out > 0) { a = out > 1 ? 1 : out; rgb = 0x102010; }
                 if (dot < 1.8 * s) { a = 1; rgb = 0x7cf07c; } else if (dot < 2.8 * s && a < 1) { a = 1; rgb = 0x102010; }
+            } else if (kind == CUR_HEAL || kind == CUR_HEAL_OFF) {   /* medkit: a plus (red / grey) on a white plate, dark edge */
+                double ax = fabs(dx) / s, ay = fabs(dy) / s;
+                int cross = (ax <= 2.6 && ay <= 8.5) || (ay <= 2.6 && ax <= 8.5);
+                int plate = (ax <= 4.6 && ay <= 10.5) || (ay <= 4.6 && ax <= 10.5);
+                int edge = (ax <= 6.0 && ay <= 12.0) || (ay <= 6.0 && ax <= 12.0);
+                if (cross) { a = 1; rgb = kind == CUR_HEAL ? 0xe82020 : 0x8a8a8a; }
+                else if (plate) { a = 1; rgb = kind == CUR_HEAL ? 0xffffff : 0xc8c8c8; }
+                else if (edge) { a = 1; rgb = 0x200808; }
             } else if (kind == CUR_NOWALK) {                  /* red ring with a slash: cannot walk there */
                 double ring = fabs(d - 9 * s);
                 double slash = fabs(dx - dy) / 1.41421356;     /* distance to the "\" diagonal */
@@ -1618,11 +1628,13 @@ static void ensure_cursors(void)
     if (g_cur_nowalk) DestroyCursor(g_cur_nowalk);
     if (g_cur_exit) DestroyCursor(g_cur_exit);
     for (int i = 0; i < 4; i++) if (g_cur_weapon[i]) DestroyCursor(g_cur_weapon[i]);
+    for (int i = 0; i < 2; i++) if (g_cur_heal[i]) DestroyCursor(g_cur_heal[i]);
     g_cur_walk = make_cursor(HOVER_GROUND, size);
     g_cur_enter = make_cursor(HOVER_ENTER, size);
     g_cur_nowalk = make_cursor(CUR_NOWALK, size);
     g_cur_exit = make_cursor(CUR_EXIT, size);
     for (int i = 0; i < 4; i++) g_cur_weapon[i] = make_cursor(CUR_GRENADE + i, size);
+    for (int i = 0; i < 2; i++) g_cur_heal[i] = make_cursor(CUR_HEAL + i, size);
     g_cur_size = size;
 }
 
@@ -1644,6 +1656,7 @@ HCURSOR controls_cursor(void)
     if (k == CUR_NOWALK) return g_cur_nowalk;
     if (k == CUR_EXIT) return g_cur_exit;
     if (k >= CUR_GRENADE && k <= CUR_TANKROUND) return g_cur_weapon[k - CUR_GRENADE];
+    if (k == CUR_HEAL || k == CUR_HEAL_OFF) return g_cur_heal[k - CUR_HEAL];
     return NULL;
 }
 
@@ -1836,6 +1849,7 @@ static void modern_controls(BYTE *u, int sx, int sy, int *px, int *py, int *poin
     if (bindings_pressed(ACT_ROLL) && !veh) dodge_roll(u, *kx, *ky);
     if (bindings_pressed(ACT_ENTER)) pulse(game_command_key(0, SK_ENTER));
     if (bindings_pressed(ACT_SPECIAL)) pulse(game_command_key(0, SK_SPECIAL));
+    if (bindings_pressed(ACT_HEAL) && !veh) allies_toggle_heal();      /* allies.c: select / put away the medkit */
     if (bindings_pressed(ACT_MAP)) pulse(game_command_key(1, GK_VIEW_MAP));
     if (bindings_pressed(ACT_OBJECTIVE)) pulse(game_command_key(1, GK_OBJECTIVE));
     if (bindings_pressed(ACT_NEXT_WEAPON)) weapons_wheel(-1);
@@ -2318,6 +2332,8 @@ static void apply_modern_controls(void)
             else if (*(volatile BYTE *)0x505d00 || (*(BYTE **)0x6a5944 && *(int *)(*(BYTE **)0x6a5944 + 4) == 16)) S.lmode = LM_NONE;
             else if (bindings_held(ACT_SPRINT) || kx || ky || hover == HOVER_TARGET || hover == HOVER_FAR_ENEMY) S.lmode = LM_FIRE;   /* sprint key + left = force fire */
             else if (hover == HOVER_ENTER) S.lmode = LM_ENTER;
+            /* medkit selected (allies.c): a press on one of your soldiers is a heal click, also in a fire fight */
+            else if (!veh && pointer && field && allies_hover(px + CAMERA_X, py + CAMERA_Y, 0) != HEAL_NOBODY) S.lmode = LM_PENDING;
             /* in a fire fight (user: "if I move the mouse off the enemy while clicking, sarge will start running over"):
              * a click within combat_lock_ms of the last shot FIRES at the pointer instead of walking ([controls]
              * combat_lock_ms, default 1500; 0 = the old 300 ms "no walk" pause) */
@@ -2356,6 +2372,8 @@ static void apply_modern_controls(void)
          * Standing / kneeling the first click acts at once (the second only goes further down); lying, the click
          * waits SARGE_DBL_MS for a second one (else a double-click would stand him up and lie him down again). */
         static DWORD sarge_tap_at; static int sarge_pending;
+        /* medkit selected and Sarge hurt: the click on him uses a kit on him (allies.c) instead of the stance change */
+        if (tap && press_on_sarge && lmode_before == LM_PENDING && allies_heal_self()) { tap = tap_run = 0; press_on_sarge = 0; }
         if (tap && press_on_sarge && lmode_before == LM_PENDING) {
             tap = tap_run = 0;
             if (sarge_tap_at && now - sarge_tap_at <= SARGE_DBL_MS) { sarge_tap_at = 0; sarge_pending = 0; stance_goto(u, POSE_PRONE, now, "double-click on Sarge"); }
@@ -2365,7 +2383,12 @@ static void apply_modern_controls(void)
         /* mines selected: a tap inside the placement ring lays a mine on that tile (mines.c; a tap outside it walks,
          * a hold inside it still walks toward the pointer). Sweeper carried: a tap on a visible mine walks to it
          * and disarms / collects it (mines.c: the walk goes to a point short of the mine) */
-        if (tap && lmode_before == LM_PENDING && !veh) {
+        if (tap && lmode_before == LM_PENDING && !veh) {   /* medkit selected: a tap on a soldier heals him (allies.c; walks there first) */
+            int hwx, hwy, hc = allies_click(S.lpress_x + CAMERA_X, S.lpress_y + CAMERA_Y, now, &hwx, &hwy);
+            if (hc == 1) { tap = tap_run = 0; S.going = 0; S.nwp = 0; S.route_run = 0; S.running = 0; }
+            else if (hc == 2) { g_tap_override = 1; g_tap_wx = hwx; g_tap_wy = hwy; }
+        }
+        if (tap && lmode_before == LM_PENDING && !veh && !g_tap_override) {
             int mwx, mwy, mc = mines_click(S.lpress_x + CAMERA_X, S.lpress_y + CAMERA_Y, now, &mwx, &mwy);
             if (mc == 1) {
                 tap = tap_run = 0;
@@ -2439,7 +2462,12 @@ static void apply_modern_controls(void)
             BYTE *vw = *(BYTE **)(veh + 0x20);
             if (vw && *(int *)vw == 6) kind = CUR_TANKROUND;   /* ARMY_LARGE_CANNON */
         }
-        if (kind == HOVER_GROUND && !veh && !right_hold && S.lmode != LM_TURN && mines_pointer_in_reach())
+        if (kind == HOVER_GROUND && !veh && !right_hold && S.lmode != LM_TURN && allies_heal_mode()) {
+            /* medkit selected (allies.c): the heal cross - red over a hurt soldier, grey elsewhere / full / no way there */
+            int hs = allies_hover(px + CAMERA_X, py + CAMERA_Y, 0);
+            if (hs == HEAL_OK && pointer_unreachable(u, px + CAMERA_X, py + CAMERA_Y, now)) hs = HEAL_NO_WAY;
+            kind = hs == HEAL_OK ? CUR_HEAL : CUR_HEAL_OFF;
+        } else if (kind == HOVER_GROUND && !veh && !right_hold && S.lmode != LM_TURN && mines_pointer_in_reach())
             kind = CUR_MINE;                                                            /* mines.c: the marker is the pointer */
         else if (kind == HOVER_GROUND && !veh && !right_hold && S.lmode != LM_TURN &&
             pointer_unreachable(u, px + CAMERA_X, py + CAMERA_Y, now)) kind = CUR_NOWALK;   /* cannot walk there */
@@ -2464,6 +2492,7 @@ static void apply_modern_controls(void)
             g_tap_override = 0;
             int mf = mines_frame(now, S.going, &fx, &fy);
             if (mf & MF_STOP_WALK) { S.going = 0; S.nwp = 0; }
+            if (allies_walk_frame(now, S.going)) { S.going = 0; S.nwp = 0; }   /* allies.c: the soldier to heal reached */
             if (mf & MF_FACE) {
                 if (!kx && !ky && (fx != SARGE_X(u) || fy != SARGE_Y(u))) set_facing(u, facing_toward(fx - SARGE_X(u), fy - SARGE_Y(u)));
             }

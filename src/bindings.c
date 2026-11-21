@@ -86,6 +86,7 @@ static const Action ACT[ACT_COUNT] = {
     [ACT_STATS]     = { "stats",       "Mission stats (hold)", AK_HELD,  1, 0,   K('I'), NONE, NULL, MOD_STATS, "stats" },
     [ACT_PEEK]      = { "peek",        "Edge peek (hold)",     AK_HELD,  1, 0,   K('E'), NONE, NULL, MOD_PEEK, "edge_peek" },
     [ACT_RESTART]   = { "restart",     "Restart (hold 1 s)",   AK_HELD,  0, 0,   K(VK_F12), NONE, NULL, MOD_RESTART, "restart" },
+    [ACT_HEAL]      = { "heal",        "Medkit: heal a soldier (click him)", AK_PRESS, 1, HOLD_MS, K('H'), NONE, NULL, -1, NULL },   /* allies.c (2026-11-21) */
 };
 #undef K
 #undef KH

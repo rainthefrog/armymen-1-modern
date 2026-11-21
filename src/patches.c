@@ -375,6 +375,11 @@ void patches_apply(void)
      * rewritten - the selected sweeper no longer makes Sarge mine-proof, mines revealed by the detector are deactivated */
     static const BYTE mstep_o[] = { 0x56, 0x57, 0x85,0xd2, 0x8b,0xf9 };          /* push esi; push edi; test edx,edx; mov edi,ecx */
     hook_jmp("mines: mine trigger (FUN_004398d0) -> mines.c", 0x4398d0, mstep_o, sizeof mstep_o, (void *)mines_step);
+    /* allies.c (2026-11-21): the player's troopers get [gameplay] ally_health_x percent max health when they join their
+     * unit at creation (call 0x43b4e5 in FUN_0043b480 -> TrooperAddToUnit 0x43b5f0; 100 = unchanged); a medkit Sarge walks
+     * over at full health is carried ([gameplay] ally_heal; the pickup test call 0x439855 in FUN_00439800 -> 0x439700) */
+    hook_call("allies: trooper joins his unit (call 0x43b4e5) -> allies.c", 0x43b4e5, 0x43b5f0, (void *)allies_trooper_join);
+    hook_call("allies: pickup test (call 0x439855) -> allies.c", 0x439855, 0x439700, (void *)allies_pickup_test);
 
     {   /* [gameplay] resume_wait_ms (2026-11-20, stutter hunt; default 100 = the original, nothing patched).
          * Entering play - about 50 frames into every mission, and each time a menu / pause closes - the game sets

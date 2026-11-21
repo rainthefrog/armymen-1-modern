@@ -90,6 +90,10 @@ void config_load(void)
     g_cfg.enemy_awareness = GetPrivateProfileIntA("modern", "enemy_awareness", GetPrivateProfileIntA("modern", "enemy_alerts", 1, ini), ini);
     g_cfg.squad_sprint = GetPrivateProfileIntA("gameplay", "squad_sprint", 1, ini);   /* squad.c (2026-11-20) */
     g_cfg.patrol_marches = GetPrivateProfileIntA("gameplay", "patrol_marches", 1, ini);   /* patrol.c (2026-11-21) */
+    g_cfg.ally_regen = GetPrivateProfileIntA("gameplay", "ally_regen", 1, ini);           /* allies.c (2026-11-21) */
+    g_cfg.ally_heal = GetPrivateProfileIntA("gameplay", "ally_heal", 1, ini);
+    g_cfg.ally_health_x = GetPrivateProfileIntA("gameplay", "ally_health_x", 200, ini);
+    g_cfg.ally_health_bars = GetPrivateProfileIntA("hud", "ally_health_bars", 1, ini);
     g_cfg.am2_sounds = GetPrivateProfileIntA("audio", "am2_sounds", 0, ini);   /* audio.c (2026-11-21) */
     g_cfg.am2_music = GetPrivateProfileIntA("audio", "am2_music", 0, ini);     /* music.c (2026-11-21) */
     g_cfg.see_interior = GetPrivateProfileIntA("display", "see_interior", 1, ini);
