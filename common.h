@@ -109,6 +109,7 @@ struct Config {
     int turret_smooth;              /* [controls] turret_smooth: turret holds its aim while the hull turns, eased (vehicles.c) */
     int vehicle_unstick;            /* [controls] vehicle_unstick: a wedged vehicle may back out; no creeping into objects */
     int sarge_unstick;              /* [controls] sarge_unstick: Sarge moved out when stuck on / inside a barricade (barricades.c) */
+    int break_fences;               /* [gameplay] break_fences: Sarge's routes cross wooden fences and he breaks them (fences.c) */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
     int hud_corners;                /* [hud] corners: message box / minimap in the bottom corners (layout.c) */
     float hud_corner_scale;         /* [hud] corner_scale: 1 .. 3 in quarter steps (default 1.5) */
@@ -589,6 +590,12 @@ void squash_stub(void);                                              /* gameplay
 void crush_stub(void);                                              /* gameplay.c: replaces the ItemDamage call at 0x40cff3 (crush) */
 int barricade_category(int category);                               /* barricades.c: ROCK, FALLEN_TREE, FENCE, WALL, GATE, WALL_GATE */
 void barricades_frame(void);                                        /* barricades.c: Sarge never stays stuck on a barricade */
+int fences_only_at(int x, int y, int strict);                       /* fences.c: blocked for Sarge only by breakable wooden fences (strict = planner rule) */
+void fences_walk(BYTE *u, int facing, int route);                   /* fences.c: controls walk Sarge toward facing (route = click route) */
+void fences_frame(void);                                            /* fences.c: per gameplay frame (push rule for other input) */
+extern int g_fences_breaking;                                       /* fences.c: a fence is being broken (gameplay.c crush_allowed) */
+int path_cell_class(int x0, int y0, int centre_only);               /* pathfind.c: 8 px cell 1 free, 2 blocked, 3 breakable fence only */
+int path_route_fence_near(int x, int y, int r);                     /* pathfind.c: a fence cell of the last click route within r px */
 int menutext_overlay(int dw, int dh, int pw, int ph, const uint32_t **pix, unsigned *ver, RECT *dirty);   /* menutext.c (gpu.c) */
 int gpu_overlay_ready(void);
 #define MT_SLIDERS 8

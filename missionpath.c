@@ -179,26 +179,25 @@ static int g_wphase;                     /* 0 idle, 1 searching, 2 straightening
 static int g_wchain[WG * WG / 2], g_wnc, g_wi, g_wfound, g_wtx, g_wty, g_wcx, g_wcy;
 
 static int g_relax, g_walk_npts, g_walk_cx, g_walk_cy;                      /* 1 = this leg's second walking search (relaxed cell rule) */
-static int wraw(int c)
+/* cell class: 1 free, 2 blocked, 3 a breakable fence only ([gameplay] break_fences, fences.c: passable at W_FENCE_COST,
+ * Sarge breaks it there; it counts as an obstacle for the clearance and the straightening) */
+#define W_FENCE_COST 10.0f
+static int wclass(int c)
 {
     if (!g_wfree[c]) {
-        int x0 = (c % WG) * WCELL, y0 = (c / WG) * WCELL, blocked = 0;
+        int x0 = (c % WG) * WCELL, y0 = (c / WG) * WCELL, cls = 1;
         int near_start = abs(c % WG - g_wstart % WG) <= 1 && abs(c / WG - g_wstart / WG) <= 1;
         if (g_relax) {                   /* second try: the game's own Sarge rule (object masks), centre + 4 points 2 px out */
-            blocked = controls_sarge_blocked_at(x0 + WCELL / 2, y0 + WCELL / 2);
-            static const int RX[4] = { 2, 6, 2, 6 }, RY[4] = { 2, 2, 6, 6 };
-            for (int k = 0; k < 4 && !blocked && !near_start; k++) blocked = controls_sarge_blocked_at(x0 + RX[k], y0 + RY[k]);
-        } else {
-            blocked = controls_blocked_at(x0 + WCELL / 2, y0 + WCELL / 2);
-            for (int sy = 1; sy < WCELL && !blocked && !near_start; sy += 2)
-                for (int sx = 1; sx < WCELL && !blocked; sx += 2) blocked = controls_blocked_at(x0 + sx, y0 + sy);
-        }
-        g_wfree[c] = blocked ? 2 : 1;
-        if (near_start) g_wfree[c] = 0;  /* tested anew for the next leg's start */
-        return !blocked;
+            static const int RX[5] = { WCELL / 2, 2, 6, 2, 6 }, RY[5] = { WCELL / 2, 2, 2, 6, 6 };
+            for (int k = 0; k < (near_start ? 1 : 5) && cls != 2; k++)
+                if (controls_sarge_blocked_at(x0 + RX[k], y0 + RY[k])) cls = fences_only_at(x0 + RX[k], y0 + RY[k], 0) ? 3 : 2;
+        } else cls = path_cell_class(x0, y0, near_start);   /* 1 free, 2 blocked, 3 fence (pathfind.c) */
+        g_wfree[c] = (BYTE)cls;
+        if (near_start) { g_wfree[c] = 0; return cls; }   /* tested anew for the next leg's start */
     }
-    return g_wfree[c] == 1;
+    return g_wfree[c];
 }
+static int wraw(int c) { return wclass(c) != 2; }
 /* 2026-11-20 (user: "the pathing guide needs to actually traverse the area and not cross objects but go around
  * them"): a route cell needs its 8 neighbours free too - the line keeps a full cell (8 px) off every obstacle instead
  * of brushing its edge (it looked like crossing the object's picture). Next to the start / goal only the cell itself. */
@@ -227,7 +226,7 @@ static int wclear(int c)
                 for (int dx = -r; dx <= r; dx++) {
                     if (abs(dx) != r && abs(dy) != r) continue;
                     int nx = x + dx, ny = y + dy;
-                    if (nx < 0 || ny < 0 || nx >= WG || ny >= WG || !wraw(ny * WG + nx)) { d = r; break; }
+                    if (nx < 0 || ny < 0 || nx >= WG || ny >= WG || wclass(ny * WG + nx) != 1) { d = r; break; }
                 }
         g_wclr[c] = (BYTE)(d + 1);
     }
@@ -244,7 +243,7 @@ static int wline(int x0, int y0, int x1, int y1)
         int x = x0 + dx * i / n, y = y0 + dy * i / n;
         if (x < 0 || y < 0 || x >= WG * WCELL || y >= WG * WCELL) return 0;
         int c = (y / WCELL) * WG + x / WCELL;
-        if (!wraw(c) || wclear(c) < need) return 0;
+        if (wclass(c) != 1 || wclear(c) < need) return 0;   /* never straight through a fence cell */
     }
     return 1;
 }
@@ -366,7 +365,7 @@ static int wstep(POINT *out, int max, int *n, int *found)
                 if (d >= 4 && (!wraw(cy * WG + nx) || !wraw(ny * WG + cx))) continue;   /* no corner cutting */
                 /* passable by Sarge's own rule; a cell next to an obstacle costs extra - the route keeps off objects
                  * where there is room and still fits through narrow doors */
-                float g = g_wcost[c] + (d >= 4 ? 1.4142f : 1.0f) + near_cost(nb);
+                float g = g_wcost[c] + (d >= 4 ? 1.4142f : 1.0f) + near_cost(nb) + (wclass(nb) == 3 ? W_FENCE_COST : 0.0f);
                 if (g_wgen[nb] == g_wcurgen && g_wcost[nb] <= g) continue;
                 g_wgen[nb] = g_wcurgen; g_wcost[nb] = g; g_wfrom[nb] = c;
                 wpush(nb, g + west(nb, g_wgoal));

@@ -85,6 +85,7 @@ void gameplay_frame(void)
     weapon_range();
     capture_frame();                             /* capture.c: Sarge in an enemy vehicle */
     barricades_frame();                          /* barricades.c: Sarge stuck on a barricade */
+    fences_frame();                              /* fences.c: Sarge pushing against a wooden fence breaks it */
     vehicle_regen();
     static BYTE *who;
     static int last_hp, since_hurt_ms;
@@ -226,7 +227,7 @@ __asm__(".globl _squash_stub\n"
  * before the three pushes = [esp+0x24] at our entry. Returns 1 = do the game's damage. */
 int __cdecl crush_allowed(BYTE *item, int damage, BYTE *obj)
 {
-    if (!g_cfg.fix_squash || !item || !obj) return 1;
+    if ((!g_cfg.fix_squash && !g_fences_breaking) || !item || !obj) return 1;   /* fences.c breaking a fence: never a crush */
     int t = GP_ITEM_TYPE1(item);
     if (t != 5 && t != 6) return 1;                                /* vehicles, wrecks: the game's */
     int cat = GP_OBJ_CATEGORY(obj);
