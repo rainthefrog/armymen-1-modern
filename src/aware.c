@@ -23,13 +23,15 @@
  *   FUN_0043d0d0 (call at 0x43d05b, __fastcall ecx trooper, edx victim, 4 stack ints, ret 0x10: picks the firing
  *   stance, burst +0x2a8, starts the shot).
  *
- * Hooks (patches.c; both do nothing while the switch is off):
+ * Hooks (patches.c; all do nothing while the switch is off):
  *   0x43ccc3 call FUN_0043b2e0 -> aware_sight_tick: the original result is returned unchanged; when the victim is
  *     Sarge / his vehicle the result (plus our stance-aware line, below) is recorded as "sees Sarge now".
  *   0x43d05b call FUN_0043d0d0 -> aware_fire_step: victim Sarge / his vehicle and awareness < 1 -> no fire step;
  *     the trooper does what the tick does with no victim (state 0, FUN_0043e110 default action, FUN_00437c80 hold
  *     position). Returning 0 from the sight test instead was rejected: that sets the 150-tick pause and the 1500-frame
  *     blocked-target timer, so the delay would be ~2.5 s + re-acquisition instead of the intended fill time.
+ *   0x43aa03 call FUN_0043aa10 -> aware_unit_target, bullets.c bullets_can_see -> aware_filter_seen: unit level, see
+ *     "unit level" below (2026-11-20 round 2). 0x4526ab call FUN_0041e9c0 -> aware_script_attack: log only.
  *
  * Visibility used here ("sees"): the game's test == 1 (globals 0x696830..0x696858 saved / restored around our own
  * calls) AND our line with class min(shooter class, target class): Sarge prone / kneeling behind cover lower than
@@ -39,11 +41,14 @@
  *
  * Awareness per trooper (0..1, game clock): fills while he sees Sarge in AW_FILL_MS x stance (kneel 1.6, prone 2.5)
  * x (1 + distance / max range); full at once when Sarge fired within AW_SHOT_MS and the trooper sees him, or when
- * Sarge's projectile hit that trooper or anyone of his unit (bullets.c note_for_modern -> modern_note_hit; a health-drop
+ * Sarge (or his vehicle) hit that trooper or anyone of his unit (bullets.c note_for_modern -> modern_note_hit, and any
+ * damage with Sarge's / his vehicle's UID as "from" in the ItemDamage wrap bullets_item_damage: splash, flame, vehicle guns;
+ * a health-drop
  * guess was dropped: other damage made far troopers aware); stays full while the trooper keeps targeting Sarge; otherwise
  * drains in AW_DRAIN_MS.
  * ============================================================================================ */
 #include "common.h"
+#include <math.h>
 
 #define SARGE_OBJ        (*(BYTE **)0x697520)           /* the player's Sarge object */
 #define SARGE_VEH_OBJ(s) (*(BYTE **)((s) + 0x2d0))      /* the vehicle he drives, or NULL */
@@ -104,6 +109,7 @@ static BYTE *g_last_sarge;
 static int g_rr;
 static struct { BYTE *unit; DWORD at; } g_hit_units[8];
 static int g_could, g_targ;      /* this frame */
+static unsigned g_seen_blocked;  /* log=2: "Sarge seen" reports held back (aware_filter_seen), per 2 s log line */
 static int g_walk[50002];        /* FUN_0042a650 writes up to 49999 cells */
 
 static int on(void) { return g_cfg.enemy_awareness; }
@@ -224,6 +230,107 @@ void aware_note_hit(BYTE *item)
     Aw *a = find(item);
     if (a) unit_hit(T_UNIT(item));
 }
+/* bullets.c ItemDamage wrap (0x431f60): any damage dealt by Sarge or the vehicle he drives (from = shooter UID) -
+ * grenade / mortar / flamer splash, vehicle guns - counts as "Sarge hit them" for the victim's unit */
+void aware_note_damage(BYTE *item, DWORD from)
+{
+    if (!on() || !item || !is_sarge_uid(from)) return;
+    if (find(item)) unit_hit(T_UNIT(item));
+}
+
+/* ---------------------------------------------------------------- unit level (2026-11-20 round 2)
+ * User (Desert 1): "some enemies are running toward sarge and THEN doing the presence detection". Two game paths
+ * react to SEEING Sarge before any trooper has noticed him:
+ *   - ItemUpdateSeen 0x44a360: CanSeeFromItem (call 0x44a47d, bullets.c bullets_can_see) -> See 0x449a90 marks
+ *     Sarge seen by the viewer's whole army (item +0x34 + army*4 = frame; FUN_00449ab0 "seen lately");
+ *   - the army's target entries (list 0x691968[army]; entry +4 kind, 1 = a unit at +0xc, +0x10 current target,
+ *     target struct +0xc = item): FUN_0043a9b0 picks a seen enemy (FUN_0043a770 -> 0x43a7d0 candidates, all
+ *     through FUN_0043a970 = alive + seen by the army + not allied) and stores it with FUN_0043aa10 (call
+ *     0x43aa03, ecx target, edx entry); FUN_00423400 then makes it the victim (+0x30) of every trooper of that
+ *     unit and the unit closes in on it.
+ * The viewers in ItemUpdateSeen are the army's UNIT records (FUN_0041cf20 loops the units with mode > 1 and no
+ * vehicle), its Sarge, its vehicles and towers - not single troopers.
+ * Gates (switch on): a unit (as viewer, or the unit of a trooper viewer) where nobody has noticed Sarge does not mark
+ * him seen (aware_filter_seen), and a unit entry is not given Sarge / his vehicle as its target until one of its
+ * troopers has noticed him (aware_unit_target). Mission scripts that send units somewhere are not touched (the ATTACK
+ * action 0x4526ab is only logged; Desert 1: two squads deploy with their goal ON Sarge's start point and march there
+ * whether he is seen or not - mission design, kept); enemy vehicles, towers and non-unit entries keep the game's rules.
+ * Awareness itself fills from the troopers' own sight tests (round-robin / tick hook above), which do not depend on the
+ * army's "seen" flag. */
+typedef void (__fastcall *SetTargetFn)(BYTE *target, BYTE *entry);
+#define GAME_SET_TARGET ((SetTargetFn)0x43aa10)
+#define ENTRY_KIND(e)   (*(int *)((e) + 4))
+#define ENTRY_OWNER(e)  (*(BYTE **)((e) + 0xc))
+#define ENTRY_TARGET(e) (*(BYTE **)((e) + 0x10))
+#define TARGET_ITEM(g)  (*(BYTE **)((g) + 0xc))
+static int unit_noticed(BYTE *unit, float *maxlvl)
+{
+    float m = 0;
+    for (int i = 0; i < AW_MAX; i++) if (g_aw[i].t && T_UNIT(g_aw[i].t) == unit && g_aw[i].level > m) m = g_aw[i].level;
+    if (maxlvl) *maxlvl = m;
+    return m >= 1.0f;
+}
+int aware_filter_seen(BYTE *viewer, BYTE *target, int seen)
+{
+    if (!seen || !on() || !viewer || !target || !is_sarge_uid(OBJ_UID(target))) return seen;
+    /* the viewers are the army's UNIT records (FUN_0041cf20 loops the units, mode > 1, not in a vehicle), its Sarge, vehicles
+     * and towers; a trooper as viewer is handled the same way. Only units with tracked troopers are gated. */
+    BYTE *unit = find(viewer) ? T_UNIT(viewer) : NULL;
+    if (!unit) for (int i = 0; i < AW_MAX && !unit; i++) if (g_aw[i].t && T_UNIT(g_aw[i].t) == viewer) unit = viewer;
+    if (!unit || unit_noticed(unit, NULL)) return seen;
+    g_seen_blocked++;
+    return 0;
+}
+void __fastcall aware_unit_target(BYTE *target, BYTE *entry)
+{
+    if (on() && target && entry && ENTRY_KIND(entry) == 1 && ENTRY_OWNER(entry) && TARGET_ITEM(target) && is_sarge_uid(OBJ_UID(TARGET_ITEM(target)))) {
+        BYTE *unit = ENTRY_OWNER(entry);
+        float m;
+        int ok = unit_noticed(unit, &m);
+        static struct { BYTE *unit; int ok; DWORD at; } lg[16];         /* log=2: per unit, on a change or every 5 s */
+        DWORD now = clock_game_ms();
+        int k = 0;
+        for (int i = 0; i < 16; i++) { if (lg[i].unit == unit) { k = i; break; } if (lg[i].at < lg[k].at) k = i; }
+        if (g_cfg.log >= 2 && (lg[k].unit != unit || lg[k].ok != ok || now - lg[k].at > 5000)) {
+            lg[k].unit = unit; lg[k].ok = ok; lg[k].at = now;
+            mlog("aware: unit %p %s Sarge as its target (max awareness of its troopers %.2f)", unit, ok ? "takes" : "may NOT take", m);
+        }
+        if (!ok) {
+            target = NULL;
+            if (!ENTRY_TARGET(entry)) return;                 /* nothing to clear */
+        }
+    }
+    GAME_SET_TARGET(target, entry);
+}
+
+/* log=2: units that close in on Sarge (first live trooper, sampled every second) with their awareness */
+#define UNIT_LOG_MAX 32
+static struct { BYTE *unit; int dist, approaching; DWORD at; } g_ul[UNIT_LOG_MAX];
+static void unit_log(BYTE *unit, BYTE *t, BYTE *target, DWORD now, int army)
+{
+    if (g_cfg.log < 2 || !target) return;
+    int k = -1;
+    for (int i = 0; i < UNIT_LOG_MAX; i++) if (g_ul[i].unit == unit) { k = i; break; }
+    if (k < 0) { for (int i = 0; i < UNIT_LOG_MAX; i++) if (!g_ul[i].unit) { k = i; break; } if (k < 0) return; g_ul[k].unit = unit; g_ul[k].dist = -1; g_ul[k].at = now; }
+    if (now - g_ul[k].at < 1000 && g_ul[k].dist >= 0) return;
+    int dx = *(short *)(t + 4) - *(short *)(target + 4), dy = *(short *)(t + 6) - *(short *)(target + 6);
+    int d = (int)sqrt((double)dx * dx + (double)dy * dy);
+    int appr = g_ul[k].dist >= 0 && d < 600 && g_ul[k].dist - d >= 24;
+    if (appr && !g_ul[k].approaching) {
+        float m; unit_noticed(unit, &m);
+        int targ = 0, last = *(int *)(unit + 0xdc);
+        for (int i = 0; i <= last && i < 10; i++) { BYTE *u = ((BYTE **)(unit + 0xb4))[i]; if (u && is_sarge_uid(T_VICTIM_UID(u))) targ++; }
+        BYTE *ot = *(BYTE **)(unit + 0x90);                     /* UnitOrders 0x41b990: +0x74 order, +0x90 target item, +0x94 goal */
+        DWORD goal = *(DWORD *)(unit + 0x94);
+        int gx = (short)(goal & 0xffff), gy = (short)(goal >> 16);    /* SPOINT x, y (world px) */
+        int gd = goal ? (int)sqrt((double)(gx - *(short *)(target + 4)) * (gx - *(short *)(target + 4)) + (double)(gy - *(short *)(target + 6)) * (gy - *(short *)(target + 6))) : -1;
+        mlog("aware: unit %p (army %d, mode %d, order %d, order target %08lx%s, goal %d,%d = %d px from Sarge) moves toward Sarge %d -> %d px; troopers targeting him %d, max awareness %.2f%s",
+             unit, army, *(int *)(unit + 0x70), *(int *)(unit + 0x74), ot ? OBJ_UID(ot) : 0, ot && is_sarge_uid(OBJ_UID(ot)) ? " = SARGE" : "", gx, gy, gd,
+             g_ul[k].dist, d, targ, m, m < 1.0f ? "  <- NOT NOTICED" : "");
+    }
+    g_ul[k].approaching = appr;
+    g_ul[k].dist = d; g_ul[k].at = now;
+}
 
 /* ---------------------------------------------------------------- per frame (game thread) */
 
@@ -265,7 +372,7 @@ void aware_frame(void)
     BYTE *s = SARGE_OBJ;
     g_could = g_targ = 0;
     if (!on() || !s || OBJ_HEALTH(s) <= 0) { memset(g_aw, 0, sizeof g_aw); g_n = 0; return; }
-    if (s != g_last_sarge || OBJ_UID(s) != g_me) { memset(g_aw, 0, sizeof g_aw); memset(g_hit_units, 0, sizeof g_hit_units); g_last_sarge = s; g_shot_at = 0; }
+    if (s != g_last_sarge || OBJ_UID(s) != g_me) { memset(g_aw, 0, sizeof g_aw); memset(g_hit_units, 0, sizeof g_hit_units); memset(g_ul, 0, sizeof g_ul); g_last_sarge = s; g_shot_at = 0; }
     g_me = OBJ_UID(s);
     g_veh = SARGE_VEH_OBJ(s) ? OBJ_UID(SARGE_VEH_OBJ(s)) : 0;
     BYTE *target = sarge_target();
@@ -284,6 +391,7 @@ void aware_frame(void)
             int mode = *(int *)(un + 0x70);
             if (mode < 3 || mode > 5) continue;
             int last = *(int *)(un + 0xdc);
+            BYTE *first = NULL;
             for (int i = 0; i <= last && i < 10; i++) {
                 BYTE *t = ((BYTE **)(un + 0xb4))[i];
                 if (!t || *(int *)(t + 0x68) != 1 || OBJ_HEALTH(t) <= 0) continue;
@@ -293,9 +401,11 @@ void aware_frame(void)
                     if (!a) continue;
                     memset(a, 0, sizeof *a); a->t = t; a->uid = OBJ_UID(t); a->last_ms = now;
                 }
+                if (!first) first = t;
                 seen[a - g_aw] = 1;
                 if (nl < AW_MAX) list[nl++] = t;
             }
+            if (first) unit_log(un, first, target, now, army);
         }
     }
     for (int j = 0; j < AW_MAX; j++) if (g_aw[j].t && !seen[j]) g_aw[j].t = NULL;   /* dead / gone */
@@ -319,7 +429,8 @@ void aware_frame(void)
     static DWORD log_at;
     if (g_cfg.log >= 2 && now - log_at >= 2000) {
         log_at = now;
-        mlog("aware: enemies %d, could see Sarge %d, targeting (noticed) %d, exposure %d/10, Sarge stance %d", nl, g_could, g_targ, aware_exposure(NULL, NULL), stance);
+        mlog("aware: enemies %d, could see Sarge %d, targeting (noticed) %d, exposure %d/10, Sarge stance %d, seen reports held back %u", nl, g_could, g_targ, aware_exposure(NULL, NULL), stance, g_seen_blocked);
+        g_seen_blocked = 0;
     }
 }
 
@@ -340,4 +451,15 @@ int aware_exposure(int *targeting, int *could)
     if (could) *could = g_could;
     int v = g_targ * 2 + g_could;
     return v > 10 ? 10 : v;
+}
+
+/* log=2 only: the mission-script ATTACK action (FUN_00452480 case 8 -> FUN_0041e9c0 at 0x4526ab: ecx = UID of the
+ * ordered unit / item, edx = UID of the target, 4 stack ints, ret 0x10) - scripted orders are NOT delayed by the
+ * awareness; the log shows when a squad closes in on Sarge because the mission told it to. */
+typedef void (__fastcall *ScriptAttackFn)(DWORD who, DWORD target, int a, int b, int c, int d);
+#define GAME_SCRIPT_ATTACK ((ScriptAttackFn)0x41e9c0)
+void __fastcall aware_script_attack(DWORD who, DWORD target, int a, int b, int c, int d)
+{
+    if (g_cfg.log >= 2) mlog("aware: mission script orders %08lx to attack %08lx%s", who, target, is_sarge_uid(target) ? " (SARGE - scripted, not delayed)" : "");
+    GAME_SCRIPT_ATTACK(who, target, a, b, c, d);
 }
