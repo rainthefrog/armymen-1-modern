@@ -20,6 +20,7 @@
  * Drawing: modern.c (on the ground, under objects, like the click-to-walk route marker). [hud] mission_path.
  * ============================================================================================ */
 #include "common.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -604,16 +605,160 @@ static void leg_step(void)
  * through the debrief and briefing screens. Mission 3 (Desert 1_3) is not reachable through the menus otherwise. */
 #define CHEAT_TRIUMPH      ((VoidFnPtr)0x46b850)
 #define SKIP_AFTER_FRAMES  45
+static int g_start_target;       /* start_mission=N not first of its scenario: won through to N (below) */
 static void debug_skip_mission(BYTE *g)
 {
     static int want = -1, key = -1, frames;
     if (want < 0) want = GetPrivateProfileIntA("debug", "skip_to_mission", 0, mod_ini_path());
-    if (want <= 0 || GAME_MISSION(g) >= want) return;
+    int target = want > g_start_target ? want : g_start_target;
+    if (target <= 0 || GAME_MISSION(g) >= target) return;
     int k = (GAME_MISSION(g) << 16) ^ GAME_SCENARIO(g);
     if (k != key) { key = k; frames = 0; }
     if (++frames != SKIP_AFTER_FRAMES) return;
-    mlog("missionpath: [debug] skip_to_mission=%d: mission %d won (Triumph)", want, GAME_MISSION(g));
+    mlog("missionpath: [debug] skip_to_mission=%d: mission %d won (Triumph)", target, GAME_MISSION(g));
     CHEAT_TRIUMPH();
+}
+
+/* [debug] start_mission=N (testing aid, 2026-11-21): campaign mission N (MissionID: Desert 1-9, Alpine 10-18,
+ * Bayou 19-28) is started DIRECTLY from the campaign select screen (screen state 2, reached by One Player ->
+ * player -> NEXT), once per run: no earlier missions played, no debrief chain. Only the mission's own briefing
+ * follows. How: the state table's UPDATE entry of state 2 (0x4d3558 + 2*20 + 12, ScrnUpdate 0x462a70) is our
+ * start_update (same context as a button callback: the game's menu loop, __fastcall ecx = the screen, result
+ * ignored by the caller). On its first call it does what the game's own two clicks would do:
+ *   - campaign button callback 0x463e80: g_CampaignIndex 0x4fe71c, current campaign 0x6a5a90, gpGame +0x6c
+ *     campaign id; FUN_004190b0 (ecx campaign, edx scenario, push mission index; the "last chosen" record);
+ *   - scenario button callback 0x4640a0 from 0x464170 on: gpGame +0x70 scenario id, +0x74 mission id, +0x78 = 1,
+ *     the scenario / mission indices 0x4fe720 / 0x4fe724, map name = mission +0x65 + ".AMM" into the CString
+ *     gpGame +0x54 (CString::operator= 0x48c869, thiscall), SetPath(0x4b03f0), map file check FUN_004450c0,
+ *     then ScrnSetState(-1), FUN_00406290 (clear the screen), FUN_004094b0 (start the mission: briefing, load).
+ * Kept: the game's own loading, briefing, mission end and the next mission after a win. Changed: the mission is
+ * found by its id in the loaded campaign.cpn tables (no menu unlock needed); its status (and its scenario's /
+ * campaign's) is set to 5 (available) when it was 0, as the game's own advance (FUN_00418f90) does.
+ * A mission that is NOT the first of its scenario (e.g. 3 = Desert 1_3, 2nd/3rd part on the same map) cannot be
+ * started cold: it needs what the previous part leaves (the game's callback refuses without the player's save
+ * "<player>_<id-1>.asf"; started anyway, Wine 2026-11-21: crash at 0x43ef55, [0x4f7944 +0x20] NULL). So the
+ * scenario's FIRST mission is started and the rest is won through with skip_to_mission's Triumph (g_start_target):
+ * the rig clicks one debrief + briefing per part (at most 2). Table layout (verified in 0x463e80 / 0x4640a0 / FUN_00419140): campaign +4 id (u16),
+ * +0xd0 scenario count, scenario i at +0xd4 + i*0x3f0 (+0 status, +4 id, +0xcc mission count), mission j at
+ * scenario +0xd0 + j*0xc8 (+0 status, +8 id, +0x65 map name). */
+#define CAMPAIGN_COUNT     (*(int *)0x4fe714)
+#define CAMPAIGNS          ((BYTE **)0x4fe4c0)
+#define CAMPAIGN_INDEX     (*(int *)0x4fe71c)
+#define SCENARIO_INDEX     (*(int *)0x4fe720)
+#define MISSION_INDEX      (*(int *)0x4fe724)
+#define CUR_CAMPAIGN       (*(BYTE **)0x6a5a90)          /* the campaign the scenario screen shows */
+#define GAME_CAMPAIGN(g)   (*(int *)((g) + 0x6c))
+#define GAME_LOAD_SAVE(g)  (*(int *)((g) + 0x78))        /* 1: load the carried-over army save (mission index > 0) */
+#define GAME_MAP_NAME(g)   ((void *)((g) + 0x54))        /* CString */
+#define CAMP_ID(c)         (*(unsigned short *)((c) + 4))
+#define CAMP_NSCEN(c)      (*(int *)((c) + 0xd0))
+#define CAMP_SCEN(c, i)    ((c) + 0xd4 + (i) * 0x3f0)
+#define SCEN_ID(s)         (*(unsigned short *)((s) + 4))
+#define SCEN_NMIS(s)       (*(int *)((s) + 0xcc))
+#define SCEN_MIS(s, j)     ((s) + 0xd0 + (j) * 0xc8)
+#define MIS_ID(m)          (*(unsigned short *)((m) + 8))
+#define MIS_MAP(m)         ((const char *)((m) + 0x65))
+#define STATE_TABLE_UPDATE_2 (0x4d3558 + 2 * 20 + 12)    /* SCRNstateTable[2].update (campaign select) */
+#define SCRN_UPDATE_ORIG   0x462a70                      /* ScrnUpdate */
+#define MAPS_PATH          ((const void *)0x4b03f0)      /* SetPath argument used before the map check */
+typedef LONG (__fastcall *ScrnUpdFn)(BYTE *screen);
+typedef void (__fastcall *SetChoiceFn)(int camp, int scen, int mission);   /* + 1 stack arg (callee pops) */
+typedef void (__fastcall *CStrAssignFn)(void *str, int edx, const char *s); /* thiscall, 1 stack arg */
+typedef BOOL (__fastcall *MapExistsFn)(const char *name);
+typedef void (__fastcall *PathFn)(const void *path);
+typedef void (__fastcall *StateFn)(int state);
+#define SET_CHOICE    ((void *)0x4190b0)
+#define CSTR_ASSIGN   ((CStrAssignFn)0x48c869)
+#define MAP_EXISTS    ((MapExistsFn)0x4450c0)
+#define SET_PATH_FN   ((PathFn)0x420e40)
+#define SCRN_STATE    ((StateFn)0x462680)
+#define CLEAR_SCREEN  ((VoidFnPtr)0x406290)
+#define START_MISSION ((VoidFnPtr)0x4094b0)             /* uses globals only (ecx = pMainFrame at the call sites) */
+
+static int g_start_done;
+
+static void __attribute__((noinline)) call_set_choice(int c, int s, int m)
+{
+    /* FUN_004190b0: ecx campaign, edx scenario, [esp+4] mission index, ret 4 */
+    __asm__ volatile ("push %2\n\tcall *%3" : "+c"(c), "+d"(s) : "r"(m), "r"(SET_CHOICE) : "eax", "memory");
+}
+
+static int start_mission_now(int want)
+{
+    BYTE *g = GAME;
+    if (!g || GAME_TYPE(g) != 0 || CAMPAIGN_COUNT <= 0 || CAMPAIGN_COUNT > 8) return 0;
+    char tab[256]; int tn = 0;                                   /* the mission ids per scenario, for the log */
+    tab[0] = 0;
+    for (int c = 0; c < CAMPAIGN_COUNT && tn < 200; c++) {
+        BYTE *camp = CAMPAIGNS[c];
+        if (!camp || CAMP_NSCEN(camp) <= 0 || CAMP_NSCEN(camp) > 16) continue;
+        for (int s = 0; s < CAMP_NSCEN(camp) && tn < 200; s++) {
+            BYTE *scen = CAMP_SCEN(camp, s);
+            if (SCEN_NMIS(scen) <= 0 || SCEN_NMIS(scen) > 4) continue;
+            for (int m = 0; m < SCEN_NMIS(scen); m++)
+                tn += snprintf(tab + tn, sizeof tab - tn, "%s%d", m ? "," : (tn ? " | " : ""), MIS_ID(SCEN_MIS(scen, m)));
+        }
+    }
+    mlog("missionpath: [debug] start_mission: campaign missions by scenario: %s", tab);
+    for (int c = 0; c < CAMPAIGN_COUNT; c++) {
+        BYTE *camp = CAMPAIGNS[c];
+        if (!camp || CAMP_NSCEN(camp) <= 0 || CAMP_NSCEN(camp) > 16) continue;
+        for (int s = 0; s < CAMP_NSCEN(camp); s++) {
+            BYTE *scen = CAMP_SCEN(camp, s);
+            if (SCEN_NMIS(scen) <= 0 || SCEN_NMIS(scen) > 4) continue;
+            for (int m = 0; m < SCEN_NMIS(scen); m++) {
+                BYTE *mis = SCEN_MIS(scen, m);
+                if (MIS_ID(mis) != want) continue;
+                if (m > 0) {                                     /* later part of a scenario: from its first part */
+                    g_start_target = want;
+                    mlog("missionpath: [debug] start_mission=%d is part %d of its scenario: starting mission %d, "
+                         "then %d win(s) (Triumph, debrief clicks needed)", want, m + 1, MIS_ID(SCEN_MIS(scen, 0)), m);
+                    m = 0; mis = SCEN_MIS(scen, 0);
+                }
+                char map[128];
+                snprintf(map, sizeof map, "%s.AMM", MIS_MAP(mis));
+                CAMPAIGN_INDEX = c; CUR_CAMPAIGN = camp; GAME_CAMPAIGN(g) = CAMP_ID(camp);
+                SCENARIO_INDEX = s; MISSION_INDEX = m;
+                GAME_SCENARIO(g) = SCEN_ID(scen); GAME_MISSION(g) = MIS_ID(mis); GAME_LOAD_SAVE(g) = 1;
+                if (*(int *)camp == 0) *(int *)camp = 5;
+                if (*(int *)scen == 0) *(int *)scen = 5;
+                if (*(int *)mis == 0) *(int *)mis = 5;
+                call_set_choice(c, s, m);
+                CSTR_ASSIGN(GAME_MAP_NAME(g), 0, map);
+                SET_PATH_FN(MAPS_PATH);
+                if (!MAP_EXISTS(*(const char **)GAME_MAP_NAME(g))) {
+                    mlog("missionpath: [debug] start_mission=%d: map %s not found - normal menus", want, map);
+                    return 0;
+                }
+                mlog("missionpath: [debug] start_mission=%d: campaign %d scenario %d mission %d (%s) started directly",
+                     want, c, s, m, map);
+                SCRN_STATE(-1);
+                CLEAR_SCREEN();
+                START_MISSION();
+                return 1;
+            }
+        }
+    }
+    mlog("missionpath: [debug] start_mission=%d: no such mission in the campaign tables - normal menus", want);
+    return 0;
+}
+
+static LONG __fastcall start_update(BYTE *screen)
+{
+    if (!g_start_done) {
+        g_start_done = 1;                                       /* once per run: later visits are the normal screen */
+        int want = GetPrivateProfileIntA("debug", "start_mission", 0, mod_ini_path());
+        if (want > 0 && start_mission_now(want)) return 1;
+    }
+    return ((ScrnUpdFn)SCRN_UPDATE_ORIG)(screen);
+}
+
+void missionpath_install(void)
+{
+    if (GetPrivateProfileIntA("debug", "start_mission", 0, mod_ini_path()) <= 0) return;
+    DWORD cur = *(DWORD *)STATE_TABLE_UPDATE_2, mine = (DWORD)(uintptr_t)start_update;
+    if (*(DWORD *)(STATE_TABLE_UPDATE_2 - 12) != 2 || cur != SCRN_UPDATE_ORIG) { mlog("missionpath: state table entry 2 unexpected - start_mission off"); return; }
+    mlog("patch %-55s %s", "missionpath: [debug] start_mission (state 2 update)", write_mem(STATE_TABLE_UPDATE_2, &mine, 4) ? "applied" : "FAILED");
 }
 
 void missionpath_frame(void)

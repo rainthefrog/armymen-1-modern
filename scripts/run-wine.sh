@@ -1,9 +1,15 @@
 #!/bin/bash
 # Run Army Men under Wine in a virtual X display and capture screenshots.
 # Usage: run-wine.sh <exe-to-test> <out-dir> [seconds-before-first-shot] [shots] [interval] [-- extra game args]
+# env (see test/README.md): CLICKS steps, SHOTS=step|marked (screenshot before every step = default | only at
+# `shot` / `shot:name` steps + the final shot), INI_SET="section.key=value ..." (edits the copied armymen-mod.ini),
+# DESKTOP, DPI, EXTRA, EXTRADIR, NOCLICK, WINEDEBUG_GAME. Steps `g:x,y` / `gmove:x,y` take GAME pixels of what is
+# on screen now (menu: 640x480 design coordinates; battlefield: frame pixels) - needs [debug] rig_coords=1.
 # The game folder is mounted read-only at /game; it is copied to a scratch dir so
 # the game can write configs/saves without touching the original.
 set -u
+SHOTMODE="${SHOTS:-step}"   # env SHOTS=step|marked (the positional "shots" below is the final shot count)
+T0=$(date +%s)
 EXE="$1"; OUT="$2"; WAIT="${3:-25}"; SHOTS="${4:-4}"; EVERY="${5:-5}"
 shift 5 2>/dev/null || shift $#
 [ "${1:-}" = "--" ] && shift
@@ -18,6 +24,26 @@ cp "$EXE" "$GAMEDIR/Armymen.exe"
 for f in ${EXTRA:-}; do cp "$f" "$GAMEDIR/"; done
 # EXTRADIR="dir ...": folders copied into the game folder.
 for d in ${EXTRADIR:-}; do cp -r "$d" "$GAMEDIR/"; done
+# INI_SET="display.hd_world=0 clock.speed=2 ...": set keys in the copied armymen-mod.ini (the mounted ini stays the
+# base). A key is replaced inside its section (the FIRST section of that name: GetPrivateProfileInt ignores a
+# second one), added at the end of that section if missing; a missing section is appended.
+ini_set() {   # ini_set <file> <section> <key> <value>
+  awk -v sec="$2" -v key="$3" -v val="$4" '
+    BEGIN { insec = 0; done = 0; seen = 0 }
+    { l = tolower($0); sub(/[ \t\r]+$/, "", l) }
+    /^\[/ { if (insec && !done) { print key "=" val; done = 1 }
+            insec = (!seen && l == "[" tolower(sec) "]"); if (insec) seen = 1; print; next }
+    insec && !done && l ~ "^" tolower(key) "[ \t]*=" { print key "=" val; done = 1; next }
+    { print }
+    END { if (!done) { if (!seen) print "[" sec "]"; print key "=" val } }' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+if [ -n "${INI_SET:-}" ]; then
+  [ -f "$GAMEDIR/armymen-mod.ini" ] || : > "$GAMEDIR/armymen-mod.ini"
+  for kv in $INI_SET; do
+    k="${kv%%=*}"; ini_set "$GAMEDIR/armymen-mod.ini" "${k%%.*}" "${k#*.}" "${kv#*=}"
+  done
+  cp "$GAMEDIR/armymen-mod.ini" "$OUT/armymen-mod.used.ini"
+fi
 
 export DISPLAY=:99
 DESKTOP="${DESKTOP:-1920x1080}"   # env DESKTOP=WxH: size of the virtual screen
@@ -38,14 +64,42 @@ WINEDEBUG="${WINEDEBUG_GAME:--all}" wine explorer /desktop=AM,${DESKTOP} Armymen
 GPID=$!
 
 sleep "$WAIT"
-# Optional scripted input: CLICKS="x,y;x,y;key:Return;..." – one action per step, screenshot after each
+# g:x,y -> desktop x y: game pixels of the view shown NOW (last "rig: view L,T,R,B screen X,Y WxH" line the dll logs
+# with [debug] rig_coords=1): menus = the 640x480 design picture, battlefield = the frame (e.g. 1024x540).
+# Works at any window size / scale / position (FAST=1 1x window, FAST=ui / full 2x window).
+g2s() {
+  awk -v p="$1" '/rig: view /{ l = $0 } END {
+      if (l == "") { print "NOVIEW"; exit }
+      sub(/.*rig: view /, "", l); gsub(/[,x]/, " ", l); sub(/screen /, "", l); split(l, v, " ")
+      split(p, q, ","); sx = (v[7] + 0.0) / (v[3] - v[1]); sy = (v[8] + 0.0) / (v[4] - v[2])
+      printf "%d %d\n", v[5] + (q[1] - v[1] + 0.5) * sx, v[6] + (q[2] - v[2] + 0.5) * sy }' "$GAMEDIR/armymen-mod.log" 2>/dev/null
+}
+gmove() { local c; c=$(g2s "$1"); if [ "$c" = NOVIEW ] || [ -z "$c" ]; then echo "g:$1: no 'rig: view' line in the log (needs [debug] rig_coords=1, log>=1)" >&2; return 1; fi; xdotool mousemove $c; }
+# waitlog:REGEX[:seconds] waits until the mod log has a NEW line matching REGEX (default timeout 60 s)
+LOGSEEN=0
+waitlog() {
+  local re="$1" to=60
+  if [[ "$1" =~ ^(.*):([0-9]+)$ ]]; then re="${BASH_REMATCH[1]}"; to="${BASH_REMATCH[2]}"; fi
+  local t=0; while [ $t -lt $((to*4)) ]; do
+    if tail -n +$((LOGSEEN+1)) "$GAMEDIR/armymen-mod.log" 2>/dev/null | grep -qE "$re"; then LOGSEEN=$(wc -l < "$GAMEDIR/armymen-mod.log"); return 0; fi
+    sleep 0.25; t=$((t+1)); done
+  echo "waitlog: '$re' not seen in ${to}s" >&2; return 1
+}
+T1=$(date +%s)
+# Optional scripted input: CLICKS="x,y;x,y;key:Return;..." – one action per step. SHOTS=step (default): a screenshot
+# BEFORE every step; SHOTS=marked: only at `shot` / `shot:name` steps (+ the final shot).
 if [ -n "${CLICKS:-}" ]; then
   n=0
   IFS=';' read -ra STEPS <<< "$CLICKS"
   for s in "${STEPS[@]}"; do
     n=$((n+1))
-    import -window root "$OUT/step_$(printf %02d $n)_before.png" 2>/dev/null
+    [ "$SHOTMODE" = step ] && import -window root "$OUT/step_$(printf %02d $n)_before.png" 2>/dev/null
     case "$s" in
+      shot) import -window root "$OUT/shot_$(printf %02d $n).png" 2>/dev/null; continue ;;     # screenshot now (no step pause)
+      shot:*) import -window root "$OUT/shot_${s#shot:}.png" 2>/dev/null; continue ;;
+      waitlog:*) waitlog "${s#waitlog:}"; continue ;;                                          # wait for a mod log line
+      g:*) gmove "${s#g:}" && { sleep 0.3; xdotool click 1; } ;;                               # click at game pixels
+      gmove:*) gmove "${s#gmove:}" ;;                                                          # pointer to game pixels
       key:*) xdotool key "${s#key:}" ;;
       press:*) xdotool keydown "${s#press:}"; sleep 0.15; xdotool keyup "${s#press:}" ;;   # held long enough for per-frame polling
       keydown:*) xdotool keydown "${s#keydown:}" ;;   # keep a key held (screenshots are taken before each step) ...
@@ -88,6 +142,8 @@ for i in $(seq 1 "$SHOTS"); do
   sleep "$EVERY"
 done
 
+T2=$(date +%s)
+echo "timing: setup+start wait $((T1-T0)) s, steps + final shots $((T2-T1)) s" | tee "$OUT/timing.txt"
 wineserver -k 2>/dev/null
 if [ -n "${DPI:-}" ]; then wine reg delete "HKCU\Control Panel\Desktop" /v LogPixels /f >/dev/null 2>&1; wineserver -w; fi
 kill $XPID 2>/dev/null

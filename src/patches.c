@@ -396,5 +396,6 @@ void patches_apply(void)
         for (size_t i = 0; i < sizeof res / sizeof res[0]; i++) apply(&res[i]);
     }
     modmenu_install();                                   /* modmenu.c: Mod Settings in the game's menus */
+    missionpath_install();                               /* missionpath.c: [debug] start_mission = direct mission start (testing aid) */
     framerate_install();                                 /* framerate.c: gravity / animation exact at any frame rate */
 }
