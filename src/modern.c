@@ -1097,6 +1097,7 @@ static void modern_draw_body(Surf *b)
             char s[48];
             if (hi.state == HEAL_OK) { wsprintfA(s, "HEAL +%d%%", hi.pct); text(mx + 14, my + 6, s, C_RED, 1); }
             else if (hi.state == HEAL_FULL) text(mx + 14, my + 6, "FULL HEALTH", C_GREY, 1);
+            else if (hi.state == HEAL_NO_WAY) text(mx + 14, my + 6, "TOO FAR", C_GREY, 1);
             else { wsprintfA(s, "MEDKIT x%d: CLICK A SOLDIER", hi.kits); text(mx + 14, my + 6, s, C_WHITE, 1); }
         }
     }

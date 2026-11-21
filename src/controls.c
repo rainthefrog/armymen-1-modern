@@ -2465,7 +2465,7 @@ static void apply_modern_controls(void)
         if (kind == HOVER_GROUND && !veh && !right_hold && S.lmode != LM_TURN && allies_heal_mode()) {
             /* medkit selected (allies.c): the heal cross - red over a hurt soldier, grey elsewhere / full / no way there */
             int hs = allies_hover(px + CAMERA_X, py + CAMERA_Y, 0);
-            if (hs == HEAL_OK && pointer_unreachable(u, px + CAMERA_X, py + CAMERA_Y, now)) hs = HEAL_NO_WAY;
+            /* no walk to heal any more (2026-11-21): range only (allies_hover) */
             kind = hs == HEAL_OK ? CUR_HEAL : CUR_HEAL_OFF;
         } else if (kind == HOVER_GROUND && !veh && !right_hold && S.lmode != LM_TURN && mines_pointer_in_reach())
             kind = CUR_MINE;                                                            /* mines.c: the marker is the pointer */

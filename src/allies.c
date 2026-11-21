@@ -91,6 +91,16 @@ typedef int (__fastcall *SoundFn)(int id, int volume);
 #define MEDKIT_MAX         3          /* kits carried at most */
 #define KIT_PCT_FALLBACK   50         /* a kit whose record gives no percentage */
 #define HEAL_REACH         32         /* within this of the soldier Sarge uses the kit */
+/* 2026-11-21, user: "don't need to walk to heal. as long as within a certain range, just heal with click" - a click on a
+ * hurt soldier within heal_range of Sarge heals at once; farther: nothing ("TOO FAR"), no walk */
+static int heal_range(void) { static int r = -1; if (r < 0) { r = GetPrivateProfileIntA("gameplay", "heal_range", 160, mod_ini_path()); if (r < HEAL_REACH) r = HEAL_REACH; } return r; }
+static int in_heal_range(BYTE *t)
+{
+    BYTE *u = SARGE;
+    if (!u || !t) return 0;
+    int dx = SARGE_X(t) - SARGE_X(u), dy = SARGE_Y(t) - SARGE_Y(u), r = heal_range();
+    return dx * dx + dy * dy <= r * r;
+}
 #define HEAL_SHORT         20         /* the walk ends this far short of the soldier */
 #define HEAL_TIMEOUT_MS    20000
 #define HEAL_IDLE_MS       600        /* the walk ended this long ago out of reach: given up */
@@ -292,7 +302,8 @@ int allies_hover(int wx, int wy, int unreachable)
     BYTE *t = soldier_at(wx, wy);
     if (!t) return HEAL_NOBODY;
     if (HEALTH(t) >= MAX_HEALTH(t)) return HEAL_FULL;
-    if (unreachable) return HEAL_NO_WAY;
+    (void)unreachable;
+    if (!in_heal_range(t)) return HEAL_NO_WAY;                        /* too far: no walk any more */
     return HEAL_OK;
 }
 
@@ -304,14 +315,10 @@ int allies_click(int wx, int wy, DWORD now, int *walk_x, int *walk_y)
     BYTE *t = soldier_at(wx, wy);
     if (!t) return 0;                                                  /* not on a soldier: the normal click */
     if (HEALTH(t) >= MAX_HEALTH(t)) { mlog("allies: heal click on trooper %p - at full health (%d)", t, HEALTH(t)); return 1; }
-    int dx = SARGE_X(t) - SARGE_X(u), dy = SARGE_Y(t) - SARGE_Y(u), d2 = dx * dx + dy * dy;
-    if (d2 <= HEAL_REACH * HEAL_REACH) { heal_soldier(t); return 1; }
-    int d = 1; while ((d + 1) * (d + 1) <= d2) d++;
-    *walk_x = SARGE_X(t) - dx * HEAL_SHORT / d;
-    *walk_y = SARGE_Y(t) - dy * HEAL_SHORT / d;
-    H.t = t; H.at = H.idle_since = now;
-    mlog("allies: heal click on trooper %p at %d,%d (%d / %d), %d px away - walking to %d,%d", t, SARGE_X(t), SARGE_Y(t), HEALTH(t), MAX_HEALTH(t), d, *walk_x, *walk_y);
-    return 2;
+    (void)u; (void)now; (void)walk_x; (void)walk_y;
+    if (in_heal_range(t)) { heal_soldier(t); return 1; }
+    mlog("allies: heal click on trooper %p - too far (range %d px)", t, heal_range());
+    return 1;                                                          /* taken: no walk */
 }
 
 int allies_heal_self(void)
@@ -357,7 +364,7 @@ int allies_heal_info(HealInfo *hi)
     if (!controls_pointer_world(&px, &py)) return 1;
     hi->x = px; hi->y = py;
     BYTE *t = soldier_at(px, py);
-    if (t) { hi->hp = HEALTH(t); hi->max = MAX_HEALTH(t); hi->state = HEALTH(t) >= MAX_HEALTH(t) ? HEAL_FULL : HEAL_OK; }
+    if (t) { hi->hp = HEALTH(t); hi->max = MAX_HEALTH(t); hi->state = HEALTH(t) >= MAX_HEALTH(t) ? HEAL_FULL : !in_heal_range(t) ? HEAL_NO_WAY : HEAL_OK; }
     return 1;
 }
 
