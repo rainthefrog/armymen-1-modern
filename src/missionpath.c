@@ -164,6 +164,30 @@ static void add(int x, int y, int dashed, int wp)
     g_pts[g_npts++] = (MissionPt){ (short)x, (short)y, (BYTE)dashed, (BYTE)wp };
 }
 
+/* A pad is an AREA of map tiles (2026-11-21, user, mission 4: "this mission endpoint should be center. i believe there
+ * are 4 target points here"): padLocations (0x4e36a0) keeps only the LAST walkable tile ProcessPadLayer 0x40db10 found.
+ * The pad layers: pads 0..7 = bits of the byte layer at *0x4e354c, pads 8..255 = the byte value of the layer at
+ * *0x4e3550; tile count *0x6083c8, map width in tiles 0x4e368c. The waypoint is the centre of all the pad's tiles. */
+#define PAD_BITS_LAYER  (*(BYTE **)0x4e354c)
+#define PAD_BYTE_LAYER  (*(BYTE **)0x4e3550)
+#define MAP_TILE_COUNT  (*(unsigned *)0x6083c8)
+#define MAP_TILES_W     (*(unsigned short *)0x4e368c)
+static void pad_centre(int pad, int *x, int *y)
+{
+    BYTE *layer = pad < 8 ? PAD_BITS_LAYER : PAD_BYTE_LAYER;
+    unsigned n = MAP_TILE_COUNT, w = MAP_TILES_W;
+    if (!layer || !w || !n || n > 1024 * 1024 || IsBadReadPtr(layer, n)) return;
+    long long sx = 0, sy = 0; int k = 0;
+    for (unsigned t = 0; t < n; t++) {
+        BYTE v = layer[t];
+        if (pad < 8 ? !(v & (1 << pad)) : v != pad) continue;
+        sx += (t % w) * 16 + 8; sy += (t / w) * 16 + 8; k++;
+    }
+    if (k <= 1) return;
+    if (g_cfg.log >= 1) mlog("missionpath: pad %d = %d tiles, centre %d,%d (padLocations %d,%d)", pad, k, (int)(sx / k), (int)(sy / k), *x, *y);
+    *x = (int)(sx / k); *y = (int)(sy / k);
+}
+
 static int dist2(int ax, int ay, int bx, int by) { int dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
 
 /* the nearest cell with a fully open 3x3 (strict rule) within r cells of x, y; 1 = found (x, y moved there if needed) */
@@ -197,6 +221,7 @@ static void resolve(int m, int sx, int sy)
             const short *p = PAD_LOC(w->pad);
             if (!p[0] && !p[1]) { if (g_cfg.log >= 1) mlog("missionpath: mission %d pad %d has no location", m, w->pad); continue; }
             px = p[0] + 8; py = p[1] + 8;
+            pad_centre(w->pad, &px, &py);
         } else {
             int raw = 0, s = objectives_item_ground(w->name, &px, &py, &raw, NULL);
             if (s == -2 || s == -1 || (!px && !py)) { if (g_cfg.log >= 1) mlog("missionpath: mission %d item %s %s", m, w->name, s == -2 ? "not found" : s == -1 ? "already done" : "has no spot"); continue; }

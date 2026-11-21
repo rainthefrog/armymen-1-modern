@@ -1304,3 +1304,22 @@ int hdworld_cell_has_entry(const BYTE *cell, int e)
     for (int i = 0; i < c->n; i++) if (c->entry[i] == e) return 1;
     return 0;
 }
+
+/* objectives.c (2026-11-21, user: "why is the objective fade not consistent?"): does the GPU show the UPSCALED picture
+ * at back-buffer pixel (x, y)? Only where a map link covers it, the map has an image reference there and the screen
+ * byte is still the map's (the game's map-edge dither, sprites drawn into the buffer etc. change it -> the game pixel
+ * is shown). The pinned objective box darkens the others in the bytes, the upscaled ones on the GPU (td). */
+int hdworld_pixel_upscaled(const Surf *b, int x, int y)
+{
+    Surf *m = MAP_SURF;
+    if (g_ready != 1 || !m || !m->hd_ref || !m->bits || !b || !b->bits) return 0;
+    for (int i = 0; i < g_nlink_build; i++) {
+        const Link *l = &g_link_build[i];
+        if (x < l->r.left || x >= l->r.right || y < l->r.top || y >= l->r.bottom) continue;
+        int mx = x + l->ox, my = y + l->oy;
+        if (mx < 0 || my < 0 || mx >= m->w || my >= m->h) return 0;
+        if (!ref_row(m, m->hd_ref, my)[mx].e) return 0;
+        return m->bits[(size_t)my * m->pitch + mx] == b->bits[(size_t)y * b->pitch + x];
+    }
+    return 0;
+}

@@ -389,6 +389,7 @@ void hdworld_cell_sort(int y);   /* roofs.c: the drawn cell's sort row inside it
 void hdworld_cell_begin(const BYTE *cell);   /* roofs.c: the cell the game draws now (NULL after) */
 int hdworld_cell_image(const BYTE *cell, int idx, int *hx, int *hy, int *slice, int *wl, int *wt);
 int hdworld_entry_at(int x, int y);                                  /* hdworld.c: image entry drawn at a back-buffer pixel */
+int hdworld_pixel_upscaled(const Surf *b, int x, int y);              /* hdworld.c: the GPU shows the upscaled picture at this back-buffer pixel */
 int hdworld_cell_has_entry(const BYTE *cell, int e);   /* objectives.c: an image drawn through it */
 BYTE *hdworld_over_mask(Surf *b);
 void present_perf_refs(LONGLONG ticks);

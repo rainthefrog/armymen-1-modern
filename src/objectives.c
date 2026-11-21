@@ -200,6 +200,15 @@ static void draw_pinned(Surf *b)
     static BYTE before[PIN_MAX_H][PIN_W];
     if (h > PIN_MAX_H) h = PIN_MAX_H;
     if (ov) {
+        /* pixels the GPU shows as the GAME's (the map-edge dither strip, things drawn into the buffer): darkened in the
+         * bytes, like the plain picture - the GPU's td darkening only reaches the upscaled ones (2026-11-21, user: "why
+         * is the objective fade not consistent?" - a checkered strip at the map edge stayed light) */
+        BYTE *shade = SHADE_40;
+        if (shade)
+            for (int y = PIN_Y; y < PIN_Y + h; y++) {
+                BYTE *row = b->bits + (size_t)y * b->pitch;
+                for (int x = PIN_X; x < PIN_X + PIN_W; x++) if (!hdworld_pixel_upscaled(b, x, y)) row[x] = shade[shade[row[x]]];
+            }
         for (int y = 0; y < h; y++) memcpy(before[y], b->bits + (size_t)(PIN_Y + y) * b->pitch + PIN_X, PIN_W);
         g_zones.dim = (RECT){ PIN_X, PIN_Y, PIN_X + PIN_W, PIN_Y + h };
         g_zones.dim_on = 1;

@@ -1849,6 +1849,8 @@ static void apply_wheel(BYTE *u);
 /* Where a lob goes: the pointer's world point (for a short while it was the hovered target's position - off
  * to the side on multi-part objects; the user wants the pointer). */
 static int g_throw_aiming;           /* hold-to-aim throw in progress (button held, circle shown) */
+static int g_lob_still;              /* the pointer rests NOW (lob_dwell_ms): the blast circle shows only then (2026-11-21,
+                                        user: "impact circle is always showing - should only show if the cursor stays still") */
 static int g_lob_armed;              /* grenade / mortar ready and the pointer rested lob_dwell_ms: throw camera +
                                         blast circle on (controls_camera_body) */
 static void throw_target(int px, int py, int *wx, int *wy)
@@ -2842,7 +2844,7 @@ int controls_throw_preview(int *wx, int *wy, int *radius, int *type, int *clampe
     }
     /* 2026-11-21 (user: the circle should switch on when the pointer is held still): also once the throw camera is on
      * (g_lob_armed: the pointer rested lob_dwell_ms with the grenade / set-up mortar), anywhere on the battlefield */
-    if (!weapon_is_hold_to_aim(u) || !modern_on(MOD_THROW_POINTER) || (!on_target && !g_throw_aiming && !g_lob_armed)) return 0;
+    if (!weapon_is_hold_to_aim(u) || !modern_on(MOD_THROW_POINTER) || (!on_target && !g_throw_aiming && !g_lob_still)) return 0;
     int tx, ty;
     if (g_throw_aiming) { tx = g_throw_wx; ty = g_throw_wy; } else throw_target(S.cursor_x, S.cursor_y, &tx, &ty);
     double sx, sy;
@@ -3304,8 +3306,12 @@ static int lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double ccx,
     if (!lob) {
         if (g_lob_armed) { g_lob_armed = 0; L.ease = 1; L.ease_at = now; if (g_cfg.log >= 1) mlog("lob: throw camera off (easing back)"); }
         L.rest_x = L.ux; L.rest_y = L.uy; L.rest_since = now;
-    } else if (!g_lob_armed) {
+    } else {
+        /* resting is tracked all the time: the circle follows it (g_lob_still); the camera stays on once armed */
         if (!ok || fabs(L.ux - L.rest_x) > LOB_DWELL_MOVE || fabs(L.uy - L.rest_y) > LOB_DWELL_MOVE) { L.rest_x = L.ux; L.rest_y = L.uy; L.rest_since = now; }
+    }
+    g_lob_still = lob && ok && now - L.rest_since >= (DWORD)lob_dwell_ms();
+    if (lob && !g_lob_armed) {
         if (ok && now - L.rest_since >= (DWORD)lob_dwell_ms()) {
             g_lob_armed = 1; L.ease = 0;
             if (g_cfg.log >= 1) mlog("lob: throw camera on (pointer rested %lu ms) at world %d,%d", now - L.rest_since,
