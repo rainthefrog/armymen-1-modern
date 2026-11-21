@@ -194,7 +194,9 @@ static int colours(void)
     memcpy(g_pal_seen, p->e, sizeof g_pal_seen);
     int full = !g_pal_ok || nch > 32;
     const PALETTEENTRY *e = g_pal_seen;
-    C_FILL[0] = (BYTE)nearest(e, 255, 70, 70);      /* no army (the game: red) */
+    /* no army: the game drew these (buildings, bridges, objects) red - read as enemies (2026-11-20, user: "a lot of
+     * buildings are counting as enemies"): a neutral stone colour */
+    C_FILL[0] = (BYTE)nearest(e, 196, 186, 160);
     C_FILL[1] = (BYTE)nearest(e, 70, 255, 70);      /* green */
     C_FILL[2] = (BYTE)nearest(e, 255, 205, 110);    /* tan */
     C_FILL[3] = (BYTE)nearest(e, 80, 160, 255);     /* blue */
@@ -433,7 +435,7 @@ static void blip_detail(const Blip *b, char *s)
     int d = b->sarge ? -1 : blip_distance(b);
     if (d >= 0) { distance_text(d, t); lstrcatA(s, t); lstrcatA(s, "  "); }
     int a = b->kind == PIN_OBJECT ? b->owner : b->army - 1;
-    if (a >= 1 && a <= 3 && !b->sarge) lstrcatA(s, LEGION_STATUS(a) && !ALLIED(0, a) ? "enemy" : "ally");
+    if (b->kind != PIN_OBJECT && a >= 1 && a <= 3 && !b->sarge) lstrcatA(s, LEGION_STATUS(a) && !ALLIED(0, a) ? "enemy" : "ally");   /* objects: owner in the title only */
     int n = lstrlenA(s);
     while (n > 0 && s[n - 1] == ' ') s[--n] = 0;
 }

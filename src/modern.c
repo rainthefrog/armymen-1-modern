@@ -1076,7 +1076,82 @@ static void modern_draw_body(Surf *b)
     mt[5] += 0; if (GetTickCount() - mt_at > 2000) { if (g_cfg.log >= 2) mlog("modern times 2s (ms): enemy bars %.1f target bars %.1f mpath build %.1f mpath draw %.1f", mt[0], mt[1], mt[2], mt[3]); memset(mt, 0, sizeof mt); mt_at = GetTickCount(); }
 }
 
-void modern_draw(Surf *b) { PROF_BEGIN(t); modern_draw_body(b); PROF_END(t, PR_OVERLAY); }   /* timed (trace) */
+/* ---------------------------------------------------------------- enemy alerts (2026-11-20, user: "indicator on seeing
+ * sarge would be nice too - and indicator when they lose him")
+ * An enemy trooper's current target: +0x30 pVictim, its UID copied to +0x2b8 by the trooper AI tick FUN_0043cba0 every
+ * tick (0 = none; cleared by FUN_0043b810 / the null-victim path; the line-of-sight test FUN_0043b2e0 failing sets the
+ * 150-tick pause +0x278 and FUN_0043d310 keeps the blocked target's UID at +0x2ec). Read once a frame:
+ *   +0x2b8 == Sarge's UID or the UID of the vehicle he drives, for ALERT_DEBOUNCE frames -> "!" (red) over him;
+ *   it then goes to anything else for ALERT_DEBOUNCE frames -> "?" (yellow), shown ALERT_SHOW_MS and faded by blinking.
+ * Enemy = another army in play and not allied with the player (0x41a1e0). [modern] enemy_alerts=0 switches it off.
+ * Units: legion (army record 0x41a160) +4 .. +8 units (stride 0x2c4, mode +0x70 3..5), troopers +0xb4[0..+0xdc]. */
+#define ALERT_MAX       96
+#define ALERT_DEBOUNCE  3
+#define ALERT_SHOW_MS   1500
+#define T_VICTIM_UID(t) (*(DWORD *)((t) + 0x2b8))
+typedef BYTE *(__fastcall *AlertArmyFn)(int army);
+typedef int (__fastcall *AlertAllyFn)(int a, int b);
+static struct { BYTE *t; DWORD uid; int on, cnt, kind; DWORD at; } g_al[ALERT_MAX];
+static void alert_mark(int x, int y, int kind)
+{
+    BYTE c = kind == 1 ? C_RED : C_YELLOW;
+    if (kind == 1) {                                   /* "!": a 3 px bar and a dot, black outline */
+        for (int yy = -1; yy <= 12; yy++) for (int xx = -2; xx <= 2; xx++) if (yy <= 8 || yy >= 10) px(x + xx, y + yy, C_BLACK);
+        for (int yy = 0; yy <= 7; yy++) for (int xx = -1; xx <= 1; xx++) px(x + xx, y + yy, c);
+        for (int yy = 10; yy <= 11; yy++) for (int xx = -1; xx <= 1; xx++) px(x + xx, y + yy, c);
+    } else {                                           /* "?": text glyph, outlined by the text routine's colour */
+        text(x - 3, y, "?", c, 1);
+    }
+}
+static void alerts_draw(Surf *b)
+{
+    static int cfg = -1;
+    if (cfg < 0) cfg = GetPrivateProfileIntA("modern", "enemy_alerts", 1, mod_ini_path());
+    BYTE *s = *(BYTE **)0x697520;
+    if (!cfg || !s || !g_loaded) return;
+    DWORD me = *(DWORD *)s, veh = *(BYTE **)(s + 0x2d0) ? **(DWORD **)(s + 0x2d0) : 0, now = GetTickCount();
+    static int seen[ALERT_MAX];
+    memset(seen, 0, sizeof seen);
+    for (int a = 1; a <= 3; a++) {
+        if (!*(int *)(0x4f7820 + a * 0x19e8 + 0x1990) || ((AlertAllyFn)0x41a1e0)(0, a)) continue;
+        BYTE *leg = ((AlertArmyFn)0x41a160)(a);
+        if (!leg) continue;
+        BYTE *un = *(BYTE **)(leg + 4), *end = *(BYTE **)(leg + 8);
+        for (int g = 0; un && un < end && g < 64; un += 0x2c4, g++) {
+            int mode = *(int *)(un + 0x70);
+            if (mode < 3 || mode > 5) continue;
+            int last = *(int *)(un + 0xdc);
+            for (int i = 0; i <= last && i < 10; i++) {
+                BYTE *t = ((BYTE **)(un + 0xb4))[i];
+                if (!t || *(int *)(t + 0x68) != 1 || *(short *)(t + 0x1c) <= 0) continue;
+                int k = -1, free_ = -1;
+                for (int j = 0; j < ALERT_MAX; j++) { if (g_al[j].t == t && g_al[j].uid == *(DWORD *)t) { k = j; break; } if (!g_al[j].t && free_ < 0) free_ = j; }
+                if (k < 0) { if (free_ < 0) continue; k = free_; memset(&g_al[k], 0, sizeof g_al[k]); g_al[k].t = t; g_al[k].uid = *(DWORD *)t; }
+                seen[k] = 1;
+                DWORD v = T_VICTIM_UID(t);
+                int on = v && (v == me || (veh && v == veh));
+                if (on != g_al[k].on) {
+                    if (++g_al[k].cnt >= ALERT_DEBOUNCE) {
+                        g_al[k].on = on; g_al[k].cnt = 0; g_al[k].kind = on ? 1 : 2; g_al[k].at = now;
+                        if (g_cfg.log >= 2) mlog("modern: enemy %08lx %s Sarge", *(DWORD *)t, on ? "spotted" : "lost");
+                    }
+                } else g_al[k].cnt = 0;
+                int sx, sy;
+                to_screen(*(short *)(t + 4), *(short *)(t + 6), &sx, &sy);
+                if (sx < 4 || sy < 30 || sx >= b->w - 4 || sy >= g_hud_top) continue;
+                if (g_al[k].kind && now - g_al[k].at <= ALERT_SHOW_MS) {
+                    if ((now - g_al[k].at) <= ALERT_SHOW_MS * 2 / 3 || !((now / 120) & 1)) alert_mark(sx, sy - 34, g_al[k].kind);   /* fading: blink */
+                } else if (g_al[k].on) {   /* still targeting Sarge: a small steady red mark (a 5 px wedge pointing down) */
+                    for (int r = 0; r < 3; r++) for (int xx = -(2 - r); xx <= 2 - r; xx++) px(sx + xx, sy - 30 + r, C_RED);
+                    for (int xx = -3; xx <= 3; xx++) px(sx + xx, sy - 31, C_BLACK);
+                }
+            }
+        }
+    }
+    for (int j = 0; j < ALERT_MAX; j++) if (g_al[j].t && !seen[j]) g_al[j].t = NULL;   /* dead / gone / new mission */
+}
+
+void modern_draw(Surf *b) { PROF_BEGIN(t); modern_draw_body(b); { Surf *keep = g_b; g_b = b; hud_rows_reset(); { Guard gd; if (GUARD_TRY(gd, "enemy alerts (modern.c)")) { alerts_draw(b); guard_leave(&gd); } } g_b = keep; } PROF_END(t, PR_OVERLAY); }   /* timed (trace) */
 
 /* minimap.c tooltip (2026-11-20: the game's cached message font drew nothing there on Windows - empty box) */
 int modern_text(Surf *b, int x, int y, const char *s, BYTE c) { Surf *keep = g_b; g_b = b; hud_rows_reset(); int r = text(x, y, s, c, 1); g_b = keep; return r; }
