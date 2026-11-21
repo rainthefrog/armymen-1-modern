@@ -289,7 +289,9 @@ static int wp_done(int k, const char **why)
     int sx, sy, how = sarge_at(&sx, &sy);
     if (!how) return 0;
     int r = how == 2 ? REACH_VEH : REACH_PX, near_wp = dist2(sx, sy, g_wx[k], g_wy[k]) <= r * r, all = 1, any = 0;
-    if (k + 1 < g_nwp && g_wveh[k + 1] >= 0 && how == 2) { *why = "Sarge is in a vehicle for the driven leg"; return 1; }
+    /* only a stop reached ON FOOT (the vehicle pickup) - not a stop of a driven leg (2026-11-21: mission 3's bridge stop was
+     * skipped the moment Sarge got into the tank) */
+    if (k + 1 < g_nwp && g_wveh[k] < 0 && g_wveh[k + 1] >= 0 && how == 2) { *why = "Sarge is in a vehicle for the driven leg"; return 1; }
     for (int i = 0; i < g_nmem; i++) {
         if (g_mem_wp[i] != k) continue;
         any = 1;
@@ -645,8 +647,10 @@ static void variant_try_next(void)                          /* the variant faile
 }
 /* the current piece's target: the via point while planning A -> V, else the waypoint */
 static void piece_target(int *tx, int *ty) { if (g_vstage == 1) { *tx = g_vx; *ty = g_vy; } else { *tx = g_wx[g_leg]; *ty = g_wy[g_leg]; } }
+static int g_dend_leg = -1, g_dend_x, g_dend_y, g_dend_h;   /* where a driven leg really ended (pose), for the next driven leg */
 static void leg_done(int tx, int ty, int reached)
 {
+    if (g_wveh[g_leg] >= 0) { g_dend_leg = g_leg; g_dend_x = g_cx; g_dend_y = g_cy; g_dend_h = g_dh; }
     if (!reached && g_cfg.log >= 1) mlog("missionpath: leg %d%s to %d,%d ends at %d,%d (closed off): the rest dashed", g_leg + 1, g_vstage ? " (variant)" : "", tx, ty, g_cx, g_cy);
     add(tx, ty, !reached, g_vstage == 1 ? 0 : g_leg + 1);
     g_cx = tx; g_cy = ty;
@@ -799,6 +803,9 @@ static void leg_step(void)
     if (g_wveh[g_leg] >= 0) {                                    /* driven: drive_step */
         if (g_dphase == 0 && g_dpieces == 0 && g_leg_calls == 0) {
             g_dh = g_dfacing0[g_leg];
+            /* a driven leg after a driven leg (2026-11-21, mission 3 bridge stop): start from that leg's real end pose -
+             * the waypoint itself with the vehicle's parked heading gave the planner no start ("no progress") */
+            if (g_leg > 0 && g_dend_leg == g_leg - 1) { g_cx = g_dend_x; g_cy = g_dend_y; g_dh = g_dend_h; }
             if (g_cfg.log >= 1) mlog("missionpath: leg %d driven (vehicle type %d) from %d,%d heading %d to %d,%d", g_leg + 1, g_wveh[g_leg], g_cx, g_cy, g_dh, tx, ty);
         }
         drive_step(tx, ty);
@@ -1122,7 +1129,7 @@ void missionpath_frame(void)
         if (++g_frames < RESOLVE_FRAMES) return;
         if (route_reuse(GAME_MISSION(g), g_pts[0].x, g_pts[0].y)) return;
         resolve(GAME_MISSION(g), g_pts[0].x, g_pts[0].y);
-        g_phase = 1; g_leg = 0;
+        g_phase = 1; g_leg = 0; g_dend_leg = -1;
         if (g_nwp > 0) leg_begin();
         return;
     }
