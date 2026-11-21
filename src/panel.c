@@ -76,7 +76,7 @@ static Row g_rows[] = {
     { "Enemies use barricades",   &g_cfg.cover_enemies, "gameplay", "cover_enemies" },
     { "Corner shots",             &g_cfg.corner_shots, "gameplay", "corner_shots" },
     { "Leg hits count",           &g_cfg.leg_hits, "gameplay", "leg_hits" },
-    { "Height rules",             &g_cfg.height_rules, "gameplay", "height_rules" },   /* 14: cycles off / modded / original (was Downhill hits) */
+    { "Height rules",             &g_cfg.height_rules, "gameplay", "height_rules" },   /* 14: cycles stance / am2 / original (was Downhill hits) */
     { "Enemies seen in buildings", &g_cfg.see_enemies, "display", "see_enemies" },            /* 15 */
     { "Menu buttons press in",    &g_cfg.button_press, "display", "button_press" },
     { "Longer weapon range",      &g_cfg.longer_range, "gameplay", "longer_range" },            /* 17 */
@@ -140,7 +140,7 @@ static void click_row(int row)
     Row *r = &g_rows[row];
     if (!r->section) { toggle_modern(); return; }
     if (!r->key) { menu_toggle_hd(); return; }
-    if (r->value == &g_cfg.height_rules) { height_rules_set((g_cfg.height_rules + 1) % 3); return; }   /* three values */
+    if (r->value == &g_cfg.height_rules) { height_rules_next(); return; }   /* three values (modded: ini only) */
     *r->value = !*r->value;
     WritePrivateProfileStringA(r->section, r->key, *r->value ? "1" : "0", mod_ini_path());
     mlog("panel: %s %d", r->name, *r->value);
@@ -255,7 +255,7 @@ void panel_draw(Surf *b)
     for (int i = 0; i < rows; i++) {
         int y = y0 + PAD + ROW_H + 4 + i * ROW_H;
         if (i < ROWS && g_rows[i].value == &g_cfg.height_rules)
-            wsprintfA(buf, "%s: %s  (click to change)", g_rows[i].name, HEIGHT_RULE_NAMES[g_cfg.height_rules]);
+            wsprintfA(buf, "%s: %s", g_rows[i].name, HEIGHT_RULE_TEXT[g_cfg.height_rules]);
         else if (i < ROWS) wsprintfA(buf, "[%s] %s", *g_rows[i].value ? "X" : " ", g_rows[i].name);
         else if (i == SPEED_ROW) {
             int s100 = (int)(clock_speed_now() * 100 + 0.5);

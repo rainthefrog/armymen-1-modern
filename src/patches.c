@@ -268,6 +268,7 @@ void patches_apply(void)
     hook_call("bullets: Sarge damage prone rule, GetPose (0x4480b8)", 0x4480b8, 0x43a140, (void *)bullets_damage_pose);
     hook_call("bullets: trooper damage prone rule, GetPose (0x43c6c4)", 0x43c6c4, 0x43a140, (void *)bullets_damage_pose);
     hook_call("bullets: ItemUpdateSeen -> CanSeeFromItem (0x44a47d)", 0x44a47d, 0x44af10, (void *)bullets_sight_stub);
+    hook_call("bullets: projectile hit, direction x2 (0x435b10)", 0x435b10, 0x432050, (void *)bullets_game_double);
     static const BYTE dash_o[] ={ 0x81,0xec,0x20,0x01,0x00,0x00, 0xa1,0xac,0x6e,0x69,0x00 };   /* FUN_00441300 */
     objectives_dash_message_original = (DashMsgFn)hook_wrap("objectives: dashboard message (FUN_00441300) -> objectives.c",
                                                             0x441300, dash_o, sizeof dash_o, (void *)objectives_dash_message);
