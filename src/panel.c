@@ -15,26 +15,28 @@
 #define CMD_OBJECTIVE ((VoidFnPtr)0x460e70)
 
 static int g_open, g_was_paused;
-static int g_page;                     /* tabs in the title row: 0 settings, 1 controls, 2 modern, 3 keys */
+static int g_page;                     /* tabs in the title row: 0 settings, 1 controls, 2 modern, 3 binds (bindings.c) */
 #define PAGES 4
 
 /* The Controls page: the modern layout (controls.c, keys also in the game's own table) or the game's own keys. */
 static const char *const KEYS_MODERN[] = {           /* one-button mouse (controls.c; the only modern scheme) */
     "Left click ground: walk there (finds a way)   Double-click: sprint there",
-    "Hold left: walk toward pointer (double-click + hold: run)   Click Sarge: stand / kneel / prone",
+    "Hold left: walk toward pointer (double-click + hold: run)   Click Sarge: one stance down (lying: stand up)",
+    "Double-click Sarge: prone   Press on Sarge + drag up / down: pick stand / kneel / prone",
     "Left on an enemy in range (red reticle): shoot, hold = keep shooting",
-    "Left on your empty vehicle: get in      Click your vehicle while driving: get out",
+    "Left on your empty vehicle: get in (double-click: sprint to it)   Click your vehicle while driving: get out",
     "Shoot anywhere: right button or Shift + left      Right click your soldier: select his unit",
     "Grenade / mortar: click throws at the pointer (circle = blast area, distance shown)",
-    "Move: W A S D   Sprint: Shift   Slow: Ctrl   Kneel / prone: C   Dive: Space   Vehicle: F",
-    "Weapons: 1-6 / wheel / middle click   Hold middle: radial menu   Last weapon: Q   Special: G",
-    "Drop item: hold X (or right-click its HUD box)",
+    "Move: W A S D  Sprint: Shift  Slow: Ctrl  C: tap down, hold prone, double-tap stand  Dive: Space / Mouse 4",
+    "Weapons: 1-6 / wheel / middle click, Mouse 5 previous   Hold middle: radial (on Sarge: stance ring)   Q: last   G: special",
+    "Vehicle: F      Drop item: hold X (or right-click its HUD box)",
     "Squad: F1 follow  F2 attack  F3 defend  F9 attack now      Next unit: Tab",
     "Air: F5 strike  P paratroopers  R recon (or click HUD)      Map: M   Objectives: J",
     "Game speed: Ctrl - / = / 0      Fullscreen: F11   CRT: F9   Mod menu: F10",
     "Zoom the battlefield: Ctrl + wheel or Ctrl + PageUp / PageDown",
-    "Modern (F10 MODERN / KEYS tabs): Z roll, hold E peek, hold I stats, hold B radial menu, T ping, hold F12 restart",
-    "Ctrl + left: squad attack / defend   Ctrl + right: follow   Mouse 4 / 5: weapons   Gamepad works",
+    "Modern: Z roll, hold E peek, hold I stats, hold B radial (pointer on Sarge: stance ring), T ping, hold F12 restart",
+    "These are the defaults - every key / extra mouse button: BINDS tab (Tab key switches tabs)",
+    "Ctrl + left: squad attack / defend   Ctrl + right: follow   Gamepad works",
 };
 static const char *const KEYS_CLASSIC[] = {
     "Move: Up Down / Num8 Num2      Turn: Left Right / Num4 Num6",
@@ -154,14 +156,14 @@ static int overlay_click(int x, int y)
             g_page = (x - g_panel.left) * PAGES / (g_panel.right - g_panel.left);
             if (g_page < 0) g_page = 0;
             if (g_page >= PAGES) g_page = PAGES - 1;
-            modern_key_capture(-1);
+            if (bindings_panel_capturing()) bindings_panel_key(VK_ESCAPE);   /* a tab click ends a capture */
             return 1;
         }
         int row = (y - g_panel.top - PAD - ROW_H - 4) / ROW_H;
         if (y - g_panel.top - PAD - ROW_H - 4 < 0) return 1;
         if (g_page == 0) click_row(row);
         else if (g_page == 2 && row < modern_count()) modern_toggle(row);          /* MODERN: each feature */
-        else if (g_page == 3 && row >= 1 && row - 1 < modern_key_count()) modern_key_capture(row - 1);   /* KEYS */
+        else if (g_page == 3) bindings_panel_click(x, y);                          /* BINDS (bindings.c) */
         return 1;
     }
     if (layout_resize_click(x, y)) { controls_block_left(); return 1; }   /* a HUD group's resize icon (layout.c) */
@@ -181,6 +183,13 @@ static int overlay_click(int x, int y)
 /* Window hook, before anything else. Returns 1 when the message was ours. */
 int overlay_message(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
+    int key = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+    /* BINDS page (bindings.c): waiting for a new key takes every key first (it refuses F9 F10 F11 itself) */
+    if (g_open && g_page == 3 && key && bindings_panel_capturing()) { bindings_panel_key((int)wp); return 1; }
+    if (g_open && key && wp == VK_TAB) {                                 /* Tab / Shift+Tab: the next / previous tab */
+        g_page = (g_page + ((GetKeyState(VK_SHIFT) & 0x8000) ? PAGES - 1 : 1)) % PAGES;
+        return 1;
+    }
     if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wp == VK_F9) { menu_toggle_crt(); return 1; }
     if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wp == VK_F10) {   /* F10 would open the menu bar */
         /* F10 = Mod Settings in the game's menus (modmenu.c); Shift + F10 = this overlay (CONTROLS / KEYS pages) */
@@ -188,8 +197,8 @@ int overlay_message(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (layout_view_is_gameplay() || g_open) set_open(!g_open);
         return 1;
     }
-    if (g_open && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && modern_key_capturing()) { modern_key_pressed((int)wp); return 1; }
     if (msg == WM_KEYDOWN && wp == VK_ESCAPE && g_open) { set_open(0); return 1; }
+    if (g_open && g_page == 3 && key && bindings_panel_key((int)wp)) return 1;   /* arrows, Enter, Delete, Space */
     if (msg == WM_LBUTTONDOWN && layout_view_is_gameplay()) {
         POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
         view_client_to_game(&p);
@@ -209,7 +218,9 @@ void panel_draw(Surf *b)
     const char *const *keys = !g_cfg.controls_modern ? KEYS_CLASSIC : KEYS_MODERN;
     int nkeys = !g_cfg.controls_modern ? NLINES(KEYS_CLASSIC) : NLINES(KEYS_MODERN);
     int panel_w = 420;
-    int rows = g_page == 1 ? nkeys : g_page == 2 ? modern_count() : g_page == 3 ? modern_key_count() + 1 : ROWS + 2;
+    int hud_top = layout_hud_top();                                   /* BINDS: kept above the HUD (the upscaled HUD covers what is under it) */
+    if (hud_top < 200 || hud_top > b->h) hud_top = b->h;
+    int rows = g_page == 1 ? nkeys : g_page == 2 ? modern_count() : g_page == 3 ? bindings_panel_rows((hud_top - 40 - PAD * 2 - ROW_H - 6) / ROW_H) : ROWS + 2;
     int h = PAD * 2 + ROW_H + 4 + rows * ROW_H;
     int x0 = (g_cfg.width - panel_w) / 2, y0 = 40;
     if (x0 < 0 || x0 + panel_w > b->w || y0 + h > b->h) return;
@@ -223,7 +234,7 @@ void panel_draw(Surf *b)
         }
     }
     int clip[2] = { panel_w - 2 * PAD, ROW_H };
-    static const char *const TABS[PAGES] = { "SETTINGS", "CONTROLS", "MODERN", "KEYS" };
+    static const char *const TABS[PAGES] = { "SETTINGS", "CONTROLS", "MODERN", "BINDS" };
     for (int t = 0; t < PAGES; t++) {
         char tab[24];
         wsprintfA(tab, t == g_page ? ">%s<" : " %s", TABS[t]);
@@ -243,12 +254,8 @@ void panel_draw(Surf *b)
         }
         return;
     }
-    if (g_page == 3) {                          /* KEYS: the mod's own keys; click, then press the new key */
-        hud_draw_string_original(b, x0 + PAD, y0 + PAD + ROW_H + 4, "Click a row, then press the new key (Esc cancels)", font, clip, colour);
-        for (int i = 0; i < modern_key_count(); i++) {
-            modern_key_text(i, buf, sizeof buf);
-            hud_draw_string_original(b, x0 + PAD, y0 + PAD + ROW_H + 4 + (i + 1) * ROW_H, buf, font, clip, colour);
-        }
+    if (g_page == 3) {                          /* BINDS: every action's keyboard / mouse binding (bindings.c) */
+        bindings_panel_draw(b, x0 + PAD, y0 + PAD + ROW_H + 4, panel_w - 2 * PAD, font, colour);
         return;
     }
     for (int i = 0; i < rows; i++) {
@@ -285,4 +292,12 @@ int panel_row_of(const int *value)
 {
     for (int i = 0; i < ROWS; i++) if (g_rows[i].value == value) return i;
     return -1;
+}
+
+/* controls.c (WM_MOUSEWHEEL): the wheel while the panel is open scrolls the BINDS page, never changes weapons */
+int panel_wheel(int delta)
+{
+    if (!g_open) return 0;
+    if (g_page == 3) bindings_panel_wheel(delta);
+    return 1;
 }

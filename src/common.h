@@ -544,13 +544,62 @@ int panel_row_value(int i);
 void panel_row_set(int i, int on);
 void panel_speed_cycle(void);
 void panel_zoom_cycle(void);
-void modern_keys_load(void);
-int modern_key(int k);
-int modern_key_count(void);
-void modern_key_text(int k, char *buf, int n);
-void modern_key_capture(int k);
-int modern_key_capturing(void);
-int modern_key_pressed(int vk);
+int modern_key(int k);                     /* modern.c: the keyboard key (VK) of an MK_* key - now from bindings.c */
+
+/* bindings.c (2026-11-20): every modern-controls action with a keyboard and a mouse binding ([bindings] in the
+ * ini, F10 panel BINDS page). Order = the BINDS page; append-only is not needed (ini names are the keys). */
+enum { ACT_UP, ACT_LEFT, ACT_DOWN, ACT_RIGHT, ACT_SPRINT, ACT_SLOW,
+       ACT_KNEEL,          /* one stance down: stand -> kneel -> prone (tap C / click Sarge) */
+       ACT_PRONE,          /* straight to prone (hold C / double-click Sarge) */
+       ACT_STAND,          /* stand up (double-tap C / click prone Sarge) */
+       ACT_DIVE, ACT_ROLL,
+       ACT_WEAPON1, ACT_WEAPON2, ACT_WEAPON3, ACT_WEAPON4, ACT_WEAPON5, ACT_WEAPON6,
+       ACT_NEXT_WEAPON, ACT_PREV_WEAPON, ACT_QUICK_SWAP, ACT_DROP, ACT_SPECIAL, ACT_ENTER, ACT_MAP, ACT_OBJECTIVE,
+       ACT_RADIAL, ACT_PING, ACT_STATS, ACT_PEEK, ACT_RESTART,
+       ACT_COUNT };
+/* Input-aware hints (for any hint / tip code):
+ *   controls_last_device()  0 = the mouse, 1 = the keyboard was used last for an action (gameplay)
+ *   controls_hint_input(a)  how to do action a on that device with the CURRENT bindings, e.g.
+ *                           ACT_PRONE -> "double-click Sarge" / "hold C", ACT_DIVE -> "click mouse button 4" /
+ *                           "press Space"; falls back to the other device when there is no way on this one;
+ *                           "" for an unknown action. Static text, valid until the 8th next call. */
+int controls_last_device(void);
+const char *controls_hint_input(int action);
+void bindings_note_device(int keyboard);                  /* controls.c: a mouse button / key was used */
+void bindings_poll(DWORD now, int mouse_ok, int paused);  /* controls.c: once per gameplay frame */
+void bindings_reset_state(void);                          /* controls.c: gameplay (re)started - held inputs ignored */
+int bindings_pressed(int action);                         /* one-shot action this frame */
+int bindings_held(int action);                            /* continuous action held now */
+int bindings_from_mouse(int action);                      /* ... it came from the mouse binding */
+int bindings_source_vk(int action);                       /* ... the input (VK) that gave it */
+int bindings_vk(int action, int slot);                    /* active binding VK (slot 0 keyboard, 1 mouse), 0 = none */
+int bindings_direct(int action);                          /* game key-table action the game reads directly */
+int bindings_key_diks(int action, BYTE out[2]);           /* DIK scan code(s) of the keyboard binding */
+int bindings_vk_diks(int vk, BYTE out[2]);
+int bindings_reserved_dik(int dik);                       /* any active keyboard binding uses this scan code */
+void bindings_hide(BYTE *keys);                           /* kb_get_state: our keys out of the game's state */
+int bindings_mk_vk(int mk);
+void bindings_text(int action, char *s, int n);           /* "C", "C:hold", "-" */
+void bindings_reset_defaults(void);
+int bindings_panel_rows(int max_rows);                    /* panel.c BINDS page */
+void bindings_panel_draw(Surf *b, int x, int y, int w, int font, int colour);
+int bindings_panel_key(int vk);
+int bindings_panel_click(int x, int y);
+void bindings_panel_wheel(int delta);
+int bindings_panel_capturing(void);
+void controls_bindings_changed(void);                     /* controls.c: bindings edited - the game's keys again */
+/* controls.c: stance commands (stance radial, hints): 0 stand, 1 kneel, 2 prone, 3 dive, 4 roll left, 5 roll right */
+enum { STANCE_CMD_STAND, STANCE_CMD_KNEEL, STANCE_CMD_PRONE, STANCE_CMD_DIVE, STANCE_CMD_ROLL_L, STANCE_CMD_ROLL_R, STANCE_CMD_COUNT };
+void controls_stance_command(int cmd);
+int controls_radial_on_sarge(void);                       /* controls.c: the radial being opened started on Sarge */
+/* controls.c: the drag stance picker (press on Sarge + drag): Sarge's world feet, selected 0 stand / 1 kneel /
+ * 2 prone, current pose the same way; 0 = not shown */
+int controls_stance_picker(int *wx, int *wy, int *sel, int *cur);
+#define STANCE_PICKER_BASE 34   /* px above Sarge's feet: centre of the lowest box (PRONE); KNEEL, STAND above it */
+#define STANCE_PICKER_STEP 15   /* px between the box centres */
+#define STANCE_PICKER_W    50   /* box width */
+#define STANCE_PICKER_DRAG 12   /* px of vertical drag from the press on Sarge that opens the picker */
+int panel_wheel(int delta);                               /* panel.c: wheel while the F10 panel is open (1 = used) */
 void modern_note_hit(BYTE *item);           /* bullets.c: Sarge's projectile stopped at item */
 void modern_lane(float out[4]);              /* modern.c: mission path band colours (palette indices) + opacity, for gpu.c */
 void modern_note_shot(void);                /* controls.c: Sarge fired */
@@ -562,7 +611,7 @@ void __cdecl modern_shake(void);            /* the game's shake call (patches.c)
 int modern_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);   /* window hook (ddraw.c) */
 void modern_palette(Pal *p, DWORD start, DWORD n);             /* ddraw.c after SetEntries */
 const ModPad *modern_pad(void);
-void modern_radial(int open, int px, int py);
+void modern_radial(int open, int px, int py);       /* the radial menu; opened while controls_radial_on_sarge() = the stance ring */
 int modern_radial_open(void);
 void modern_draw(Surf *b);                  /* hud.c finished frame */
 int controls_hover_range(int *range);       /* controls.c: an enemy is hovered: weapon range (world px) */
@@ -679,3 +728,4 @@ void minimap_draw(Surf *b);                                           /* hud.c f
 void minimap_draw_tip(Surf *b);                                       /* hud.c finished frame: tooltip of the blip under the pointer */
 int minimap_hovering(void);                                           /* tips.c: a blip is under the pointer */
 int panel_row_of(const int *value);                                   /* panel.c: row switching that value (modmenu.c) */
+void bindings_short(int action, char *s, int n);   /* bindings.c: "C", "hold C", "2x C", "Mouse4", "" */
