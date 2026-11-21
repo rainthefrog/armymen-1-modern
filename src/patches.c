@@ -316,6 +316,10 @@ void patches_apply(void)
      * turning with the hull (skipped for Sarge's turret while turret_smooth: it keeps its aim). Inactive while off. */
     hook_call("vehicles: VehicleUpdate (call 0x419c52) -> vehicles.c", 0x419c52, 0x4176f0, (void *)vehicles_update);
     hook_call("vehicles: VehicleLockTurret (call 0x417ce8) -> vehicles.c", 0x417ce8, 0x417eb0, (void *)vehicles_turret_lock);
+    /* aware.c (2026-11-20, [modern] enemy_awareness; inactive while off): the trooper tick's sight test (result kept,
+     * recorded when the victim is Sarge) and its fire step (held until the trooper has noticed Sarge) */
+    hook_call("aware: trooper tick sight test (call 0x43ccc3) -> aware.c", 0x43ccc3, 0x43b2e0, (void *)aware_sight_tick);
+    hook_call("aware: trooper tick fire step (call 0x43d05b) -> aware.c", 0x43d05b, 0x43d0d0, (void *)aware_fire_step);
 
     {   /* [gameplay] resume_wait_ms (2026-11-20, stutter hunt; default 100 = the original, nothing patched).
          * Entering play - about 50 frames into every mission, and each time a menu / pause closes - the game sets

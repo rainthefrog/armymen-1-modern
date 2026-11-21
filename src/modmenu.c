@@ -131,14 +131,14 @@ static const Item COMBAT[] = {
     { "Barricade rules", 0, 3 }, { "Enemies use them", 0, 11 }, { "Corner shots", 0, 12 }, { "Leg hits", 0, 13 },
     { "Downhill hits", 0, 14 }, { "Longer range", 0, 17 }, { "No corner squash", 0, 20 }, { "Health regen", 0, 2 }, { "Half damage", 1, MOD_HALF_DAMAGE },
     { "Aim assist", 1, MOD_AIM_ASSIST }, { "Hit markers", 1, MOD_HIT_MARKERS }, { "Damage direction", 1, MOD_DAMAGE_DIR },
-    { "Health bars", 1, MOD_HEALTH_BARS }, { "Enemy vehicles", 0, 23 }, { "Vehicle bail-out", 3, 4 },
+    { "Health bars", 1, MOD_HEALTH_BARS }, { "Enemy vehicles", 0, 23 }, { "Vehicle bail-out", 3, 4 }, { "Enemy awareness", 3, 5 },
 };
 static const Item MENUS[] = {
     { "Sharp menu text", 0, 19 }, { "Buttons press in", 0, 16 }, { "Radio overlay", 0, 21 },
 };
 /* minimap.c switches: source 3 = the panel.c row holding that value (found by its pointer, so the row index
  * does not matter - rows appended by other features before them do not shift these) */
-static int *const MM_VALUE[] = { &g_cfg.mm_blips, &g_cfg.mm_sarge, &g_cfg.mm_contrast, &g_cfg.mm_hover, &g_cfg.vehicle_bailout };
+static int *const MM_VALUE[] = { &g_cfg.mm_blips, &g_cfg.mm_sarge, &g_cfg.mm_contrast, &g_cfg.mm_hover, &g_cfg.vehicle_bailout, &g_cfg.enemy_awareness };
 static const Item MINIMAP[] = {
     { "Bigger blips", 3, 0 }, { "Sarge marked", 3, 1 }, { "Map contrast", 3, 2 }, { "Hover details", 3, 3 },
     { "Minimap size", 2, 2 },
