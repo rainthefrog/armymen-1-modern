@@ -76,6 +76,15 @@ void tips_draw(Surf *b)
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = sy + 18;
     if (y0 + h > b->h) y0 = b->h - h;
+    /* 2026-11-20 (user screenshot, "briefing BG looks weird"): the briefing tip sat ON the objectives box - shaded twice
+     * over its dark box and covering its first line. It goes right under the box instead. */
+    RECT ob;
+    if (objectives_box(&ob) && sx >= ob.left && sx < ob.right && sy >= ob.top && sy < ob.bottom) {
+        x0 = ob.left; y0 = ob.bottom + 3;
+        if (x0 + w > b->w) x0 = b->w - w;
+        if (x0 < 0) x0 = 0;
+        if (y0 + h > b->h) y0 = b->h - h;
+    }
     BYTE *shade = *(BYTE **)0x4e2448;                      /* x0.40 shade table */
     for (int y = y0; y < y0 + h; y++) {
         BYTE *row = b->bits + (size_t)y * b->pitch;
