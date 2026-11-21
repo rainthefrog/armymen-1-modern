@@ -784,6 +784,18 @@ void minimap_picture_drawn(void *back, const void *pic, int px, int py, int w, i
 void minimap_draw(Surf *b);                                           /* hud.c finished frame: blips over the enlarged minimap */
 void minimap_draw_tip(Surf *b);                                       /* hud.c finished frame: tooltip of the blip under the pointer */
 int minimap_hovering(void);                                           /* tips.c: a blip is under the pointer */
+int minimap_world_at(int x, int y, int *wx, int *wy);                 /* minimap.c: game-screen point on the minimap -> world px */
+/* orders.c (2026-11-21): ATTACK / DEFEND pick their target with the command cursor; command targets via the minimap */
+typedef void (__fastcall *CommandClickFn)(int confirm);
+extern CommandClickFn orders_command_click_original;                  /* FUN_00441000 trampoline */
+void __fastcall orders_command_click(int confirm);                    /* FUN_00441000 wrap */
+void __cdecl orders_attack_key(void);                                 /* rewrite of 0x460dd0 (F2, HUD, radial) */
+void __cdecl orders_defend_key(void);                                 /* rewrite of 0x460e00 (F3, HUD, radial) */
+void orders_set_pick(int mode, int on, const char *why);              /* picking state for mode 2 / 3 on / off */
+int orders_picking(void);                                             /* the command cursor picks a spot now */
+int orders_minimap_click(int x, int y);                               /* controls.c: left press on the minimap while picking */
+int orders_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);           /* window hook: Esc cancels picking */
+const char *orders_pick_label(void);                                  /* tips.c: the pointer label while picking */
 int panel_row_of(const int *value);                                   /* panel.c: row switching that value (modmenu.c) */
 void bindings_short(int action, char *s, int n);   /* bindings.c: "C", "hold C", "2x C", "Mouse4", "" */
 void squad_frame(void);                                               /* squad.c: per gameplay frame, who of the squad sprints */

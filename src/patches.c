@@ -346,6 +346,14 @@ void patches_apply(void)
     static const BYTE uorder_o[] = { 0x81,0xec,0xcc,0x00,0x00,0x00 };            /* FUN_0041b990: sub esp,0CCh */
     patrol_order_original = (UnitOrderFn)hook_wrap("patrol: UnitOrders (FUN_0041b990) -> patrol.c", 0x41b990, uorder_o, sizeof uorder_o,
                                                (void *)patrol_order);
+    /* orders.c (2026-11-21): the Attack / Defend key handlers 0x460dd0 / 0x460e00 rewritten (picking state, nearest squad,
+     * same key = cancel), the command click FUN_00441000 wrapped (refused from a HUD / minimap press; order log) */
+    static const BYTE atk_o[] = { 0xa1,0x5c,0x19,0x69,0x00 };                  /* 0x460dd0 / 0x460e00: mov eax,[0069195C] */
+    hook_jmp("orders: Attack key (0x460dd0) -> orders.c", 0x460dd0, atk_o, sizeof atk_o, (void *)orders_attack_key);
+    hook_jmp("orders: Defend key (0x460e00) -> orders.c", 0x460e00, atk_o, sizeof atk_o, (void *)orders_defend_key);
+    static const BYTE cclick_o[] = { 0x51,0x56,0x8b,0xf1,0x33,0xc9 };          /* FUN_00441000: push ecx; push esi; mov esi,ecx; xor ecx,ecx */
+    orders_command_click_original = (CommandClickFn)hook_wrap("orders: command click (FUN_00441000) -> orders.c", 0x441000, cclick_o,
+                                                              sizeof cclick_o, (void *)orders_command_click);
     /* audio.c (2026-11-21, [audio] am2_sounds; original sounds while off): in the effect buffer create FUN_0040f390,
      * the wave record lookup FUN_004107b0 (swapped for a copy with the Army Men II sound's size / format) and the
      * fread of the sound data (filled from <game>\am2_sounds instead of sounds.asd) */

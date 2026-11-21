@@ -946,6 +946,14 @@ static int air_support_row(int gx, int gy)
 static const uintptr_t SQUAD_HANDLER[3] = { 0x460dc0, 0x460dd0, 0x460e00 };   /* follow, attack, defend */
 #define NEXT_UNIT_HANDLER 0x460ee0
 
+static int g_air_pending = -1;     /* strike / paratroop HUD box pressed: switch on at the release */
+static int g_air_was_on, g_air_was_mode;   /* target mode on / its mode (5 strike, 6 paratroop) at that press */
+static int g_cmd_prev_on, g_cmd_prev_mode;   /* the same at the end of the last frame (the game's own HUD click may
+                                                have toggled it already in the frame of the press) */
+static int g_squad_pending;        /* ATTACK / DEFEND row pressed: its picking mode (2 / 3), switched at the release */
+static int g_squad_was_on, g_squad_was_mode;
+#define COMMAND_MODE (*(volatile int *)0x696ec8)
+
 static int squad_click(int x, int y)
 {
     int gx, gy;
@@ -953,7 +961,14 @@ static int squad_click(int x, int y)
     layout_pointer_to_game(x, y, &gx, &gy);
     if (gx >= SQUAD_X0 && gx < SQUAD_X1 && gy >= SQUAD_Y0 && gy < SQUAD_Y0 + 3 * SQUAD_ROW) {
         int row = (gy - SQUAD_Y0) / SQUAD_ROW;
-        ((VoidFnPtr)SQUAD_HANDLER[row])();
+        if (row > 0) {
+            /* ATTACK / DEFEND (2026-11-21, user: "defend/attack should move into those states so that I can select
+             * targets"): the picking state (orders.c) is set at the RELEASE, like the air box - set at the press, the
+             * game's own click for that same press could take it as the target click. Was on in this mode before the
+             * press = cancel (click the row again). */
+            g_squad_pending = row == 1 ? 2 : 3;
+            g_squad_was_on = g_cmd_prev_on; g_squad_was_mode = g_cmd_prev_mode;
+        } else ((VoidFnPtr)SQUAD_HANDLER[row])();
         if (g_cfg.log >= 1) mlog("controls: HUD squad command %d clicked", row);
         return 1;
     }
@@ -964,12 +979,6 @@ static int squad_click(int x, int y)
     }
     return 0;
 }
-
-static int g_air_pending = -1;     /* strike / paratroop HUD box pressed: switch on at the release */
-static int g_air_was_on, g_air_was_mode;   /* target mode on / its mode (5 strike, 6 paratroop) at that press */
-static int g_cmd_prev_on, g_cmd_prev_mode;   /* the same at the end of the last frame (the game's own HUD click may
-                                                have toggled it already in the frame of the press) */
-#define COMMAND_MODE (*(volatile int *)0x696ec8)
 static int air_support_click(int x, int y)
 {
     int gx, gy;
@@ -1274,6 +1283,31 @@ static void stance_goto(BYTE *u, int pose, DWORD now, const char *why)
     g_stance_why = why;
     if (g_cfg.log >= 2) mlog("controls: stance %s -> %s (%s)", pose_name(SARGE_POSE(u)), pose_name(pose), why);
 }
+/* Sarge's stance while picking a command target (2026-11-21, user: "sarge gets stuck in kneeling position when
+ * 'defending' to select target"). Switching the command cursor on (Attack / Defend / Air strike / Paratroop handlers
+ * 0x440be0 / 0x440c70 / 0x440dc0 / 0x440d30 -> FUN_00447400) sets Sarge's target pose +0x6c = POSE_RADIO (0xe, the
+ * crouched radio pose; state 14) with the change flag +0x70; only the command CLICK of the original stands him up again
+ * (0x440800 / Fire key -> FUN_00447440: pose 0xc). Cancelling (right click, Esc, the key / box again) left him in the
+ * radio pose, where neither the stance steps (stance_update knows only stand / kneel / prone) nor walking got him out.
+ * Now: the pose he had before picking is kept - the radio pose is replaced by it at once (the game's own mechanism:
+ * target pose + change flag, as FUN_00447400 / FUN_00447440 do) - and when picking ends that pose is put back (also
+ * over FUN_00447440's stand-up). */
+#define POSE_RADIO 0xe
+static void command_pose(BYTE *u)
+{
+    static int before = POSE_STAND, was_picking;
+    int picking = COMMAND_CURSOR == 1, pose = SARGE_POSE(u);
+    if (SARGE_VEHICLE(u)) { was_picking = picking; return; }
+    if (picking && pose == POSE_RADIO) {
+        SARGE_POSE(u) = before; SARGE_POSING(u) = 1;
+        if (g_cfg.log >= 1) mlog("controls: command cursor on - Sarge keeps his stance (%s), no radio pose", pose_name(before));
+    } else if (!picking && was_picking && (pose != before || pose == POSE_RADIO)) {
+        SARGE_POSE(u) = before; SARGE_POSING(u) = 1;
+        if (g_cfg.log >= 1) mlog("controls: command cursor off - Sarge back to %s (was pose %d)", pose_name(before), pose);
+    } else if (!picking && pose_rank(pose) >= 0) before = pose;
+    was_picking = picking;
+}
+
 /* one step down; lying: stand up (the click on Sarge since 2026-11-17, now also tap C) */
 static void stance_cycle(BYTE *u, DWORD now, const char *why)
 {
@@ -2129,9 +2163,15 @@ static void apply_modern_controls(void)
     static int lheld_before;
     if (lheld && !lheld_before && !field) {       /* a click on the interface: air support, a weapon box? */
         int ux, uy;
-        if (pointer_in_window(&ux, &uy) && !air_support_click(ux, uy) && !squad_click(ux, uy)) weapons_click_at(ux, uy);
+        /* picking a command target: the minimap = that spot, anywhere on the map (orders.c, 2026-11-21) */
+        if (pointer_in_window(&ux, &uy) && !orders_minimap_click(ux, uy) && !air_support_click(ux, uy) && !squad_click(ux, uy))
+            weapons_click_at(ux, uy);
     }
     lheld_before = lheld;
+    if (g_squad_pending && !lheld) {             /* the ATTACK / DEFEND row was let go: picking on (or cancelled) */
+        orders_set_pick(g_squad_pending, !(g_squad_was_on && g_squad_was_mode == g_squad_pending), "HUD box");
+        g_squad_pending = 0;
+    }
     if (g_air_pending >= 0 && !lheld) {          /* the strike / paratroop HUD box was let go: target mode on now */
         /* 2026-11-20 (user: "air strike UI does not enable the air strike state. and it needs to be cancellable ...
          * cancel via clicking again on the UI"): the handler TOGGLES (FUN_0043f6c0) - when the game's own HUD click
@@ -2149,7 +2189,7 @@ static void apply_modern_controls(void)
              COMMAND_CURSOR, COMMAND_MODE);
         g_air_pending = -1;
     }
-    if (g_air_pending < 0) { g_cmd_prev_on = COMMAND_CURSOR == 1; g_cmd_prev_mode = COMMAND_MODE; }
+    if (g_air_pending < 0 && !g_squad_pending) { g_cmd_prev_on = COMMAND_CURSOR == 1; g_cmd_prev_mode = COMMAND_MODE; }
     static int rheld_before;
     int rpressed = rheld || (rstate & 1);
     if (rpressed && !rheld_before && !field) {       /* right click on the interface: drop that weapon */
@@ -2210,6 +2250,7 @@ static void apply_modern_controls(void)
         if (bindings_pressed(ACT_PRONE)) stance_goto(u, POSE_PRONE, now, bindings_from_mouse(ACT_PRONE) ? "prone button" : "prone key (hold)");
         if (bindings_pressed(ACT_STAND)) stance_goto(u, POSE_STAND, now, bindings_from_mouse(ACT_STAND) ? "stand button" : "stand key (double-tap)");
     }
+    command_pose(u);
     g_mid_radial = 0;
     modern_controls(u, sx, sy, &px, &py, &pointer, &field, &left, &right, &kx, &ky, now);
     {                                                             /* sprint: Shift (or its toggle) */
@@ -2236,20 +2277,20 @@ static void apply_modern_controls(void)
             /* the game's own click handlers (0x440880 left -> FUN_00441000 ecx 1, 0x4411c0 right -> ecx 0) still run
              * and act on the game cursor: keep it on the pointer, and click ourselves only if the game has not
              * acted a few frames after a press (else it launched twice) */
-            static int cl_was, cr_was, wait_l, wait_r;
+            static int cl_was, cr_was, wait_l, wait_r, mode_l;
             static DWORD seen_at;
             if (now - seen_at > 200) { wait_l = wait_r = 0; cl_was = left; cr_was = right; }   /* mode just started */
             seen_at = now;
-            int cl = left && !cl_was, cr = right && !cr_was;
+            int cl = left && !cl_was, cr = (right && !cr_was) || right_quick_click;   /* a quick right click too (2026-11-21: pressed and let go between two frames it did not cancel) */
             cl_was = left; cr_was = right;
             if (pointer && field) {             /* the game cursor AND ours (the camera pans with it: the gunsight
                                                    routine that normally keeps S.cursor current does not run here) */
                 CURSOR_X = px; CURSOR_Y = py;
                 S.cursor_x = px; S.cursor_y = py; S.have_cursor = 1;
             }
-            if (cl && pointer && field) { wait_l = 3; mlog("controls: air support target at %d,%d (mode %d)", px + CAMERA_X, py + CAMERA_Y, *(int *)0x696ec8); }
+            if (cl && pointer && field) { wait_l = 3; mode_l = COMMAND_MODE; mlog("controls: command target click at %d,%d (mode %d)", px + CAMERA_X, py + CAMERA_Y, *(int *)0x696ec8); }
             else if (cr) wait_r = 3;
-            if (wait_l && --wait_l == 0 && COMMAND_CURSOR == 1) { ((UnitFn)COMMAND_CLICK)((BYTE *)1); mlog("controls: air support: the game did not take the click - sent"); }
+            if (wait_l && --wait_l == 0 && COMMAND_CURSOR == 1 && COMMAND_MODE == mode_l) { ((UnitFn)COMMAND_CLICK)((BYTE *)1); mlog("controls: air support: the game did not take the click - sent"); }
             if (wait_r && --wait_r == 0 && COMMAND_CURSOR == 1) { ((UnitFn)COMMAND_TOGGLE)(NULL); mlog("controls: air support cancelled"); }
             g_hide_reticle = 0; g_cursor_kind = -1;
             S.right_was_down = right; S.left_was_down = 0; S.lmode = LM_NONE;
@@ -3161,7 +3202,6 @@ void controls_reset(void)
 #define LOB_CAMERA_LEAD 0.5                    /* camera lead toward the pointer with a grenade / mortar: at least */
 #define LOB_CAMERA_LEAD_MAX 4.0                /* ... at most */
 #define LOB_EDGE_MARGIN 64                     /* px: the longest throw this far inside the view edge / HUD top */
-#define AIR_TARGET_REACH 700                   /* px: picking an air support target, the window edge reaches this far */
 #define LOB_CAMERA_REACH_MIN 200               /* world px the window edge reaches at least */
 #define LOB_START_AHEAD 25                     /* the shell starts ~25 px ahead of Sarge (lob_start) */
 
@@ -3436,6 +3476,87 @@ static double lead_solve(const LeadK *K, int axis, double want)
     return (lo + hi) / 2;
 }
 
+/* ---- the camera while picking a command target (attack / defend / air strike / paratroopers; 2026-11-21)
+ * User: "these are also jumping" and "take off the limit for the distance ... should be able to do this anywhere on the
+ * map". The pick camera used a long lead toward the pointer (the window edge AIR_TARGET_REACH 700 px away): when picking
+ * started, and whenever the pointer moved, the view swung by up to 4x the pointer's offset while the pointer kept its
+ * screen spot, so the spot under it ran away - and nothing beyond ~700 px could be picked.
+ * Now, while the command cursor is on (0x4b8a88 = 1):
+ *   - the camera stays where it was when picking started (no lead, no spring, Sarge walking does not move it), so the
+ *     world point under a still pointer never moves by itself;
+ *   - it scrolls only when the player pushes the pointer into the edge band (PICK_EDGE_PX from the window edge or just
+ *     above the HUD panel) and keeps it there pick_dwell (= [controls] lob_dwell_ms, default 300) - so crossing the band
+ *     on the way to the HUD does not scroll - at PICK_SCROLL_MIN rising to PICK_SCROLL_MAX px/s, to any spot of the map
+ *     (the original map clamp only);
+ *   - a minimap click picks that spot directly (controls_dispatch_body -> orders.c orders_minimap_click).
+ * Afterwards the camera eases back to Sarge with the normal spring (no CAM_SNAP_DIST jump) for up to PICK_RETURN_MS.
+ * Returns 1 while easing back. In: pick (the command cursor is on), fhave (fx / fy valid), dt (ms), goal gx / gy. */
+#define PICK_EDGE_PX        24                 /* game px: the edge band that scrolls the pick camera */
+#define PICK_SCROLL_MIN     500.0              /* px/s when the scroll starts */
+#define PICK_SCROLL_MAX     1600.0             /* px/s after PICK_SCROLL_RAMP_MS in the band */
+#define PICK_SCROLL_RAMP_MS 1200
+#define PICK_RETURN_MS      2000               /* easing back to Sarge afterwards: at most this long without a snap */
+static struct { int on, band, returning; double cx, cy; DWORD band_since, return_at, log_at; } P;
+
+/* the edge the pointer pushes: -1 / 0 / 1 per axis (game-screen px; not over the interface itself) */
+static int pick_edge(int *dx, int *dy)
+{
+    int x, y, b = PICK_EDGE_PX;
+    *dx = *dy = 0;
+    if (!pointer_in_window(&x, &y) || ui_at(x, y)) return 0;
+    if (x < b) *dx = -1; else if (x >= g_cfg.width - b) *dx = 1;
+    if (y < b) *dy = -1; else if (y >= g_cfg.height - b || layout_on_hud_panel(x, y + b)) *dy = 1;
+    return *dx || *dy;
+}
+
+/* camera centre c kept so the view (with the picture shift room at the map bottom) stays on the map */
+static double pick_clamp(double c, int lo, int hi, int view, double room)
+{
+    if (hi - lo <= view) return (lo + hi) / 2.0;
+    return clampd(c, lo + view / 2.0, hi - view / 2.0 - 1 + room);
+}
+
+static int pick_camera(int pick, int fhave, double dt, double *fx, double *fy, double gx, double gy)
+{
+    DWORD now = GetTickCount();
+    if (!pick) {
+        if (P.on) { P.on = 0; P.returning = 1; P.return_at = now; if (g_cfg.log >= 1) mlog("pick camera: off, easing back to Sarge"); }
+        if (P.returning && (fabs(gx - *fx) + fabs(gy - *fy) < 4 || now - P.return_at > PICK_RETURN_MS)) P.returning = 0;
+        return P.returning;
+    }
+    int wide = g_cfg.width > LAYOUT_DESIGN_W;
+    double off = wide ? HUD_COVER_H / 2 : 0;
+    if (!P.on) {
+        P.on = 1; P.band = 0; P.returning = 0;
+        P.cx = fhave ? *fx : gx; P.cy = fhave ? *fy : gy;         /* where the camera is now: picking starts without a move */
+        int px, py;
+        if (g_cfg.log >= 1) {
+            if (pointer_on_battlefield(&px, &py)) mlog("pick camera: on, centre %.1f,%.1f, pointer world %d,%d", P.cx, P.cy, px + CAMERA_X, py + CAMERA_Y);
+            else mlog("pick camera: on, centre %.1f,%.1f", P.cx, P.cy);
+        }
+    }
+    int ex, ey;
+    if (pick_edge(&ex, &ey)) {
+        if (!P.band) { P.band = 1; P.band_since = now; }
+        DWORD in = now - P.band_since;
+        if (in >= (DWORD)lob_dwell_ms() && dt > 0 && dt < 250) {
+            double t = clampd((in - lob_dwell_ms()) / (double)PICK_SCROLL_RAMP_MS, 0, 1);
+            double v = (PICK_SCROLL_MIN + (PICK_SCROLL_MAX - PICK_SCROLL_MIN) * t) * dt / 1000.0;
+            P.cx += ex * v; P.cy += ey * v;
+        }
+    } else P.band = 0;
+    P.cx = pick_clamp(P.cx, BOUND_L, MAP_W, VIEW_W, 0);
+    P.cy = pick_clamp(P.cy + off, BOUND_T, MAP_H, VIEW_H, wide ? HUD_COVER_H : 0) - off;
+    *fx = P.cx; *fy = P.cy;
+    if (g_cfg.log >= 2 && now - P.log_at >= 100) {                /* testing: the world point under the pointer */
+        int px, py;
+        P.log_at = now;
+        if (pointer_on_battlefield(&px, &py))
+            mlog("pick camera: centre %.1f,%.1f edge %d,%d pointer %d,%d world %d,%d", P.cx, P.cy, ex, ey, px, py, px + CAMERA_X, py + CAMERA_Y);
+    }
+    return 0;
+}
+
 static void controls_camera_body(void)
 {
     /* The camera is locked to Sarge (as the original is): only the LEAD toward the pointer is eased.
@@ -3463,20 +3584,19 @@ static void controls_camera_body(void)
      * to the normal lead (user 2026-11-17; it snapped until 2026-11-21); the grenade always */
     int lob = !SARGE_VEHICLE(u) && weapon_is_hold_to_aim(u) && modern_on(MOD_THROW_POINTER) &&
               (SARGE_WEAPON_TYPE(u) != 5 || (SARGE_POSE(u) == POSE_KNEEL && !S.going && !(INPUT & (INPUT_FORWARD | INPUT_BACK))));
-    if (S.have_cursor && g_cfg.controls_camera_lead > 0) {
+    int pick = COMMAND_CURSOR == 1;            /* picking a command target: the pick camera (pick_camera), no lead */
+    if (pick) lob = 0;
+    if (S.have_cursor && g_cfg.controls_camera_lead > 0 && !pick) {
         /* grenade / mortar on foot (user: "when trying to throw grenades below Sarge, the UI gets in the
          * way"): a long lead toward the pointer, and aiming down the camera also slides by up to the HUD
          * panel's height, so the whole throw range shows above the panel (below Sarge only ~H/2 - 94 px
          * were visible, a grenade reaches ~260 px) - only once the pointer rested (g_lob_armed, lob_pointer_frame):
          * switched on at once it threw the pointer's world point far out (user 2026-11-21) */
         double ox = S.cursor_x - VIEW_W / 2.0, oy = S.cursor_y - VIEW_H / 2.0;
-        if (COMMAND_CURSOR == 1) {
-            /* picking an air strike / paratroop target: the view follows the pointer far (to the window edge =
-             * AIR_TARGET_REACH px away) so any spot nearby can be picked - the screen was locked (user) */
-            double lx2 = AIR_TARGET_REACH / (VIEW_W / 2.0) - 1, ly2 = AIR_TARGET_REACH / (VIEW_H / 2.0) - 1;
-            tlx = ox * clampd(lx2, 0.5, LOB_CAMERA_LEAD_MAX);
-            tly = oy * clampd(ly2, 0.5, LOB_CAMERA_LEAD_MAX);
-        } else {
+        /* (picking a command target: no lead - pick_camera. Until 2026-11-21 the view followed the pointer to
+         * AIR_TARGET_REACH 700 px: the spot under the pointer ran away while it stood still - user "these are also
+         * jumping") */
+        {
             LeadK K;
             lead_params(u, lob && g_lob_armed, &K);
             if (L.on) {
@@ -3523,7 +3643,10 @@ static void controls_camera_body(void)
      * stays fractional, so the battlefield still scrolls by sub-pixels (g_subpx). */
     double gx = ex + tlx, gy = ey + tly;
     double T = g_cfg.controls_camera_smooth_ms;
-    if (!fhave || fabs(gx - fx) + fabs(gy - fy) > CAM_SNAP_DIST || dt > 250 || T <= 0) {
+    int returning = pick_camera(pick, fhave, dt, &fx, &fy, gx, gy);
+    if (pick) {
+        fvx = fvy = 0; fhave = 1;              /* the camera is where pick_camera put it: no spring, no lead */
+    } else if (!fhave || (!returning && fabs(gx - fx) + fabs(gy - fy) > CAM_SNAP_DIST) || dt > 250 || T <= 0) {
         fx = gx; fy = gy; fvx = fvy = 0; fhave = 1;
     } else if (dt > 0) {
         double w = 2.0 / T, x = w * dt, e = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);

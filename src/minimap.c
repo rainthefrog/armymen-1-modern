@@ -285,6 +285,29 @@ static void map_rect(RECT *r)
 
 static int hover_find(int sx, int sy, int q, int *out, int max);
 
+/* orders.c (2026-11-21): the world point under game-screen point (x, y) on the minimap picture, 0 when not on it. The
+ * inverse of the pins' mapping (pin = onscreenloc + (world - boundrect) * scale, design px), the design px from the
+ * enlarged picture's frame rectangle (map_rect: layout_hud_point, linear across the piece - the same mapping the blips
+ * and the hover use). Clamped to the boundrect (the part of the map the camera can show). */
+int minimap_world_at(int x, int y, int *wx, int *wy)
+{
+    BYTE *m = CURSTRATMAP;
+    if (!m || IsBadReadPtr(m, 0x60) || !layout_view_is_gameplay()) return 0;
+    RECT r; map_rect(&r);
+    POINT pt = { x, y };
+    if (r.right <= r.left || r.bottom <= r.top || !PtInRect(&r, pt)) return 0;
+    const int *d = ONSCREENMAPRECT, *br = BOUNDRECT;
+    float xs = *(float *)(m + 0x4c), ys = *(float *)(m + 0x50);
+    if (!(xs > 0) || !(ys > 0)) return 0;
+    double dx = d[0] + (x + 0.5 - r.left) * (d[2] - d[0]) / (double)(r.right - r.left);   /* design px (fractional) */
+    double dy = d[1] + (y + 0.5 - r.top) * (d[3] - d[1]) / (double)(r.bottom - r.top);
+    int X = br[0] + (int)floor((dx - *(short *)(m + 0x5c)) / xs);
+    int Y = br[1] + (int)floor((dy - *(short *)(m + 0x5e)) / ys);
+    *wx = X < br[0] ? br[0] : X >= br[2] ? br[2] - 1 : X;
+    *wy = Y < br[1] ? br[1] : Y >= br[3] ? br[3] - 1 : Y;
+    return 1;
+}
+
 /* testing aid ([debug] minimap_debug=1): once a second the pointer, the hovered blip and the blips' frame positions */
 static void debug_log(void)
 {

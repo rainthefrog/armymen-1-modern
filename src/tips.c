@@ -67,6 +67,11 @@ void tips_draw(Surf *b)
     if (minimap_hovering()) { last = NULL; return; }          /* minimap.c shows that blip's details instead */
     const char *t = tip_at(sx, sy);
     DWORD now = GetTickCount();
+    /* picking a command target (orders.c, 2026-11-21): the mode and how to cancel next to the pointer at once - over the
+     * battlefield and over the minimap (a click there = that spot) */
+    const char *pick = orders_pick_label();
+    int wx, wy;
+    if (pick && (!t || minimap_world_at(sx, sy, &wx, &wy))) { t = pick; last = t; since = now - TIP_DELAY_MS; }
     if (t != last) { last = t; since = now; }
     if (!t || now - since < TIP_DELAY_MS) return;
     if (!objectives_font(&font, &colour) || !hud_draw_string_original) return;
