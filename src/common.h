@@ -112,6 +112,7 @@ struct Config {
     int break_fences;               /* [gameplay] break_fences: Sarge's routes cross wooden fences and he breaks them (fences.c) */
     int enemy_awareness;            /* [modern] enemy_awareness: could-see marks, exposure meter, delayed spotting, alerts (aware.c, modern.c) */
     int squad_sprint;               /* [gameplay] squad_sprint: troopers following Sarge sprint with him / to catch up (squad.c) */
+    int am2_sounds;                 /* [audio] am2_sounds: Army Men II sound effects from <game>\am2_sounds (audio.c) */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
     int hud_corners;                /* [hud] corners: message box / minimap in the bottom corners (layout.c) */
     float hud_corner_scale;         /* [hud] corner_scale: 1 .. 3 in quarter steps (default 1.5) */
@@ -771,5 +772,7 @@ int panel_row_of(const int *value);                                   /* panel.c
 void bindings_short(int action, char *s, int n);   /* bindings.c: "C", "hold C", "2x C", "Mouse4", "" */
 void squad_frame(void);                                               /* squad.c: per gameplay frame, who of the squad sprints */
 float squad_sprint_speed(BYTE *anim);                                 /* squad.c (controls.c controls_move): speed factor of this ANIM, 0 = none */
+void audio_find_wave_stub(void);                                      /* audio.c: call 0x40f42d (FUN_004107b0) - Army Men II sound swap */
+size_t __cdecl audio_fread(void *buf, size_t size, size_t count, void *file);   /* audio.c: call 0x40f515 (the effect data read) */
 int controls_sarge_running(void);                                     /* controls.c: Sarge sprints (modern controls) */
 void squad_debug_follow(void);                                        /* squad.c: testing aid, every player unit follows Sarge */
