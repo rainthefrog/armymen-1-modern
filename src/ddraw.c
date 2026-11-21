@@ -85,7 +85,7 @@ void config_load(void)
     g_cfg.turret_smooth = GetPrivateProfileIntA("controls", "turret_smooth", 1, ini);
     g_cfg.vehicle_unstick = GetPrivateProfileIntA("controls", "vehicle_unstick", 1, ini);
     g_cfg.sarge_unstick = GetPrivateProfileIntA("controls", "sarge_unstick", 1, ini);   /* barricades.c (2026-11-20) */
-    g_cfg.break_fences = GetPrivateProfileIntA("gameplay", "break_fences", 1, ini);   /* fences.c (2026-11-20) */
+    g_cfg.break_fences = GetPrivateProfileIntA("gameplay", "break_fences", 0, ini);   /* fences.c (2026-11-20); default off 2026-11-21 (user: "Sarge cannot run through fences - only vehicles") */
     /* aware.c / modern.c (2026-11-20): enemy_awareness groups the enemy alerts; the older key enemy_alerts is the fallback */
     g_cfg.enemy_awareness = GetPrivateProfileIntA("modern", "enemy_awareness", GetPrivateProfileIntA("modern", "enemy_alerts", 1, ini), ini);
     g_cfg.squad_sprint = GetPrivateProfileIntA("gameplay", "squad_sprint", 1, ini);   /* squad.c (2026-11-20) */
