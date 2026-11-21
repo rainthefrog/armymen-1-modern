@@ -82,4 +82,17 @@ if (Test-Path $avi) {
     }
     Write-Host ("copied {0} upscaled videos to hd\AVI\" -f $n)
 }
+# Army Men II sound pack (audio.c, [audio] am2_sounds; made by scripts\am2_sounds.py): REA\am2_sounds\* ->
+# <game>\am2_sounds\ (when newer)
+$snd = Join-Path $root "am2_sounds"
+if (Test-Path $snd) {
+    $sdst = Join-Path $dst "am2_sounds"
+    New-Item -ItemType Directory -Force $sdst | Out-Null
+    $n = 0
+    Get-ChildItem $snd -File -Include *.wav, *.txt -Recurse | ForEach-Object {
+        $t = Join-Path $sdst $_.Name
+        if (-not (Test-Path $t) -or (Get-Item $t).LastWriteTime -lt $_.LastWriteTime) { Copy-Item $_.FullName $t -Force -ErrorAction Stop; $n++ }
+    }
+    Write-Host ("copied {0} Army Men II sound files to am2_sounds\" -f $n)
+}
 Write-Host "Done. The first line of armymen-mod.log shows the build time once the game has started."

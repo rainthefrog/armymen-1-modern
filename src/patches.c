@@ -332,6 +332,11 @@ void patches_apply(void)
     hook_call("aware: trooper tick fire step (call 0x43d05b) -> aware.c", 0x43d05b, 0x43d0d0, (void *)aware_fire_step);
     hook_call("aware: unit target entry set (call 0x43aa03) -> aware.c", 0x43aa03, 0x43aa10, (void *)aware_unit_target);
     hook_call("aware: mission script ATTACK (call 0x4526ab) -> aware.c (log only)", 0x4526ab, 0x41e9c0, (void *)aware_script_attack);
+    /* audio.c (2026-11-21, [audio] am2_sounds; original sounds while off): in the effect buffer create FUN_0040f390,
+     * the wave record lookup FUN_004107b0 (swapped for a copy with the Army Men II sound's size / format) and the
+     * fread of the sound data (filled from <game>\am2_sounds instead of sounds.asd) */
+    hook_call("audio: sfx create, wave record (call 0x40f42d) -> audio.c", 0x40f42d, 0x4107b0, (void *)audio_find_wave_stub);
+    hook_call("audio: sfx create, data fread (call 0x40f515) -> audio.c", 0x40f515, 0x470e00, (void *)audio_fread);
 
     {   /* [gameplay] resume_wait_ms (2026-11-20, stutter hunt; default 100 = the original, nothing patched).
          * Entering play - about 50 frames into every mission, and each time a menu / pause closes - the game sets
