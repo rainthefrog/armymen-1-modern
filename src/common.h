@@ -166,6 +166,7 @@ ViewLayout view_layout(int client_w, int client_h);
 void view_client_to_game(POINT *p);        /* window client pixels -> game pixels */
 void view_game_to_client(POINT *p);
 int view_pixel_scale(void);                /* window pixels per game pixel */
+int view_game_client_linear(double *ax, double *ay, double *kx, double *ky);   /* client = a + k x game (0: zoomed) */
 
 /* What the display thread should show (filled under present_lock). */
 typedef struct {

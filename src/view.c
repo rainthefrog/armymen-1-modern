@@ -146,3 +146,19 @@ int view_pixel_scale(void)
 
 /* modern.c: a video is being shown (any key / click may skip it) */
 int view_is_video(void) { return g_view_is_video; }
+
+/* controls.c (throw camera, moving the pointer with the camera): the exact battlefield game -> client mapping of
+ * view_game_to_client as doubles, client = a + k x game (view_client_to_game rounds the inverse to the nearest game
+ * pixel). 0 while zoomed (zoom.c maps through its own centre: the caller samples instead). */
+int view_game_client_linear(double *ax, double *ay, double *kx, double *ky)
+{
+    if (zoom_active() && zoom_factor() > 1.001f) return 0;
+    ViewLayout L = layout_for_window();
+    int vw = L.view.right - L.view.left, vh = L.view.bottom - L.view.top;
+    if (vw <= 0 || vh <= 0 || L.dest.right <= L.dest.left || L.dest.bottom <= L.dest.top) return 0;
+    *kx = (double)(L.dest.right - L.dest.left) / vw;
+    *ky = (double)(L.dest.bottom - L.dest.top) / vh;
+    *ax = L.dest.left - L.view.left * *kx;
+    *ay = L.dest.top - L.view.top * *ky;
+    return 1;
+}

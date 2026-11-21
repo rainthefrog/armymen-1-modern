@@ -3218,8 +3218,9 @@ static double clamp_centre(double c, int lo, int hi, int view)
  *     with the camera (the Windows pointer by SetCursorPos, in window pixels through the view / zoom mapping; raw
  *     mouse mode also the game cursor, mouse_nudge_cursor), so the world point under it moves only with the player's
  *     own mouse motion and with Sarge himself (as before: a target rides along when Sarge walks). The pointer stays
- *     LOB_POINTER_MARGIN inside the battlefield above the HUD panel; easing back, the camera is held there instead
- *     of pushing the pointer out (for at most LOB_EASE_MAX_MS, then the normal camera takes over smoothly).
+ *     LOB_POINTER_MARGIN inside the battlefield and off the interface; where it cannot follow, the camera is held back
+ *     instead (round 2, 2026-11-21: the pointer was CLAMPED, which moved the aim - user "its still jumping"; easing
+ *     back the hold lasts at most LOB_EASE_MAX_MS, then the normal camera takes over smoothly).
  * Not with the gamepad's right stick (its reticle is placed round Sarge, camera-independent) or in a vehicle. */
 #define LOB_DWELL_MOVE      6                  /* game px the pointer may move and still count as resting */
 #define LOB_POINTER_MARGIN  8                  /* game px the held pointer stays inside the battlefield */
@@ -3236,39 +3237,64 @@ static struct {
     int on;                    /* the pointer is held on a world point */
     double wx, wy;             /* ... that point minus Sarge's position (estimate) */
     POINT last; int last_ok;   /* client position last seen / set by us */
-    POINT set[4]; int nset, iset;  /* the last positions we set (Wine: GetCursorPos can still return one of them a frame later) */
+    POINT set[8]; int nset, iset;  /* the last positions we set and moved away from (Wine: GetCursorPos can still return
+                                      one of them a frame or two later - seen in the 2x rig: a 23 px aim jump) */
     double ux, uy;             /* the player's own pointer motion, summed (game px) */
     double rest_x, rest_y;     /* dwell: where the resting started (in ux / uy) */
     DWORD rest_since;
     int ease; DWORD ease_at;   /* the throw camera ended: easing back, pointer still held */
+    double ax, ay, kx, ky;     /* this frame: client = a + k x game */
+    double ex, ey; int fs;     /* this frame: Sarge (smooth) and the picture shift the pointer is placed for */
+    int frames;                /* frames since the hold started (log) */
+    double relx, rely;         /* the camera minus Sarge as last shown (the hold never goes past it) */
+    double px, py;             /* this frame: where the pointer may go (picture game px) */
 } L;
 
-/* After the camera is set (CAMERA_X / CAMERA_Y final for this frame). lob = grenade / set-up mortar ready (the camera
- * condition); ex, ey = Sarge's smooth position the camera follows; fx..fvy = the camera spring (held back at the
- * pointer margin while easing); settle = how far the spring still is from its goal; edge_x / edge_y = the view is at
- * the map's edge on that axis (holding the spring there does nothing). */
-static void lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double *fx, double *fy, double *fvx, double *fvy,
-                              double settle, int edge_x, int edge_y)
+/* client = a + k x game near the pointer: the exact mapping of view.c, or (zoomed) sampled over 256 game px */
+static int lob_map(POINT c, double *ax, double *ay, double *kx, double *ky)
+{
+    if (view_game_client_linear(ax, ay, kx, ky)) return 1;
+    POINT g = c; view_client_to_game(&g);
+    POINT a = g, b = { g.x + 256, g.y + 256 };
+    view_game_to_client(&a); view_game_to_client(&b);
+    *kx = (b.x - a.x) / 256.0; *ky = (b.y - a.y) / 256.0;
+    if (*kx <= 0 || *ky <= 0) return 0;
+    *ax = a.x - *kx * g.x; *ay = a.y - *ky * g.y;
+    return 1;
+}
+
+/* the held pointer may go to picture point (x, y): no interface there or within UI_EDGE_BAND (ui_at_steady flips there) */
+static int lob_free(double x, double y)
+{
+    int ix = (int)floor(x + 0.5), iy = (int)floor(y + 0.5), b = UI_EDGE_BAND + 1;
+    return !ui_at(ix, iy) && !ui_at(ix - b, iy) && !ui_at(ix + b, iy) && !ui_at(ix, iy - b) && !ui_at(ix, iy + b);
+}
+
+/* Before the camera is set: the player's motion, the dwell, and where the pointer must go for the held aim with the
+ * camera this frame will have (centre ccx, ccy; picture shift fs). Where it cannot go (past LOB_POINTER_MARGIN from the
+ * battlefield edge - it is never pulled IN from where it is - or onto the interface: HUD groups at any minimap /
+ * centre scale, spare weapons, the mod's boxes), the CAMERA is held back by the difference instead (fx / fy), so the
+ * aim never moves; only at the map's edge (edge_x / edge_y: holding the spring there does nothing) can the aim give way,
+ * and there the camera only moves with Sarge. Returns 1 when fx / fy were changed (the caller recomputes the view).
+ * lob = grenade / set-up mortar ready (the camera condition); ex, ey = Sarge's smooth position the camera follows;
+ * settle = how far the spring still is from its goal. */
+static int lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double ccx, double ccy, int fs,
+                             double *fx, double *fy, double *fvx, double *fvy, double settle, int edge_x, int edge_y)
 {
     DWORD now = GetTickCount();
     HWND h = g_dd ? g_dd->hwnd : NULL;
-    POINT c = { 0, 0 }, g;
+    POINT c = { 0, 0 };
     int ok = h && GetForegroundWindow() == h && GetCursorPos(&c) && ScreenToClient(h, &c);
     RECT cr;
     if (ok) ok = GetClientRect(h, &cr) && PtInRect(&cr, c);
-    double ax = 0, ay = 0, kx = 0, ky = 0;              /* client = a + k x game, near the pointer */
-    if (ok) {
-        g = c; view_client_to_game(&g);
-        POINT a = g, b = { g.x + 32, g.y + 32 };
-        view_game_to_client(&a); view_game_to_client(&b);
-        kx = (b.x - a.x) / 32.0; ky = (b.y - a.y) / 32.0;
-        ok = kx > 0 && ky > 0 && !ui_at_steady(g.x, g.y);
-        ax = a.x - kx * g.x; ay = a.y - ky * g.y;
-    }
+    double ax = 0, ay = 0, kx = 1, ky = 1;
+    if (ok) ok = lob_map(c, &ax, &ay, &kx, &ky);
+    double gx = (c.x - ax) / kx, gy = (c.y - ay) / ky;   /* pointer, picture game px (fractional) */
+    if (ok) { POINT g = c; view_client_to_game(&g); ok = !ui_at_steady(g.x, g.y); }
     /* the player's own motion since the last frame (our SetCursorPos is not counted) */
     double du = 0, dv = 0;
     int stale = 0;
-    for (int i = 0; i < 4 && i < L.nset; i++) if (c.x == L.set[i].x && c.y == L.set[i].y) stale = 1;
+    for (int i = 0; i < 8 && i < L.nset; i++) if (c.x == L.set[i].x && c.y == L.set[i].y) stale = 1;
     if (ok && L.last_ok && !stale) { du = (c.x - L.last.x) / kx; dv = (c.y - L.last.y) / ky; }
     L.ux += du; L.uy += dv;
     if (!stale || !ok) L.last = c;
@@ -3283,7 +3309,7 @@ static void lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double *fx
         if (ok && now - L.rest_since >= (DWORD)lob_dwell_ms()) {
             g_lob_armed = 1; L.ease = 0;
             if (g_cfg.log >= 1) mlog("lob: throw camera on (pointer rested %lu ms) at world %d,%d", now - L.rest_since,
-                                     (int)floor((c.x - ax) / kx) + CAMERA_X, (int)floor((c.y - ay) / ky) + layout_field_shift() + CAMERA_Y);
+                                     (int)floor(gx + 0.5) + CAMERA_X, (int)floor(gy + 0.5) + layout_field_shift() + CAMERA_Y);
         }
     }
     if (L.ease && (settle < 1.0 || now - L.ease_at > LOB_EASE_MAX_MS || SARGE_VEHICLE(u))) {
@@ -3292,37 +3318,116 @@ static void lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double *fx
     }
 
     int hold = (g_lob_armed || L.ease) && ok && !SARGE_VEHICLE(u) && GetTickCount() - g_pad_aim_at > 1500;
-    if (!hold) { L.on = 0; return; }
-    int fs = layout_field_shift();
-    double gx = (c.x - ax) / kx, gy = (c.y - ay) / ky;   /* pointer, game px of the picture (fractional) */
-    if (!L.on) { L.on = 1; L.wx = gx + CAMERA_X - ex; L.wy = gy + fs + CAMERA_Y - ey; }
-    else { L.wx += du; L.wy += dv; }
-    /* where the pointer must be for the held world point now */
-    double tx = L.wx + ex - CAMERA_X, ty = L.wy + ey - CAMERA_Y - fs;
-    double lo_x = LOB_POINTER_MARGIN, hi_x = VIEW_W - 1 - LOB_POINTER_MARGIN;
-    double lo_y = LOB_POINTER_MARGIN, hi_y = VIEW_H - 1 - LOB_POINTER_MARGIN - (g_cfg.width > LAYOUT_DESIGN_W ? HUD_COVER_H : 0);
-    double cx = clampd(tx, lo_x, hi_x), cy = clampd(ty, lo_y, hi_y);
-    if (cx != tx) {
-        if (L.ease && !edge_x) *fx -= cx - tx, *fvx = 0;  /* easing back: hold the camera, not the pointer */
-        else L.wx += cx - tx;                              /* (throw camera on: only at the map's edge) */
+    if (!hold) { L.on = 0; return 0; }
+    /* the aim, from what is on screen now (last frame's camera and picture shift) */
+    if (!L.on) {
+        L.on = 1; L.frames = 0;
+        L.wx = gx + CAMERA_X - ex; L.wy = gy + layout_field_shift() + CAMERA_Y - ey;
+        L.relx = CAMERA_X - ex; L.rely = CAMERA_Y + layout_field_shift() - ey;
+    } else { L.wx += du; L.wy += dv; }
+    L.ax = ax; L.ay = ay; L.kx = kx; L.ky = ky; L.ex = ex; L.ey = ey; L.fs = fs;
+    /* where the pointer must be with this frame's camera (CAMERA = rounded centre - half the view: controls_camera_original) */
+    double cam_x = floor(ccx + 0.5) - VIEW_W / 2, cam_y = floor(ccy + 0.5) - VIEW_H / 2;
+    double tx = L.wx + ex - cam_x, ty = L.wy + ey - cam_y - fs;
+    double m = LOB_POINTER_MARGIN;
+    double px = clampd(tx, gx < m ? gx : m, gx > VIEW_W - 1 - m ? gx : VIEW_W - 1 - m);
+    double py = clampd(ty, gy < m ? gy : m, gy > VIEW_H - 1 - m ? gy : VIEW_H - 1 - m);
+    if (!lob_free(px, py)) {                     /* onto the interface: only as far as it stays free */
+        double lo = 0, hi = 1;
+        for (int i = 0; i < 10; i++) { double s = (lo + hi) / 2; if (lob_free(gx + (px - gx) * s, gy + (py - gy) * s)) lo = s; else hi = s; }
+        px = gx + (px - gx) * lo; py = gy + (py - gy) * lo;
     }
-    if (cy != ty) {
-        if (L.ease && !edge_y) *fy -= cy - ty, *fvy = 0;
-        else L.wy += cy - ty;
+    L.px = px; L.py = py;
+    /* the pointer stops short by ox / oy: the camera stays back by that much - at most by what it moved (relative to
+     * Sarge) this frame, so the hold can never push it further than where it was (a bigger hold fed back and swung
+     * the camera hundreds of px each frame in Wine); anything beyond (map edge) lets the aim give way */
+    double ox = px - tx, oy = py - ty;
+    double mx = (cam_x - ex) - L.relx, my = (cam_y + fs - ey) - L.rely;   /* this frame's camera move */
+    double hx = !edge_x && ox * mx > 0 ? (fabs(ox) < fabs(mx) ? ox : mx) : 0;
+    double hy = !edge_y && oy * my > 0 ? (fabs(oy) < fabs(my) ? oy : my) : 0;
+    if (hx != 0) { *fx -= hx; *fvx = 0; }
+    if (hy != 0) { *fy -= hy; *fvy = 0; }
+    if (ox - hx != 0 || oy - hy != 0) {
+        L.wx += ox - hx; L.wy += oy - hy;
+        if (g_cfg.log >= (g_lob_armed ? 1 : 2) && (fabs(ox - hx) > 0.5 || fabs(oy - hy) > 0.5))
+            mlog("lob: aim gave way %.1f,%.1f (pointer at the battlefield / interface edge, camera could not stay back)", ox - hx, oy - hy);
     }
-    POINT t = { (LONG)floor(ax + kx * cx + 0.5), (LONG)floor(ay + ky * cy + 0.5) };
+    if ((hx != 0 || hy != 0) && g_cfg.log >= 3) mlog("lob: camera held back %.1f,%.1f", -hx, -hy);
+    return hx != 0 || hy != 0;
+}
+
+/* After the camera is set (CAMERA_X / CAMERA_Y final): put the pointer on the held aim. */
+static void lob_pointer_place(void)
+{
+    if (!L.on) return;
+    HWND h = g_dd ? g_dd->hwnd : NULL;
+    if (!h) return;
+    double px = L.wx + L.ex - CAMERA_X, py = L.wy + L.ey - CAMERA_Y - L.fs;
+    if (fabs(px - L.px) > 0.75 || fabs(py - L.py) > 0.75) {
+        /* the view came out other than planned (the map clamp took the hold): the pointer stays where it may go */
+        if (g_cfg.log >= 1) mlog("lob: aim gave way %.1f,%.1f (view clamped)", L.px - px, L.py - py);
+        L.wx += L.px - px; L.wy += L.py - py; px = L.px; py = L.py;
+    }
+    L.relx = CAMERA_X - L.ex; L.rely = CAMERA_Y + L.fs - L.ey;
+    POINT t = { (LONG)floor(L.ax + L.kx * px + 0.5), (LONG)floor(L.ay + L.ky * py + 0.5) };
+    POINT c = L.last;
     if (t.x != c.x || t.y != c.y) {
         POINT s = t; ClientToScreen(h, &s);
         SetCursorPos(s.x, s.y);
         POINT g0 = c, g1 = t; view_client_to_game(&g0); view_client_to_game(&g1);
         mouse_nudge_cursor(g1.x - g0.x, g1.y - g0.y);    /* raw mouse mode: the game's own cursor too */
         L.last = t;
-        L.set[L.iset = (L.iset + 1) & 3] = t; if (L.nset < 4) L.nset++;
+        L.set[L.iset = (L.iset + 1) & 7] = c; L.set[L.iset = (L.iset + 1) & 7] = t; if (L.nset < 8) L.nset += 2;
     }
-    {   /* the reticle and a click this frame use the moved pointer */
-        POINT gp = t; view_client_to_game(&gp);
-        S.cursor_x = gp.x; S.cursor_y = gp.y + fs; S.have_cursor = 1;
+    POINT gp = t; view_client_to_game(&gp);              /* what the game reads there: the reticle and a click use it */
+    S.cursor_x = gp.x; S.cursor_y = gp.y + L.fs; S.have_cursor = 1;
+    if (g_cfg.log >= 2) {
+        /* every frame: the held aim and what reading the pointer back gives (set -> read round trip) */
+        POINT r; int rx = -99999, ry = -99999;
+        if (GetCursorPos(&r) && ScreenToClient(h, &r)) { view_client_to_game(&r); rx = r.x + CAMERA_X; ry = r.y + L.fs + CAMERA_Y; }
+        mlog("lob: f%d aim %.1f,%.1f pointer %ld,%ld game %ld,%ld read-back world %d,%d (off %d,%d) camera %d,%d fs %d",
+             L.frames++, L.wx + L.ex, L.wy + L.ey, t.x, t.y, gp.x, gp.y, rx, ry, rx - (int)floor(L.wx + L.ex + 0.5),
+             ry - (int)floor(L.wy + L.ey + 0.5), CAMERA_X, CAMERA_Y, L.fs);
     }
+}
+
+/* The camera lead toward the pointer: offset o (game px from the middle of the view) -> lead (px). Normal: camera_lead x o
+ * (x the edge peek). Throw camera (grenade / set-up mortar, armed): sized so the window edge (the HUD panel top when
+ * aiming down) is the weapon's longest throw (user: "need mortar updated to go further": a fixed 0.5 reached ~260 px, the
+ * mortar flies ~500), the longest throw LOB_EDGE_MARGIN inside the edge / panel top so its blast circle stays clear of the
+ * panel (user 2026-11-17); aiming down it also slides by up to the HUD panel's height. Rising in o on both axes. */
+typedef struct { int lob; double k, lead_x, lead_up, lead_down, below, peek; } LeadK;
+static void lead_params(BYTE *u, int lob, LeadK *K)
+{
+    K->lob = lob; K->peek = peek_scale(); K->k = g_cfg.controls_camera_lead * K->peek;
+    if (!lob) return;
+    double reach = LOB_CAMERA_REACH_MIN, landed = 0;
+    BYTE *w = *(BYTE **)(u + 0x20);
+    if (w) { throw_distance_for(w, 1e9, &landed, NULL, NULL); if (landed + LOB_START_AHEAD > reach) reach = landed + LOB_START_AHEAD; }
+    double half_w = VIEW_W / 2.0 - LOB_EDGE_MARGIN, half_h = VIEW_H / 2.0 - LOB_EDGE_MARGIN;
+    double below = VIEW_H / 2.0 - HUD_COVER_H - LOB_EDGE_MARGIN;
+    if (half_w < 32) half_w = 32;
+    if (half_h < 32) half_h = 32;
+    if (below < 32) below = 32;
+    K->below = below;
+    K->lead_x = clampd(reach / half_w - 1, LOB_CAMERA_LEAD, LOB_CAMERA_LEAD_MAX);
+    K->lead_up = clampd(reach / half_h - 1, LOB_CAMERA_LEAD, LOB_CAMERA_LEAD_MAX);
+    K->lead_down = clampd((reach - HUD_COVER_H) / below - 1, LOB_CAMERA_LEAD, LOB_CAMERA_LEAD_MAX);
+}
+static double lead_of(const LeadK *K, int axis, double o)
+{
+    if (!K->lob) return o * K->k;
+    if (axis == 0) return o * K->lead_x * K->peek;
+    double t = o * (o > 0 ? K->lead_down : K->lead_up) * K->peek;
+    if (o > 0) t += HUD_COVER_H * clampd(o / K->below, 0, 1);   /* past the HUD panel */
+    return t;
+}
+/* the offset o with o + lead(o) = want (pointer offset + lead = the aim relative to Sarge) */
+static double lead_solve(const LeadK *K, int axis, double want)
+{
+    double lo = -8.0 * (VIEW_W + VIEW_H), hi = -lo;
+    for (int i = 0; i < 48; i++) { double m = (lo + hi) / 2; if (m + lead_of(K, axis, m) < want) lo = m; else hi = m; }
+    return (lo + hi) / 2;
 }
 
 static void controls_camera_body(void)
@@ -3353,41 +3458,31 @@ static void controls_camera_body(void)
     int lob = !SARGE_VEHICLE(u) && weapon_is_hold_to_aim(u) && modern_on(MOD_THROW_POINTER) &&
               (SARGE_WEAPON_TYPE(u) != 5 || (SARGE_POSE(u) == POSE_KNEEL && !S.going && !(INPUT & (INPUT_FORWARD | INPUT_BACK))));
     if (S.have_cursor && g_cfg.controls_camera_lead > 0) {
-        tlx = (S.cursor_x - VIEW_W / 2.0) * g_cfg.controls_camera_lead * peek_scale();   /* modern.c edge peek */
-        tly = (S.cursor_y - VIEW_H / 2.0) * g_cfg.controls_camera_lead * peek_scale();
         /* grenade / mortar on foot (user: "when trying to throw grenades below Sarge, the UI gets in the
          * way"): a long lead toward the pointer, and aiming down the camera also slides by up to the HUD
          * panel's height, so the whole throw range shows above the panel (below Sarge only ~H/2 - 94 px
-         * were visible, a grenade reaches ~260 px) */
-        /* only once the pointer rested (g_lob_armed, lob_pointer_frame): switched on at once it threw the pointer's
-         * world point far out (user 2026-11-21) */
+         * were visible, a grenade reaches ~260 px) - only once the pointer rested (g_lob_armed, lob_pointer_frame):
+         * switched on at once it threw the pointer's world point far out (user 2026-11-21) */
+        double ox = S.cursor_x - VIEW_W / 2.0, oy = S.cursor_y - VIEW_H / 2.0;
         if (COMMAND_CURSOR == 1) {
             /* picking an air strike / paratroop target: the view follows the pointer far (to the window edge =
              * AIR_TARGET_REACH px away) so any spot nearby can be picked - the screen was locked (user) */
             double lx2 = AIR_TARGET_REACH / (VIEW_W / 2.0) - 1, ly2 = AIR_TARGET_REACH / (VIEW_H / 2.0) - 1;
-            tlx = (S.cursor_x - VIEW_W / 2.0) * clampd(lx2, 0.5, LOB_CAMERA_LEAD_MAX);
-            tly = (S.cursor_y - VIEW_H / 2.0) * clampd(ly2, 0.5, LOB_CAMERA_LEAD_MAX);
-        } else if (lob && g_lob_armed) {
-            /* the lead is sized so the window edge (the HUD panel top when aiming down) is the weapon's
-             * longest throw (user: "need mortar updated to go further": a fixed 0.5 reached ~260 px, the
-             * mortar flies ~500) */
-            double reach = LOB_CAMERA_REACH_MIN, landed = 0;
-            BYTE *w = *(BYTE **)(u + 0x20);
-            if (w) { throw_distance_for(w, 1e9, &landed, NULL, NULL); if (landed + LOB_START_AHEAD > reach) reach = landed + LOB_START_AHEAD; }
-            /* the longest throw sits LOB_EDGE_MARGIN inside the view edge / the HUD panel top, so its blast circle
-             * stays clear of the panel (user 2026-11-17: the mortar's range end was right on the panel) */
-            double half_w = VIEW_W / 2.0 - LOB_EDGE_MARGIN, half_h = VIEW_H / 2.0 - LOB_EDGE_MARGIN;
-            double below = VIEW_H / 2.0 - HUD_COVER_H - LOB_EDGE_MARGIN;
-            if (half_w < 32) half_w = 32;
-            if (half_h < 32) half_h = 32;
-            if (below < 32) below = 32;
-            double lead_x = clampd(reach / half_w - 1, LOB_CAMERA_LEAD, LOB_CAMERA_LEAD_MAX);
-            double lead_up = clampd(reach / half_h - 1, LOB_CAMERA_LEAD, LOB_CAMERA_LEAD_MAX);
-            double lead_down = clampd((reach - HUD_COVER_H) / below - 1, LOB_CAMERA_LEAD, LOB_CAMERA_LEAD_MAX);
-            double ox = S.cursor_x - VIEW_W / 2.0, oy = S.cursor_y - VIEW_H / 2.0;
-            tlx = ox * lead_x * peek_scale();
-            tly = oy * (oy > 0 ? lead_down : lead_up) * peek_scale();
-            if (oy > 0) tly += HUD_COVER_H * clampd(oy / below, 0, 1);   /* past the HUD panel */
+            tlx = ox * clampd(lx2, 0.5, LOB_CAMERA_LEAD_MAX);
+            tly = oy * clampd(ly2, 0.5, LOB_CAMERA_LEAD_MAX);
+        } else {
+            LeadK K;
+            lead_params(u, lob && g_lob_armed, &K);
+            if (L.on) {
+                /* the pointer is held on an aim (lob_pointer_frame): the lead comes from the AIM - the pointer offset at
+                 * which pointer + lead lands on it - not from where the pointer is this frame. From the pointer, the
+                 * pointer (moved with the camera) fed back into the lead with a gain up to LOB_CAMERA_LEAD_MAX: on a slow
+                 * frame (the spring snaps or takes a big step) the camera swung back and forth by hundreds of px (Wine) */
+                ox = lead_solve(&K, 0, L.wx);
+                oy = lead_solve(&K, 1, L.wy - (g_cfg.width > LAYOUT_DESIGN_W ? HUD_COVER_H / 2 : 0));
+            }
+            tlx = lead_of(&K, 0, ox);
+            tly = lead_of(&K, 1, oy);
         }
     }
     double dt = have ? (double)(now.QuadPart - last.QuadPart) * 1000.0 / (double)freq.QuadPart : 0;
@@ -3443,6 +3538,21 @@ static void controls_camera_body(void)
     g_cam_want_y = cy;
     g_cam_want_frame = view_frame_count();
     double ccx = clamp_centre(cx, BOUND_L, MAP_W, VIEW_W), ccy = clamp_centre(cy, BOUND_T, MAP_H, VIEW_H);
+    {   /* throw camera: the pointer follows the camera so the aim stays; where it cannot, the camera stays back
+         * (lob_pointer_frame) and the view is worked out again. The picture shift at the map bottom is the one the
+         * draw will take from this wanted centre (controls_field_shift_target). */
+        int wide = g_cfg.width > LAYOUT_DESIGN_W;
+        double room = wide ? HUD_COVER_H : 0;                /* the picture shift can still take the camera this far */
+        int fs = layout_active() && wide && MAP_H > 0 ? (int)(clampd(cy - (MAP_H - VIEW_H / 2.0 - 1), 0, HUD_COVER_H) + 0.5) : 0;
+        if (lob_pointer_frame(u, lob, ex, ey, ccx, ccy, fs, &fx, &fy, &fvx, &fvy,
+                              fabs(gx - fx) + fabs(gy - fy) + (fabs(fvx) + fabs(fvy)) * 100,
+                              fabs(ccx - cx) > 0.5, cy < ccy - 0.5 || cy - ccy > room + 0.5)) {
+            cx = fx; cy = fy + (wide ? HUD_COVER_H / 2 : 0);
+            g_cam_want_y = cy;
+            ccx = clamp_centre(cx, BOUND_L, MAP_W, VIEW_W); ccy = clamp_centre(cy, BOUND_T, MAP_H, VIEW_H);
+            L.fs = layout_active() && wide && MAP_H > 0 ? (int)(clampd(cy - (MAP_H - VIEW_H / 2.0 - 1), 0, HUD_COVER_H) + 0.5) : 0;
+        }
+    }
     CAM_CENTRE_X = (short)floor(ccx + 0.5);
     CAM_CENTRE_Y = (short)floor(ccy + 0.5);
     g_subpx[0] = ccx - CAM_CENTRE_X;            /* in [-0.5, 0.5]: where the view should really be */
@@ -3455,9 +3565,11 @@ static void controls_camera_body(void)
         if (ms - logged >= 250) { logged = ms; mlog("camera: sarge %d,%d lead %.0f,%.0f centre %.0f,%.0f", SARGE_X(u), SARGE_Y(u), lx, ly, tx, ty); }
     }
     controls_camera_original();
-    lob_pointer_frame(u, lob, ex, ey, &fx, &fy, &fvx, &fvy, fabs(gx - fx) + fabs(gy - fy) + (fabs(fvx) + fabs(fvy)) * 100,
-                      fabs(ccx - cx) > 0.5, fabs(ccy - cy) > 0.5);
-    if (g_cfg.log >= 2 && (lob || L.ease || g_lob_armed)) {   /* testing the throw camera: the aimed world point */
+    if (L.on && g_cfg.log >= 2 && (CAMERA_X != CAM_CENTRE_X - VIEW_W / 2 || CAMERA_Y != CAM_CENTRE_Y - VIEW_H / 2))
+        mlog("lob: camera %d,%d is not centre - half view (%d,%d): the pointer is placed for the wrong camera", CAMERA_X, CAMERA_Y,
+             CAM_CENTRE_X - VIEW_W / 2, CAM_CENTRE_Y - VIEW_H / 2);
+    lob_pointer_place();
+    if (g_cfg.log >= 2 && !L.on && (lob || L.ease || g_lob_armed)) {   /* testing the throw camera (held: every frame, lob_pointer_place) */
         static DWORD logged;
         DWORD ms = GetTickCount();
         int px, py;
