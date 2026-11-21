@@ -906,6 +906,10 @@ static int squad_click(int x, int y)
 }
 
 static int g_air_pending = -1;     /* strike / paratroop HUD box pressed: switch on at the release */
+static int g_air_was_on, g_air_was_mode;   /* target mode on / its mode (5 strike, 6 paratroop) at that press */
+static int g_cmd_prev_on, g_cmd_prev_mode;   /* the same at the end of the last frame (the game's own HUD click may
+                                                have toggled it already in the frame of the press) */
+#define COMMAND_MODE (*(volatile int *)0x696ec8)
 static int air_support_click(int x, int y)
 {
     int gx, gy;
@@ -918,6 +922,7 @@ static int air_support_click(int x, int y)
          * press, the game's own click handler for that same press (0x440880 -> FUN_00441000) already saw the
          * target mode and launched at once (user 2026-11-17: "clicking is immediately firing them") */
         g_air_pending = row;
+        g_air_was_on = g_cmd_prev_on; g_air_was_mode = g_cmd_prev_mode;
         if (g_cfg.log >= 2) mlog("controls: HUD click: %s (on release)", AIR_NAME[row]);
         return 1;
     }
@@ -1915,10 +1920,23 @@ static void apply_modern_controls(void)
     }
     lheld_before = lheld;
     if (g_air_pending >= 0 && !lheld) {          /* the strike / paratroop HUD box was let go: target mode on now */
-        ((VoidFnPtr)AIR_HANDLER[g_air_pending])();
-        if (g_cfg.log >= 2) mlog("controls: %s: pick the target (command cursor %d)", AIR_NAME[g_air_pending], COMMAND_CURSOR);
+        /* 2026-11-20 (user: "air strike UI does not enable the air strike state. and it needs to be cancellable ...
+         * cancel via clicking again on the UI"): the handler TOGGLES (FUN_0043f6c0) - when the game's own HUD click
+         * had already switched it on, our call switched it off again. Now the release sets the WANTED state:
+         * off -> on; on in this box's mode -> off (click again = cancel); on in the other mode -> that mode. */
+        int want_mode = g_air_pending == 0 ? 5 : 6;
+        int cancel = g_air_was_on && g_air_was_mode == want_mode;
+        if (cancel) {
+            if (COMMAND_CURSOR == 1) ((UnitFn)COMMAND_TOGGLE)(NULL);
+        } else {
+            if (COMMAND_CURSOR == 1 && COMMAND_MODE != want_mode) ((UnitFn)COMMAND_TOGGLE)(NULL);
+            if (COMMAND_CURSOR != 1) ((VoidFnPtr)AIR_HANDLER[g_air_pending])();
+        }
+        mlog("controls: HUD %s %s (command cursor %d, mode %d)", AIR_NAME[g_air_pending], cancel ? "cancelled" : "- pick the target",
+             COMMAND_CURSOR, COMMAND_MODE);
         g_air_pending = -1;
     }
+    if (g_air_pending < 0) { g_cmd_prev_on = COMMAND_CURSOR == 1; g_cmd_prev_mode = COMMAND_MODE; }
     static int rheld_before;
     int rpressed = rheld || (rstate & 1);
     if (rpressed && !rheld_before && !field) {       /* right click on the interface: drop that weapon */

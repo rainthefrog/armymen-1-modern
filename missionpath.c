@@ -273,6 +273,15 @@ static int wpop(void)
     g_wheap[i] = c; g_wheapf[i] = f;
     return top;
 }
+/* a whole cell free by this search's rule (strict or relaxed), with no near-start exemption - for the start snap */
+static int wcell_open(int c)
+{
+    int x0 = (c % WG) * WCELL, y0 = (c / WG) * WCELL;
+    for (int sy = 1; sy < WCELL; sy += 2)
+        for (int sx = 1; sx < WCELL; sx += 2)
+            if (g_relax ? controls_sarge_blocked_at(x0 + sx, y0 + sy) : controls_blocked_at(x0 + sx, y0 + sy)) return 0;
+    return 1;
+}
 static int wbegin(int sx, int sy, int tx, int ty)
 {
     if (!g_wheap) { g_wheap = malloc(sizeof(int) * W_HEAP); g_wheapf = malloc(sizeof(float) * W_HEAP); }
@@ -282,14 +291,46 @@ static int wbegin(int sx, int sy, int tx, int ty)
     g_wstart = (sy / WCELL) * WG + sx / WCELL;
     g_wgoal = (ty / WCELL) * WG + tx / WCELL;
     g_wtx = tx; g_wty = ty; g_wcx = sx; g_wcy = sy;
-    if (!wraw(g_wgoal)) {                                       /* a pad in a doorway, a soldier's spot: nearest free */
+    /* 2026-11-20 (user, mission 4: legs from TanRifle21/22's spots in the rocks / gorge were dashed straight over the
+     * terrain, "should be straight connection" / "back tracking, so pathing shouldn't be going through terrain"): a
+     * waypoint inside rocks left the search no way out of its first cell (0 points). Start from the nearest cell that
+     * has a fully open 3x3 around it (so the search can leave it); the line still begins at the waypoint. */
+    {
+        int ok = 1, sxc = g_wstart % WG, syc = g_wstart / WG;
+        for (int dy = -1; dy <= 1 && ok; dy++) for (int dx = -1; dx <= 1 && ok; dx++) {
+            int x = sxc + dx, y = syc + dy;
+            if (x < 0 || y < 0 || x >= WG || y >= WG || !wcell_open(y * WG + x)) ok = 0;
+        }
+        for (int r = 1; r <= 12 && !ok; r++)
+            for (int dy = -r; dy <= r && !ok; dy++)
+                for (int dx = -r; dx <= r && !ok; dx++) {
+                    if (abs(dx) != r && abs(dy) != r) continue;
+                    int x = sxc + dx, y = syc + dy, all = 1;
+                    if (x < 1 || y < 1 || x >= WG - 1 || y >= WG - 1) continue;
+                    for (int ey = -1; ey <= 1 && all; ey++) for (int ex = -1; ex <= 1 && all; ex++) all = wcell_open((y + ey) * WG + x + ex);
+                    if (all) {
+                        ok = 1; g_wstart = y * WG + x;
+                        g_wcx = x * WCELL + WCELL / 2; g_wcy = y * WCELL + WCELL / 2;
+                        if (g_cfg.log >= 1) mlog("missionpath: leg start %d,%d is shut in: searching from %d,%d", sx, sy, g_wcx, g_wcy);
+                    }
+                }
+    }
+    int gopen = 1;                                              /* the goal needs an open 3x3 too (else: a gap in rocks) */
+    for (int ey = -1; ey <= 1 && gopen; ey++) for (int ex = -1; ex <= 1 && gopen; ex++) {
+        int x = g_wgoal % WG + ex, y = g_wgoal / WG + ey;
+        gopen = x >= 0 && y >= 0 && x < WG && y < WG && wcell_open(y * WG + x);
+    }
+    if (!gopen) {                                               /* a pad in a doorway, a soldier's spot: nearest open */
         int best = -1;
-        for (int r = 1; r <= 10 && best < 0; r++)
+        for (int r = 1; r <= 12 && best < 0; r++)
             for (int dy = -r; dy <= r && best < 0; dy++)
                 for (int dx = -r; dx <= r && best < 0; dx++) {
                     if (abs(dx) != r && abs(dy) != r) continue;
                     int x = g_wgoal % WG + dx, y = g_wgoal / WG + dy;
-                    if (x >= 0 && y >= 0 && x < WG && y < WG && wraw(y * WG + x)) best = y * WG + x;
+                    if (x < 1 || y < 1 || x >= WG - 1 || y >= WG - 1) continue;
+                    int all = 1;                    /* a cell with an open 3x3 round it, not a gap inside the rocks */
+                    for (int ey = -1; ey <= 1 && all; ey++) for (int ex = -1; ex <= 1 && all; ex++) all = wcell_open((y + ey) * WG + x + ex);
+                    if (all) best = y * WG + x;
                 }
         if (best >= 0) { g_wgoal = best; g_wtx = (best % WG) * WCELL + WCELL / 2; g_wty = (best / WG) * WCELL + WCELL / 2; }
     }

@@ -292,6 +292,15 @@ static void release(void)
 
 void __fastcall capture_sarge_in(BYTE *s, BYTE *v)
 {
+    /* 2026-11-20 (user: "if the vehicle is occupied, sarge can get into it with repeated clicking (happens when
+     * shooting)"): every way in (click, F key, the game's own enter) ends here - an occupied vehicle (another
+     * driver, troopers inside) or one moving under AI control is refused */
+    if (s && v && !IsBadReadPtr(v, 0x150) && SARGE_VEHICLE(s) != v &&
+        ((VEH_DRIVER(v) && VEH_DRIVER(v) != s) || has_passengers(v) || (VEH_NPC(v) && VEH_SPEED(v) != 0))) {
+        static DWORD said;
+        if (GetTickCount() - said > 1000) { said = GetTickCount(); mlog("capture: Sarge kept out of occupied vehicle %p (driver %p)", v, VEH_DRIVER(v)); }
+        return;
+    }
     capture_sarge_in_original(s, v);
     if (s && v && SARGE_VEHICLE(s) == v && UID_ARMY(UID(v)) != UID_ARMY(UID(s)) && !g_cap.v && capture_allowed())
         capture(s, v);
