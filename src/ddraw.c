@@ -71,7 +71,12 @@ void config_load(void)
     g_cfg.cover_enemies = GetPrivateProfileIntA("gameplay", "cover_enemies", 1, ini);
     g_cfg.corner_shots = GetPrivateProfileIntA("gameplay", "corner_shots", 1, ini);
     g_cfg.leg_hits = GetPrivateProfileIntA("gameplay", "leg_hits", 1, ini);
-    g_cfg.downhill_hits = GetPrivateProfileIntA("gameplay", "downhill_hits", 1, ini);
+    {   /* height_rules = off (default) | modded | original (bullets.c). No key: the older downhill_hits=0 -> original */
+        char hr[16];
+        GetPrivateProfileStringA("gameplay", "height_rules", "", hr, sizeof hr, ini);
+        if (!hr[0]) g_cfg.height_rules = GetPrivateProfileIntA("gameplay", "downhill_hits", 1, ini) ? HEIGHTS_OFF : HEIGHTS_ORIGINAL;
+        else g_cfg.height_rules = !_stricmp(hr, "modded") ? HEIGHTS_MODDED : !_stricmp(hr, "original") ? HEIGHTS_ORIGINAL : HEIGHTS_OFF;
+    }
     g_cfg.longer_range = GetPrivateProfileIntA("gameplay", "longer_range", 1, ini);
     g_cfg.fix_squash = GetPrivateProfileIntA("gameplay", "fix_squash", 1, ini);
     g_cfg.drive_enemy_vehicles = GetPrivateProfileIntA("gameplay", "drive_enemy_vehicles", 1, ini);   /* on by default (2026-11-20, user expected it) */

@@ -102,7 +102,7 @@ struct Config {
     int fix_squash;                 /* [gameplay] fix_squash: no squash death for walking onto a blocked tile (gameplay.c) */
     int longer_range;               /* [gameplay] longer_range: direct-fire weapons reach weapon_range_pct % (gameplay.c) */
     int weapon_range_pct;           /* [gameplay] weapon_range_pct (default 120) */
-    int downhill_hits;              /* [gameplay] downhill_hits: direct fire hits units below / above (vehicles on hills: bullets.c) */
+    int height_rules;               /* [gameplay] height_rules: HEIGHTS_OFF / _MODDED / _ORIGINAL (bullets.c; replaces downhill_hits) */
     int drive_enemy_vehicles;       /* [gameplay] drive_enemy_vehicles: Sarge may drive empty enemy vehicles (capture.c) */
     int vehicle_bailout;            /* [gameplay] vehicle_bailout: Sarge leaves a destroyed vehicle alive (capture.c) */
     int vehicle_reverse;            /* [controls] vehicle_reverse: click-to-drive plans with reversing (vehicles.c) */
@@ -515,7 +515,7 @@ enum { MOD_AIM_ASSIST, MOD_ROLL, MOD_STAMINA, MOD_SIDE_BUTTONS, MOD_SPRINT_TOGGL
        MOD_ARROWS, MOD_AMMO, MOD_RANGE_RING, MOD_ROUTE, MOD_PEEK, MOD_VEHICLE_ZOOM, MOD_NO_SHAKE, MOD_SKIP_VIDEO,
        MOD_HEALTH_BARS, MOD_STATS, MOD_RESTART,
        MOD_GAMEPAD, MOD_THROW_POINTER, MOD_COLOURBLIND, MOD_SQUAD_MOUSE, MOD_RADIAL, MOD_PING, MOD_HALF_DAMAGE,
-       MOD_THROW_HOLD,
+       MOD_THROW_HOLD, MOD_STANCE_HINTS,
        MOD_COUNT };
 enum { MK_ROLL, MK_PEEK, MK_STATS, MK_RADIAL, MK_PING, MK_RESTART, MK_COUNT };   /* the mod's own keys ([keys], KEYS page) */
 typedef struct { int connected; float lx, ly, rx, ry, lt, rt; WORD held, pressed; } ModPad;   /* XInput buttons */
@@ -634,7 +634,26 @@ void screenbtn_lbuttondown(HWND h, int inside);
 int screenbtn_message(HWND h, UINT msg, WPARAM wp);
 int bullets_fired_within(DWORD uid, DWORD ms);
 int bullets_level_at(int x, int y);                 /* bullets.c: ground level (elevation / 4), -1 off the map */
-int bullets_shot_block(int tx, int ty, int *bx, int *by);   /* bullets.c: 0 clear, 1 cliff, 2 ridge stops Sarge's shot */   /* bullets.c: that unit fired a projectile within ms */
+/* bullets.c height_rules ([gameplay] height_rules = off | modded | original) */
+enum { HEIGHTS_OFF, HEIGHTS_MODDED, HEIGHTS_ORIGINAL };
+extern const char *const HEIGHT_RULE_NAMES[3];              /* "off", "modded", "original" (ini values) */
+void height_rules_set(int mode);                            /* bullets.c: set + write the ini */
+/* the reticle cues for Sarge's shot at world point (tx, ty) with weapon type `weapon`, by the active height_rules
+ * (bullets.c, the same rules the shots follow). block: 0 none, 1 CLIFF (go up), 2 RIDGE (move), 3 his own low cover
+ * (needs `raise` = 0xb kneel / 0xc stand to fire over it); bx, by = the stop point. levels: show UP n / DOWN n.
+ * over: the round passes over the unit under the pointer (original rules). mg_low: the test line lies that many
+ * px below the reticle (original rules, vehicle machine gun from a hill), at (mx, my). */
+typedef struct { int block, bx, by, raise, levels, over, mg_low, mx, my; } ShotCue;
+int bullets_shot_cue(int tx, int ty, int weapon, ShotCue *c);   /* 1 = c filled */
+/* defensive hint while Sarge is under fire (bullets.c): the text for the stance that helps, or 0. down / up = the
+ * key names for one stance down / one stance up. */
+int bullets_stance_hint(char *buf, int n, const char *down, const char *up);
+typedef void (__fastcall *ItemDamageWrapFn)(BYTE *item, int damage, int type, void *at, DWORD from);
+extern ItemDamageWrapFn bullets_item_damage_original;
+void __fastcall bullets_item_damage(BYTE *item, int damage, int type, void *at, DWORD from);   /* ItemDamage 0x431f60 wrap */
+int __fastcall bullets_damage_pose(void *avatar);           /* calls 0x4480b8 / 0x43c6c4 (GetPose in the prone rule) */
+void bullets_sight_stub(void);                              /* call 0x44a47d (CanSeeFromItem in ItemUpdateSeen) */
+void controls_stance_keys(char *down, char *up, int n);     /* controls.c: key names: one stance down / one up */
 
 /* guarded calls into game code (ddraw.c): see the comment there */
 typedef struct Guard { void *jb[5]; void *seh; const char *what; struct Guard *prev; } Guard;
