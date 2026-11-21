@@ -389,6 +389,7 @@ int path_find(int sx, int sy, int tx, int ty, POINT *out, int max);   /* pathfin
 int path_reachable(int sx, int sy, int tx, int ty, int budget_ms);   /* pathfind.c: 1 yes, 0 no, -1 undecided */
 void path_regions_step(void);           /* pathfind.c: one slice of the whole-map walkable areas (per gameplay frame) */
 int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int max);   /* pathfind.c: route by the vehicle footprint */
+void path_vehicle_crush(int on);                    /* pathfind.c: 1 (default) fence / bush tiles are driven over; 0 for walking routes */
 /* vehicles.c / pathfind.c (2026-11-20): vehicle routes with reversing, smooth turret, getting unstuck */
 typedef struct { short x, y, facing; signed char dir; } VehPose;   /* dir 1 forward, -1 backward, 0 turn on the spot */
 int path_vehicle_plan_begin(int type, int sx, int sy, int facing, int tx, int ty, int can_spin, int step);
@@ -399,6 +400,7 @@ void vehicles_drive_start(BYTE *v, int tx, int ty, DWORD now);  /* controls.c: c
 int vehicles_drive(BYTE *v, DWORD now);             /* per frame while driving there: 0 = arrived / gave up */
 int vehicles_route(POINT *pts, int max);            /* the rest of the route (modern.c route line) */
 int vehicles_steer(BYTE *v, int heading, int drive, int slow);   /* hull toward heading; drive 1 / -1 / 0 */
+int vehicles_turn_room(BYTE *v, int heading);       /* vehicles.c: room to turn round to heading: 0 none, 1 on the spot / K-turn, +-2 jeep forward U-turn to that side */
 void vehicles_aim_turret(BYTE *v, double wx, double wy, DWORD now, int snap);   /* turret_smooth */
 void __fastcall vehicles_update(BYTE *v);           /* call 0x419c52 -> VehicleUpdate 0x4176f0 */
 void __fastcall vehicles_turret_lock(BYTE *v, int spin);   /* call 0x417ce8 -> VehicleLockTurret 0x417eb0 */
