@@ -1136,14 +1136,18 @@ static void alerts_draw(Surf *b)
                         if (g_cfg.log >= 2) mlog("modern: enemy %08lx %s Sarge", *(DWORD *)t, on ? "spotted" : "lost");
                     }
                 } else g_al[k].cnt = 0;
+                /* above the sprite's top and its health bar (health_bar: top - HEALTH_BAR_ABOVE - 2 .. +5) */
+                int cx = *(short *)(t + 4), top = *(short *)(t + 6) - 24;
+                BYTE *av = *(BYTE **)(t + 0x26c), *an = av ? *(BYTE **)(av + 0x1c) : NULL;
+                if (an) { const int *r = (const int *)(an + 0x1c); cx = (r[0] + r[2]) / 2; top = r[1]; }
                 int sx, sy;
-                to_screen(*(short *)(t + 4), *(short *)(t + 6), &sx, &sy);
-                if (sx < 4 || sy < 30 || sx >= b->w - 4 || sy >= g_hud_top) continue;
+                to_screen(cx, top, &sx, &sy);
+                if (sx < 6 || sy < 30 || sx >= b->w - 6 || sy >= g_hud_top) continue;
                 if (g_al[k].kind && now - g_al[k].at <= ALERT_SHOW_MS) {
-                    if ((now - g_al[k].at) <= ALERT_SHOW_MS * 2 / 3 || !((now / 120) & 1)) alert_mark(sx, sy - 34, g_al[k].kind);   /* fading: blink */
-                } else if (g_al[k].on) {   /* still targeting Sarge: a small steady red mark (a 5 px wedge pointing down) */
-                    for (int r = 0; r < 3; r++) for (int xx = -(2 - r); xx <= 2 - r; xx++) px(sx + xx, sy - 30 + r, C_RED);
-                    for (int xx = -3; xx <= 3; xx++) px(sx + xx, sy - 31, C_BLACK);
+                    if ((now - g_al[k].at) <= ALERT_SHOW_MS * 2 / 3 || !((now / 120) & 1)) alert_mark(sx, sy - 24, g_al[k].kind);   /* fading: blink */
+                } else if (g_al[k].on) {   /* still targeting Sarge: a steady red wedge pointing down, outlined */
+                    int y0 = sy - 15;
+                    for (int r = 0; r < 6; r++) for (int xx = -(5 - r); xx <= 5 - r; xx++) px(sx + xx, y0 + r, (r == 0 || xx == -(5 - r) || xx == 5 - r) ? C_BLACK : C_RED);
                 }
             }
         }
