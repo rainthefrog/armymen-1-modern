@@ -1715,6 +1715,18 @@ static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer,
         if (S.enter) {
             S.target_x = VEH_X(S.enter);
             S.target_y = VEH_Y(S.enter);
+            {   /* the side NEAREST Sarge (2026-11-20, user: "entering the vehicle is picking the opposite side"): the vehicle's
+                 * centre is blocked, the route then ended at any free cell round it - often behind. Walk out from the
+                 * centre toward Sarge to the first free point (+4 px), up to 64 px. */
+                double vx = SARGE_X(u) - S.target_x, vy = SARGE_Y(u) - S.target_y, len = sqrt(vx * vx + vy * vy);
+                if (len > 1) {
+                    vx /= len; vy /= len;
+                    for (int d = 4; d <= 64; d += 2) {
+                        int x = S.target_x + (int)(vx * d), y = S.target_y + (int)(vy * d);
+                        if (!controls_blocked_at(x, y)) { S.target_x = S.target_x + (int)(vx * (d + 4)); S.target_y = S.target_y + (int)(vy * (d + 4)); break; }
+                    }
+                }
+            }
             if (try_enter_vehicle(u, S.enter)) { S.going = 0; S.enter = NULL; return; }
             if (g_cfg.log >= 2) mlog("controls: walking to vehicle %p at %d,%d", S.enter, S.target_x, S.target_y);
         }
