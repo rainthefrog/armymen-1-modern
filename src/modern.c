@@ -1042,25 +1042,13 @@ static void modern_draw_body(Surf *b)
             BYTE c = clamped ? C_GREY : wt == 5 ? C_SKY : (wt == 4 || wt == 6) ? C_RED : C_ORANGE;   /* mortar blue, bazooka red, grenade orange */
             /* on top of everything (2026-11-17, user: drawn on the ground it vanished behind tanks / sandbags) */
             int cx, cy; to_screen(ix, iy, &cx, &cy);
-            /* readable on every terrain (2026-11-21, user: "impact circles are too hard to see on some terrains"):
-             * a 2 px ring in the weapon colour with a black outline inside and outside, white dashes that turn
-             * slowly round it (motion is seen on busy ground), and an outlined centre cross */
+            /* between the first (1 px dotted ring) and the second pass (2 px ring, black outline both sides, turning white
+             * dashes, outlined cross) - 2026-11-21, user: "the impact circles are too much - need in between": a 1 px
+             * solid ring in the weapon colour with a dark outline only outside it (it still separates from bright ground),
+             * a small plain cross in the middle */
             circle(cx, cy, ir + 1, C_BLACK, 0);
             circle(cx, cy, ir, c, 0);
-            circle(cx, cy, ir - 1, c, 0);
-            circle(cx, cy, ir - 2, C_BLACK, 0);
-            {
-                int steps = ir * 6 + 8, rot = (int)((GetTickCount() / 40) % (unsigned)steps);
-                for (int i = 0; i < steps; i++) {
-                    if (((i + rot) / 6) % 4) continue;                  /* 1 dash of 6 steps in every 24 */
-                    double a = i * 6.2831853 / steps;
-                    px(cx + (int)lround(cos(a) * (ir - 0.5)), cy + (int)lround(sin(a) * (ir - 0.5)), C_WHITE);
-                }
-            }
-            for (int k = -5; k <= 5; k++) {                             /* centre cross, outlined */
-                px(cx + k, cy - 1, C_BLACK); px(cx + k, cy + 1, C_BLACK); px(cx - 1, cy + k, C_BLACK); px(cx + 1, cy + k, C_BLACK);
-            }
-            for (int k = -4; k <= 4; k++) { px(cx + k, cy, c); px(cx, cy + k, c); }
+            for (int k = -3; k <= 3; k++) { px(cx + k, cy, c); px(cx, cy + k, c); }
             char s[24]; distance_text(dist, clamped, s, sizeof s);
             text(cx + 6, cy - 12, s, c, 1);
         }
