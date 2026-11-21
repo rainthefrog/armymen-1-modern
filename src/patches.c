@@ -332,6 +332,9 @@ void patches_apply(void)
     hook_call("aware: trooper tick fire step (call 0x43d05b) -> aware.c", 0x43d05b, 0x43d0d0, (void *)aware_fire_step);
     hook_call("aware: unit target entry set (call 0x43aa03) -> aware.c", 0x43aa03, 0x43aa10, (void *)aware_unit_target);
     hook_call("aware: mission script ATTACK (call 0x4526ab) -> aware.c (log only)", 0x4526ab, 0x41e9c0, (void *)aware_script_attack);
+    /* mines.c (2026-11-21, [controls] mine_click): the mine weapon's lay call in FUN_00445c70 (case 11) -> mines_lay,
+     * which hands MineLay 0x446600 the tile Sarge's click asked for instead of the muzzle point (else unchanged) */
+    hook_call("mines: MineLay (call 0x445f44) -> mines.c", 0x445f44, 0x446600, (void *)mines_lay);
 
     {   /* [gameplay] resume_wait_ms (2026-11-20, stutter hunt; default 100 = the original, nothing patched).
          * Entering play - about 50 frames into every mission, and each time a menu / pause closes - the game sets

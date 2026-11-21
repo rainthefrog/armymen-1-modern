@@ -1454,6 +1454,7 @@ static HCURSOR g_cur_walk, g_cur_enter, g_cur_nowalk, g_cur_exit, g_cur_weapon[4
 #define CUR_SHELL   13
 #define CUR_ROCKET  14
 #define CUR_TANKROUND 15
+#define CUR_MINE    16                          /* inside the mine placement ring: no Windows pointer, modern.c draws the marker */
 static int g_cur_size;
 static volatile int g_hide_reticle;             /* this frame: walk / enter pointer, no reticle */
 static volatile int g_cursor_kind = -1;         /* HOVER_* shown, -1 = the game's (no Windows pointer) */
@@ -2290,6 +2291,12 @@ static void apply_modern_controls(void)
             else { sarge_tap_at = now; if (SARGE_POSE(u) == POSE_PRONE) sarge_pending = 1; else stance_cycle(u, now, "click on Sarge"); }
         }
         if (sarge_pending && now - sarge_tap_at > SARGE_DBL_MS) { sarge_pending = 0; stance_cycle(u, now, "click on prone Sarge"); }
+        /* mines selected: a tap inside the placement ring lays a mine on that tile (mines.c; a tap outside it walks,
+         * a hold inside it still walks toward the pointer) */
+        if (tap && lmode_before == LM_PENDING && !veh && mines_click(S.lpress_x + CAMERA_X, S.lpress_y + CAMERA_Y, now)) {
+            tap = tap_run = 0;
+            S.going = 0; S.nwp = 0; S.route_run = 0; S.running = 0;
+        }
         if (lrelease) press_on_sarge = 0;
         /* right click on one of your soldiers: select his unit (no shot at him) */
         static int rsel;
@@ -2349,7 +2356,9 @@ static void apply_modern_controls(void)
             BYTE *vw = *(BYTE **)(veh + 0x20);
             if (vw && *(int *)vw == 6) kind = CUR_TANKROUND;   /* ARMY_LARGE_CANNON */
         }
-        if (kind == HOVER_GROUND && !veh && !right_hold && S.lmode != LM_TURN &&
+        if (kind == HOVER_GROUND && !veh && !right_hold && S.lmode != LM_TURN && mines_pointer_in_reach())
+            kind = CUR_MINE;                                                            /* mines.c: the marker is the pointer */
+        else if (kind == HOVER_GROUND && !veh && !right_hold && S.lmode != LM_TURN &&
             pointer_unreachable(u, px + CAMERA_X, py + CAMERA_Y, now)) kind = CUR_NOWALK;   /* cannot walk there */
         /* one cursor (user): over the interface the Windows arrow shows - no reticle left on the battlefield */
         g_hide_reticle = kind != -1 || controls_pointer_on_ui();
@@ -2367,6 +2376,13 @@ static void apply_modern_controls(void)
             return;
         }
         modern_on_foot(u, sx, sy, px, py, pointer, left, fire_was, right_hold, right_tap, kx, ky, now);
+        {   /* a mine being laid at a clicked tile (mines.c presses / releases fire): stand, face the spot */
+            int fx, fy;
+            if (mines_frame(now, &fx, &fy)) {
+                S.going = 0;
+                if (!kx && !ky && (fx != SARGE_X(u) || fy != SARGE_Y(u))) set_facing(u, facing_toward(fx - SARGE_X(u), fy - SARGE_Y(u)));
+            }
+        }
         stance_update(u, now);                  /* click on Sarge: standing up step by step */
         S.left_was_down = fire_was = left;
     }
