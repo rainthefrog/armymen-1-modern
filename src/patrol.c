@@ -96,6 +96,8 @@ static DWORD g_last_clock;
 #define GAME_SCENARIO    (*(int *)(GAME_PTR + 0x70))
 #define GAME_MISSION     (*(int *)(GAME_PTR + 0x74))
 static int g_key = -1;
+#define SCRIPTED_MAX 8
+static int g_scripted_done[SCRIPTED_MAX];
 static DWORD g_mission_t0;       /* game clock when this mission was first seen */
 static void sync(void)
 {
@@ -104,6 +106,7 @@ static void sync(void)
     if (key != g_key || now + 1000 < g_last_clock) {
         if (g_cfg.log >= 1) mlog("patrol: mission %d (scenario %d) - patrols reset (game clock %lu, was %lu)", GAME_MISSION, GAME_SCENARIO, now, g_last_clock);
         memset(g_p, 0, sizeof g_p);
+        memset(g_scripted_done, 0, sizeof g_scripted_done);
         g_key = key; g_mission_t0 = now;
     }
     g_last_clock = now;
@@ -197,12 +200,65 @@ static int alive(BYTE *u)
     return 0;
 }
 
+/* Scripted patrols (2026-11-21, user: mission 1's TanRifle10 - "make him patrol the bridge"): a named unit that the
+ * mission places standing (DEPLOY STANDFIRE) patrols between two points set here, from SCRIPTED_START_MS after the
+ * mission start (after the map's deploy orders), with the game's own GOTO order and the same arguments the map's
+ * marches use; it ends like every patrol (noticed Sarge, another order, gone). Desert 1 bridge into town (objects
+ * cat 7 Bridge: 2378..2745 x 247..390, Sarge starts at 2856,296): mid-bridge <-> the town-side end, so he is not on
+ * top of Sarge's start. */
+#define SCRIPTED_START_MS 3500
+typedef struct { int mission; const char *name; short ax, ay, bx, by; } Scripted;
+static const Scripted SCRIPTED[] = {
+    { 1, "TanRifle10", 2650, 310, 2390, 390 },
+};
+
+static BYTE *unit_of_item(BYTE *item)
+{
+    int a = UID_ARMY(*(DWORD *)item);
+    if (!enemy_army(a)) return NULL;
+    BYTE *leg = ((BYTE *(__fastcall *)(int))0x41a160)(a);
+    if (!leg) return NULL;
+    BYTE *un = *(BYTE **)(leg + 4), *end = *(BYTE **)(leg + 8);
+    for (int g = 0; un && un < end && g < 64; un += UNIT_STRIDE, g++)
+        for (int i = 0; i <= U_LAST(un) && i < 10; i++) if (U_TROOPS(un)[i] == item) return un;
+    return NULL;
+}
+static void scripted_start(DWORD now)
+{
+    for (int k = 0; k < (int)(sizeof SCRIPTED / sizeof *SCRIPTED); k++) {
+        const Scripted *sc = &SCRIPTED[k];
+        if (g_scripted_done[k] || sc->mission != GAME_MISSION || now - g_mission_t0 < SCRIPTED_START_MS) continue;
+        g_scripted_done[k] = 1;
+        int x, y, raw; BYTE *it = NULL;
+        if (!objectives_item_ground(sc->name, &x, &y, &raw, &it) || !it) { mlog("patrol: scripted %s not found", sc->name); continue; }
+        BYTE *u = UID_TYPE(*(DWORD *)it) == TYPE_UNIT ? it : unit_of_item(it);   /* the named item is usually the unit itself */
+        if (!u || !alive(u) || patrol_of(u)) { mlog("patrol: scripted %s: no unit (%p)", sc->name, u); continue; }
+        for (int i = 0; i < MAX_PATROLS; i++) if (!g_p[i].u) {
+            Patrol *p = &g_p[i];
+            memset(p, 0, sizeof *p);
+            p->u = u; p->uid = U_UID(u);
+            p->post = (DWORD)(WORD)sc->ax | (DWORD)(WORD)sc->ay << 16;
+            p->goal = (DWORD)(WORD)sc->bx | (DWORD)(WORD)sc->by << 16;
+            p->a3 = 1; p->a4 = 3; p->a5 = 3; p->a6 = -2; p->a7 = 0;     /* the arguments the map's marches use (Desert 1 log) */
+            p->leg = 0; p->leg_at = now;
+            g_issuing = 1;
+            patrol_order_original(u, ORDER_GOTO, p->post, NULL, p->a3, p->a4, p->a5, p->a6, p->a7);
+            g_issuing = 0;
+            p->set_goal = U_GOAL(u);
+            mlog("patrol: %s (unit %08lx at %d,%d) PATROLS %d,%d <-> %d,%d (scripted; first leg end set at %d,%d)", sc->name, p->uid, U_X(u), U_Y(u),
+                 sc->ax, sc->ay, sc->bx, sc->by, PX(p->set_goal), PY(p->set_goal));
+            break;
+        }
+    }
+}
+
 void patrol_frame(void)
 {
     if (!GAME_PTR) return;
     sync();
     DWORD now = GAME_CLOCK;
     if (!g_cfg.patrol_marches) { memset(g_p, 0, sizeof g_p); return; }
+    scripted_start(now);
     for (int i = 0; i < MAX_PATROLS; i++) {
         Patrol *p = &g_p[i];
         BYTE *u = p->u;

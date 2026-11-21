@@ -55,7 +55,8 @@ typedef struct { int mission, stage, kind; const char *name; int pad, x, y; cons
  * until: a W_POINT is done when all these named items are done ("a|b|c"), else when Sarge reaches it. */
 #define POST(m, s, n) { m, s, W_ITEM, n, 0, 0, 0, 0, 0, 1, 0 }
 static const Way WAYS[] = {
-    { 1, 0, W_ITEM, "TanRifle10" },     { 1, 1, W_PAD, 0, 200 },                         /* des1_1:49-51 */
+    /* TanRifle10 patrols the bridge into town (patrol.c, 2026-11-21 user): the waypoint is the bridge, done when he is dead */
+    { 1, 0, W_POINT, 0, 0, 2520, 350, 0, 0, 0, "TanRifle10" }, { 1, 1, W_PAD, 0, 200 },   /* des1_1:49-51 */
     { 2, 0, W_PAD, 0, 15 },             { 2, 1, W_PAD, 0, 200 },                         /* des1_2:28 BlueInside = the courier's end point (porch); 93-98 */
     { 3, 0, W_POINT, 0, 0, 320, 3160 }, { 3, 1, W_PAD, 0, 75, 0, 0, 0, "GreenTank201" }, /* des1_3:45, 77, 81-82 */
     /* the squad TanRifle20-22 (des2_1:118-120: 618,395 / 524,546 / 306,541) - one rendezvous at their middle
