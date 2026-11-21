@@ -188,6 +188,18 @@ static void pad_centre(int pad, int *x, int *y)
     *x = (int)(sx / k); *y = (int)(sy / k);
 }
 
+/* Sarge (world x, y) stands on one of the pad's tiles - the game's own "on_<pad>" test (2026-11-21: "pad reached" was
+ * 48 px of the pad's centre; a big pad area (mission 4 pad 11: 252 tiles) is entered long before that) */
+static int on_pad(int pad, int x, int y)
+{
+    BYTE *layer = pad < 8 ? PAD_BITS_LAYER : PAD_BYTE_LAYER;
+    unsigned n = MAP_TILE_COUNT, w = MAP_TILES_W;
+    if (!layer || !w || x < 0 || y < 0) return 0;
+    unsigned t = (unsigned)(y / 16) * w + (unsigned)(x / 16);
+    if (t >= n || IsBadReadPtr(layer + t, 1)) return 0;
+    return pad < 8 ? (layer[t] & (1 << pad)) != 0 : layer[t] == pad;
+}
+
 static int dist2(int ax, int ay, int bx, int by) { int dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
 
 /* the nearest cell with a fully open 3x3 (strict rule) within r cells of x, y; 1 = found (x, y moved there if needed) */
@@ -325,7 +337,7 @@ static int wp_done(int k, const char **why)
         if (w->kind == W_ITEM) { int x, y, raw; d = objectives_item_ground(w->name, &x, &y, &raw, NULL) == -1; if (d) *why = "target done"; }
         else if (w->kind == W_PAD) {
             const short *p = PAD_LOC(w->pad);
-            d = near_wp || dist2(sx, sy, p[0] + 8, p[1] + 8) <= r * r; if (d) *why = "pad reached";
+            d = near_wp || dist2(sx, sy, p[0] + 8, p[1] + 8) <= r * r || on_pad(w->pad, sx, sy); if (d) *why = "pad reached";
         } else if (w->until) { d = names_done(w->until); if (d) *why = "its targets done"; }
         else { d = near_wp || dist2(sx, sy, w->x, w->y) <= r * r; if (d) *why = "point reached"; }
         if (d) g_mem_done[i] = 1; else all = 0;

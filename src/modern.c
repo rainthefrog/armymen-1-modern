@@ -968,6 +968,42 @@ static void modern_draw_body(Surf *b)
          * dashes). Each waypoint: a ring with its number. Drawn as row runs, only segments touching the screen. */
         QueryPerformanceCounter(&q0);
         const MissionPt *mp; int n = missionpath_points(&mp);
+        /* DRAW-IN (2026-11-21, user: "would be cool to animate it drawing in instead of just popping it in"): when a new
+         * leg is shown (other first point / count), the lane grows along the route from its start over LANE_DRAW_MS-ish
+         * (length / LANE_DRAW_PX_S, clamped LANE_DRAW_MIN..MAX ms, eased out); waypoint rings appear when reached. */
+        #define LANE_DRAW_PX_S 2200.0
+        #define LANE_DRAW_MIN  500
+        #define LANE_DRAW_MAX  1500
+        static const MissionPt *anim_first; static int anim_n; static DWORD anim_t0; static MissionPt anim_pts[2048];
+        if (n >= 2) {
+            DWORD tnow = GetTickCount();
+            if (mp != anim_first || n != anim_n || mp[0].x != anim_pts[0].x || mp[0].y != anim_pts[0].y) {
+                anim_first = mp; anim_n = n; anim_t0 = tnow; anim_pts[0] = mp[0];
+            }
+            double len = 0;
+            for (int i = 0; i + 1 < n; i++) len += sqrt((double)(mp[i + 1].x - mp[i].x) * (mp[i + 1].x - mp[i].x) + (double)(mp[i + 1].y - mp[i].y) * (mp[i + 1].y - mp[i].y));
+            double dur = len / LANE_DRAW_PX_S * 1000.0;
+            if (dur < LANE_DRAW_MIN) dur = LANE_DRAW_MIN;
+            if (dur > LANE_DRAW_MAX) dur = LANE_DRAW_MAX;
+            double f = (tnow - anim_t0) / dur;
+            if (f < 1.0 && n <= (int)(sizeof anim_pts / sizeof *anim_pts)) {
+                f = 1.0 - (1.0 - f) * (1.0 - f);            /* ease out */
+                double want = len * f, acc = 0;
+                int k = 0;
+                anim_pts[k++] = mp[0];
+                for (int i = 0; i + 1 < n; i++) {
+                    double seg = sqrt((double)(mp[i + 1].x - mp[i].x) * (mp[i + 1].x - mp[i].x) + (double)(mp[i + 1].y - mp[i].y) * (mp[i + 1].y - mp[i].y));
+                    if (acc + seg <= want) { anim_pts[k++] = mp[i + 1]; acc += seg; continue; }
+                    double t = seg > 0 ? (want - acc) / seg : 0;
+                    MissionPt e = mp[i + 1];
+                    e.x = (short)(mp[i].x + (mp[i + 1].x - mp[i].x) * t); e.y = (short)(mp[i].y + (mp[i + 1].y - mp[i].y) * t);
+                    e.wp = 0;                                    /* the ring when the line gets there */
+                    anim_pts[k++] = e;
+                    break;
+                }
+                mp = anim_pts; n = k;
+            }
+        }
         if (n >= 2) {
             g_route = 1;
             int W = g_cfg.width, H = g_cfg.height;

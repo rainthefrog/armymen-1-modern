@@ -412,7 +412,9 @@ static HRESULT WINAPI kb_get_state(void *dev, DWORD size, void *data)
             bindings_hide(keys);
             for (int i = 0; i < 256; i++) {
                 if (g_force[i]) keys[i] = 0x80;
-                if (g_pulse[i]) { keys[i] = 0x80; g_pulse[i] = 0; }
+                /* a pulse is kept while the game clock is paused (2026-11-21: a DIVE picked in the radial / stance picker
+                 * was sent in the last paused frame - menu_pause - and lost): delivered in the first running frame */
+                if (g_pulse[i] && !clock_is_paused()) { keys[i] = 0x80; g_pulse[i] = 0; }
             }
         }
     }
