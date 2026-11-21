@@ -103,6 +103,9 @@ static Row g_rows[] = {
     { "Army Men II sounds",       &g_cfg.am2_sounds, "audio", "am2_sounds" },              /* audio.c (2026-11-21) */
     { "Army Men II music",        &g_cfg.am2_music, "audio", "am2_music" },                /* music.c (2026-11-21) */
     { "Enemy marches patrol",     &g_cfg.patrol_marches, "gameplay", "patrol_marches" },  /* patrol.c (2026-11-21) */
+    { "Squad: health regeneration", &g_cfg.ally_regen, "gameplay", "ally_regen" },        /* allies.c (2026-11-21) */
+    { "Squad: medkits heal them", &g_cfg.ally_heal, "gameplay", "ally_heal" },
+    { "Squad: health bars",       &g_cfg.ally_health_bars, "hud", "ally_health_bars" },
 };
 #define ROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 #define SPEED_ROW ROWS                 /* game speed */

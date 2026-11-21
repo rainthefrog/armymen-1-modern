@@ -917,6 +917,7 @@ static void modern_draw_body(Surf *b)
     static double mt[6]; static DWORD mt_at; LARGE_INTEGER q0, q1, qf; QueryPerformanceFrequency(&qf);
     #define MT(i, code) do { QueryPerformanceCounter(&q0); code; QueryPerformanceCounter(&q1); mt[i] += (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart; } while (0)
     if (modern_on(MOD_HEALTH_BARS)) { MT(0, each_enemy(health_bar)); MT(1, target_health_bars()); }
+    if (g_cfg.ally_health_bars) allies_each(health_bar);   /* allies.c (2026-11-21): the player's hurt soldiers, same pips */
     {   /* a captured enemy vehicle: a green driver in the seat (2026-11-20, user: "just drawing the driver in there") -
          * head and shoulders, a little behind the vehicle's centre along its hull facing, drawn on top */
         int vx, vy, f;
@@ -1085,6 +1086,18 @@ static void modern_draw_body(Surf *b)
                 /* why not (the mines left show at the pointer already: ammo at the reticle) */
                 if (mp.state != MINE_OK) text(mx + 10, my - 12, WHY[mp.state], C_GREY, 1);
             }
+        }
+    }
+    {   /* medkit selected (allies.c, 2026-11-21): beside the heal pointer (the red / grey cross is the Windows pointer)
+         * what a click does - on a hurt soldier "HEAL +50%" in red, on a healthy one "FULL HEALTH" in grey, elsewhere
+         * the kits carried. From the game's data (the soldier's health under the pointer), drawn last, clear of the HUD. */
+        HealInfo hi;
+        if (allies_heal_info(&hi)) {
+            int mx, my; to_screen(hi.x, hi.y, &mx, &my);
+            char s[48];
+            if (hi.state == HEAL_OK) { wsprintfA(s, "HEAL +%d%%", hi.pct); text(mx + 14, my + 6, s, C_RED, 1); }
+            else if (hi.state == HEAL_FULL) text(mx + 14, my + 6, "FULL HEALTH", C_GREY, 1);
+            else { wsprintfA(s, "MEDKIT x%d: CLICK A SOLDIER", hi.kits); text(mx + 14, my + 6, s, C_WHITE, 1); }
         }
     }
     {   /* the minesweeper carried (mines.c, 2026-11-21): from the game's data (Sarge, the mine objects, the plate =

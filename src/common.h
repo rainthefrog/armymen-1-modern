@@ -113,6 +113,10 @@ struct Config {
     int enemy_awareness;            /* [modern] enemy_awareness: could-see marks, exposure meter, delayed spotting, alerts (aware.c, modern.c) */
     int squad_sprint;               /* [gameplay] squad_sprint: troopers following Sarge sprint with him / to catch up (squad.c) */
     int patrol_marches;             /* [gameplay] patrol_marches: enemy units marching to a far point at deploy patrol between their post and that point (patrol.c) */
+    int ally_regen;                 /* [gameplay] ally_regen: the player's soldiers heal slowly like Sarge (allies.c) */
+    int ally_heal;                  /* [gameplay] ally_heal: medkits carried at full health, used on soldiers by clicking them (allies.c) */
+    int ally_health_x;              /* [gameplay] ally_health_x: max health of the player's soldiers in percent of the game's (allies.c, default 200) */
+    int ally_health_bars;           /* [hud] ally_health_bars: health bars over the player's hurt soldiers (modern.c) */
     int am2_sounds;                 /* [audio] am2_sounds: Army Men II sound effects from <game>\am2_sounds (audio.c) */
     int am2_music;                  /* [audio] am2_music: Army Men II music from <game>\am2_music (music.c) */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
@@ -566,6 +570,7 @@ enum { ACT_UP, ACT_LEFT, ACT_DOWN, ACT_RIGHT, ACT_SPRINT, ACT_SLOW,
        ACT_WEAPON1, ACT_WEAPON2, ACT_WEAPON3, ACT_WEAPON4, ACT_WEAPON5, ACT_WEAPON6,
        ACT_NEXT_WEAPON, ACT_PREV_WEAPON, ACT_QUICK_SWAP, ACT_DROP, ACT_SPECIAL, ACT_ENTER, ACT_MAP, ACT_OBJECTIVE,
        ACT_RADIAL, ACT_PING, ACT_STATS, ACT_PEEK, ACT_RESTART,
+       ACT_HEAL,           /* allies.c: medkit selected (heal a soldier by clicking him) */
        ACT_COUNT };
 /* Input-aware hints (for any hint / tip code):
  *   controls_last_device()  0 = the mouse, 1 = the keyboard was used last for an action (gameplay)
@@ -820,3 +825,19 @@ int mines_transfer(BYTE *to, BYTE *from, int n);   /* weapons.c: move free charg
 BYTE *weapons_carried(int type, void **item); /* weapons.c: record of a carried weapon of this type (any slot / box) */
 int weapons_room_for_special(void);         /* weapons.c: a special weapon picked up now would be taken */
 void __fastcall mines_lay(BYTE *weapon, int army, DWORD point);   /* call 0x445f44 -> MineLay 0x446600 */
+/* allies.c (2026-11-21): the player's soldiers - regeneration, more health, medkits used on them (AM2 style) */
+void allies_frame(void);                    /* gameplay.c gameplay_frame: regeneration, mission change */
+void __fastcall allies_trooper_join(BYTE *trooper, BYTE *unit);   /* call 0x43b4e5 -> FUN_0043b5f0 (trooper joins his unit) */
+int __fastcall allies_pickup_test(BYTE *item, BYTE *sarge);       /* call 0x439855 -> FUN_00439700 (may Sarge pick this up) */
+int allies_kits(void);                      /* medkits carried (weapons.c HUD badge) */
+int allies_heal_mode(void);                 /* the medkit is selected */
+void allies_toggle_heal(void);              /* controls.c: the heal key (ACT_HEAL) */
+enum { HEAL_OK, HEAL_FULL, HEAL_NO_KITS, HEAL_NOBODY, HEAL_NO_WAY };
+int allies_hover(int wx, int wy, int unreachable);   /* controls.c / modern.c: what a heal click at the world point would do (HEAL_*) */
+int allies_click(int wx, int wy, DWORD now, int *walk_x, int *walk_y);   /* controls.c: a left tap; 0 = normal, 1 = taken, 2 = walk to *walk_x, *walk_y first */
+int allies_heal_self(void);                 /* controls.c: a click on Sarge in heal mode; 1 = a kit used (no stance change) */
+int allies_walk_frame(DWORD now, int walking);   /* controls.c after the on-foot controls: 1 = stop the walk (soldier reached and healed) */
+typedef struct { int on, kits, state, pct, x, y, hp, max; } HealInfo;   /* x, y: world point under the pointer */
+int allies_heal_info(HealInfo *hi);         /* modern.c: heal mode on: the label at the pointer */
+typedef void (*SoldierFn)(BYTE *trooper, int cx, int cy, int top, int is_vehicle);
+void allies_each(SoldierFn fn);                /* modern.c: every living soldier of the player's army on the map (health bars) */

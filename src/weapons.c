@@ -731,11 +731,39 @@ int weapons_room_for_special(void)
     return first_free_box(u) >= 0;
 }
 
+/* Medkits carried (allies.c, 2026-11-21): a red cross on a white plate + the count in the top-right corner of the rifle
+ * box (A1); while the medkit is selected (heal pointer) the plate blinks green. Drawn every frame into the game's HUD
+ * rows like the sweeper lamp. */
+static void draw_medkit_badge(Surf *back, BYTE *u)
+{
+    int n = allies_kits();
+    if (!u || n <= 0 || SARGE_VEHICLE(u)) return;
+    RECT r = box_rect(0);
+    int cx = r.right - 8, cy = r.top + 6;
+    BYTE black = (BYTE)nearest_colour(0, 0, 0), red = (BYTE)nearest_colour(225, 25, 25);
+    BYTE plate = allies_heal_mode() && (GetTickCount() / 300) % 2 ? (BYTE)nearest_colour(80, 230, 80) : (BYTE)nearest_colour(245, 245, 245);
+    for (int y = -5; y <= 5; y++)
+        for (int x = -5; x <= 5; x++) {
+            int edge = x == -5 || x == 5 || y == -5 || y == 5;
+            int cross = (x >= -1 && x <= 1 && y >= -3 && y <= 3) || (y >= -1 && y <= 1 && x >= -3 && x <= 3);
+            put_px(back, cx + x, cy + y, edge ? black : cross ? red : plate);
+        }
+    char s[4]; wsprintfA(s, "%d", n > 9 ? 9 : n);   /* the digit left of it, white on a black edge */
+    int x = cx - 11;
+    for (int row = 0; row < 5; row++)
+        for (int k = 0; k < 3; k++)
+            for (int oy = -1; oy <= 1; oy++) for (int ox = -1; ox <= 1; ox++) put_px(back, x + k + ox, cy - 2 + row + oy, black);
+    for (int row = 0; row < 5; row++)
+        for (int k = 0; k < 3; k++)
+            if (DIGIT3x5[s[0] - '0'][row] & (4 >> k)) put_px(back, x + k, cy - 2 + row, (BYTE)nearest_colour(255, 255, 255));
+}
+
 /* Called with the finished game picture (before it is shown). */
 void weapons_draw_markers(Surf *back)
 {
     BYTE *u = SARGE;
     draw_vehicle_unlimited(back);                 /* also with classic controls / five-weapon HUD */
+    if (back && HUD_WIDGETS && layout_view_is_gameplay() && u && SARGE_HEALTH(u) > 0) draw_medkit_badge(back, u);
     if (!six() || !back || !HUD_WIDGETS || !layout_view_is_gameplay()) return;
     int alive = u && SARGE_HEALTH(u) > 0;
     if (alive) { valid(u); sync(u); }

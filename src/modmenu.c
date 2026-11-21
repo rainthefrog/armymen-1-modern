@@ -132,14 +132,16 @@ static const Item COMBAT[] = {
     { "Height rules", 2, 6 }, { "Longer range", 0, 17 }, { "No corner squash", 0, 20 }, { "Health regen", 0, 2 }, { "Half damage", 1, MOD_HALF_DAMAGE },
     { "Aim assist", 1, MOD_AIM_ASSIST }, { "Hit markers", 1, MOD_HIT_MARKERS }, { "Damage direction", 1, MOD_DAMAGE_DIR },
     { "Health bars", 1, MOD_HEALTH_BARS }, { "Enemy vehicles", 0, 23 }, { "Vehicle bail-out", 3, 4 }, { "Enemy awareness", 3, 5 },
+    { "Squad regen", 3, 8 }, { "Squad medkits", 3, 9 },
 };
 static const Item MENUS[] = {
     { "Sharp menu text", 0, 19 }, { "Buttons press in", 0, 16 }, { "Radio overlay", 0, 21 },
-    { "AM II sounds", 3, 6 }, { "AM II music", 3, 7 },    /* audio.c / music.c (2026-11-21; GENERAL is full: 18 rows) */
+    { "AM II sounds", 3, 6 }, { "AM II music", 3, 7 }, { "Squad health bars", 3, 10 },    /* audio.c / music.c (2026-11-21; GENERAL is full: 18 rows) */
 };
 /* minimap.c switches: source 3 = the panel.c row holding that value (found by its pointer, so the row index
  * does not matter - rows appended by other features before them do not shift these) */
-static int *const MM_VALUE[] = { &g_cfg.mm_blips, &g_cfg.mm_sarge, &g_cfg.mm_contrast, &g_cfg.mm_hover, &g_cfg.vehicle_bailout, &g_cfg.enemy_awareness, &g_cfg.am2_sounds, &g_cfg.am2_music };
+static int *const MM_VALUE[] = { &g_cfg.mm_blips, &g_cfg.mm_sarge, &g_cfg.mm_contrast, &g_cfg.mm_hover, &g_cfg.vehicle_bailout, &g_cfg.enemy_awareness, &g_cfg.am2_sounds, &g_cfg.am2_music,
+                                 &g_cfg.ally_regen, &g_cfg.ally_heal, &g_cfg.ally_health_bars };   /* allies.c (2026-11-21) */
 static const Item MINIMAP[] = {
     { "Bigger blips", 3, 0 }, { "Sarge marked", 3, 1 }, { "Map contrast", 3, 2 }, { "Hover details", 3, 3 },
     { "Minimap size", 2, 2 },
