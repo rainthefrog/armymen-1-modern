@@ -47,7 +47,15 @@
 #define INPUT_FIRE         0x1
 
 typedef int (__fastcall *CategoryFn)(void *item);
-static int safe_item(void *it) { return it && !IsBadReadPtr(it, 0x40) && !IsBadReadPtr(*(void **)((BYTE *)it + 0x20) ? *(void **)((BYTE *)it + 0x20) : it, 4); }   /* the item and its weapon record readable */
+/* the item and its weapon record readable - 2026-11-21 CRASH (user, entering mission 7 after mission 6: EXCEPTION at
+ * 0x4492b3 in WeaponSlot FUN_004492b0 called from weapons_draw_markers): an item with NO weapon record (+0x20 NULL,
+ * while the next mission's items are being restored) passed, because the old test then re-checked the item itself */
+static int safe_item(void *it)
+{
+    if (!it || IsBadReadPtr(it, 0x40)) return 0;
+    void *w = *(void **)((BYTE *)it + 0x20);
+    return w && !IsBadReadPtr(w, 0x20);
+}
 typedef int (__fastcall *SelectSlotFn)(BYTE *unit, int slot);
 typedef void (__fastcall *DropFn)(BYTE *unit, int slot, DWORD where);
 #define ITEM_CATEGORY_RAW  ((CategoryFn)0x4492b0)
