@@ -758,6 +758,11 @@ int capture_hover_ok(BYTE *vehicle);                              /* another arm
 const char *capture_hover_note(int wx, int wy, int *vx, int *vy);   /* capture.c: why an enemy vehicle cannot be taken */
 BYTE *capture_vehicle(void);
 int capture_driver_seat(int *wx, int *wy, int *facing);           /* capture.c: captured vehicle position + hull facing */
+int __fastcall deploy_force_records(DWORD *rec, int count, int full);  /* deploy.c: FUN_004196e0 rewrite (skips a record whose item is gone) */
+void __fastcall deploy_vehicle_weapons(DWORD *rec, int count, void *unused);   /* deploy.c: FUN_0041ab30 rewrite (NULL-safe) */
+typedef void (__fastcall *ArmySaveFn)(void *file);
+extern ArmySaveFn capture_army_save_original;
+void __fastcall capture_army_save(void *file);                   /* capture.c: wraps the army file writer FUN_0041a3e0 */
 void controls_facing_vector(int facing, double *dx, double *dy);   /* controls.c: unit vector of a facing */
 int modern_text(Surf *b, int x, int y, const char *s, BYTE c);       /* modern.c: the mod's own 5x7 text */                                      /* the vehicle Sarge took from another army, or NULL */
 /* minimap.c (2026-11-20): minimap blips, contrast, hover details */

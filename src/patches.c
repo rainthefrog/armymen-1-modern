@@ -322,6 +322,14 @@ void patches_apply(void)
     capture_unit_enter_original = (CaptureTwoFn)hook_wrap("capture: UnitEnterVehicle (0x41d800) -> capture.c", 0x41d800, uin_o, sizeof uin_o,
                                                           (void *)capture_unit_enter);
     hook_call("capture: RunAI -> HandleVehicle (0x4296b6)", 0x4296b6, 0x4296f0, (void *)capture_handle_vehicle);
+    /* deploy.c (2026-11-21): FUN_004196e0 places an army's force records (mission start / Play Again) - NULL-safe rewrite */
+    static const BYTE deploy_o[] = { 0x81,0xec,0xd4,0x00,0x00,0x00 };           /* FUN_004196e0: sub esp,0D4h */
+    hook_jmp("deploy: force records (FUN_004196e0) -> deploy.c (NULL-safe)", 0x4196e0, deploy_o, sizeof deploy_o, (void *)deploy_force_records);
+    static const BYTE wpn_o[] = { 0x56, 0x8b,0xf1, 0x85,0xd2 };                  /* FUN_0041ab30: push esi; mov esi,ecx; test edx,edx */
+    hook_jmp("deploy: vehicle weapons (FUN_0041ab30) -> deploy.c (NULL-safe)", 0x41ab30, wpn_o, sizeof wpn_o, (void *)deploy_vehicle_weapons);
+    static const BYTE asave_o[] = { 0x81,0xec,0x50,0x01,0x00,0x00 };             /* FUN_0041a3e0 army file writer: sub esp,150h */
+    capture_army_save_original = (ArmySaveFn)hook_wrap("capture: army file writer (FUN_0041a3e0) -> capture.c", 0x41a3e0, asave_o, sizeof asave_o,
+                                                       (void *)capture_army_save);
     /* vehicles.c (2026-11-20): the player's vehicle update (unstick, no creeping into objects, trace) and the turret
      * turning with the hull (skipped for Sarge's turret while turret_smooth: it keeps its aim). Inactive while off. */
     hook_call("vehicles: VehicleUpdate (call 0x419c52) -> vehicles.c", 0x419c52, 0x4176f0, (void *)vehicles_update);
