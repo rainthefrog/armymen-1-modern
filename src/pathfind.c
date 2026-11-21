@@ -657,7 +657,11 @@ int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int 
 #define HA_HEADS       32
 #define HA_MAX_NODES   60000
 #define HA_HASH        (1 << 17)
-#define HA_REV_COST    1.6f
+/* backward motion cost factor: 4 (2026-11-21, user: "clicking behind a vehicle makes them reverse to the position. make them
+ * turn around and go to the position" - at 1.6 backing 200 px (320) beat turning round (tank spin ~144 + 200)); short
+ * backing to line up with a gap stays cheap enough. [controls] vehicle_reverse_cost (x10, default 40) */
+static float ha_rev_cost(void) { static float c = -1; if (c < 0) { int v = GetPrivateProfileIntA("controls", "vehicle_reverse_cost", 40, mod_ini_path()); c = v < 10 ? 1.0f : v / 10.0f; } return c; }
+#define HA_REV_COST    ha_rev_cost()
 #define HA_SWITCH_COST 40.0f
 #define HA_TURN_COST   3.0f
 #define HA_SPIN_COST   9.0f
