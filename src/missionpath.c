@@ -47,7 +47,9 @@ static const Way WAYS[] = {
     { 1, 0, W_ITEM, "TanRifle10" },     { 1, 1, W_PAD, 0, 200 },                         /* des1_1:49-51 */
     { 2, 0, W_PAD, 0, 15 },             { 2, 1, W_PAD, 0, 200 },                         /* des1_2:28 BlueInside = the courier's end point (porch); 93-98 */
     { 3, 0, W_POINT, 0, 0, 320, 3160 }, { 3, 1, W_PAD, 0, 75, 0, 0, 0, "GreenTank201" }, /* des1_3:45, 77, 81-82 */
-    { 4, 0, W_POINT, 0, 0, 618, 395 },  { 4, 0, W_POINT, 0, 0, 524, 546 }, { 4, 0, W_POINT, 0, 0, 306, 541 },   /* TanRifle20-22, des2_1:118-120 */
+    /* the squad TanRifle20-22 (des2_1:118-120: 618,395 / 524,546 / 306,541) - one rendezvous at their middle
+     * (2026-11-20, user: "if [multiple targets], get the middle of these and use that as the target position") */
+    { 4, 0, W_POINT, 0, 0, 483, 494 },
     { 4, 1, W_PAD, 0, 11 },             { 4, 2, W_PAD, 0, 10 },                          /* des2_1:150-160 */
     { 5, 0, W_ITEM, "BigBase" },        { 5, 1, W_PAD, 0, 10 },                          /* des2_2:63-65, 130-133 (Key1 drops at it) */
     { 6, 0, W_PAD, 0, 10 },             { 6, 1, W_POINT, 0, 0, 2390, 2700 }, { 6, 2, W_PAD, 0, 11 },   /* des3_1:11-14, 117-133 */

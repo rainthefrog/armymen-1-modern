@@ -333,6 +333,7 @@ void clock_trace_frame(const char *line);                          /* clock.c: o
 void controls_trace_info(char *buf, int n);                        /* controls.c: unit / camera for the trace */
 int panel_rect(RECT *r);                                           /* panel.c: open panel on screen */
 int tips_rect(RECT *r);                                            /* tips.c: tooltip on screen (recent) */
+void tips_note_rect(RECT r);
 int objectives_box(RECT *r);                                       /* objectives.c: pinned box on screen */
 int overlay_at(int x, int y);                                      /* panel.c: game point on a mod box */
 int overlay_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);       /* panel.c: window hook (F9, F10, clicks) */

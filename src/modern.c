@@ -344,6 +344,15 @@ static void lane_run(int y, int xa, int xb, BYTE c, int fill)
     if (xb > g_cfg.width) xb = g_cfg.width;
     if (xb > b->w) xb = b->w;
     if (xb <= xa) return;
+    /* 2026-11-20 (user: "the briefing left side seems to fade ... the top looks like its fading"): the lane under the
+     * pinned objectives box became dithered low-res pixels in the box (the box shades the lane bytes, the GPU then
+     * shows those game pixels there). The lane stays out of the box. */
+    RECT ob;
+    if (objectives_box(&ob) && y >= ob.top && y < ob.bottom && xb > ob.left && xa < ob.right) {
+        if (xa < ob.left) lane_run(y, xa, ob.left, c, fill);
+        if (xb > ob.right) lane_run(y, ob.right, xb, c, fill);
+        return;
+    }
     if (g_cfg.hd_world && y < g_hud_top && hdworld_under_fill(b, y, xa, xb, c)) return;
     if (g_cfg.hd_world && hdworld_over_mask(b)) {             /* HUD rows: the runs between interface pixels */
         int s = -1;

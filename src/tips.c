@@ -99,3 +99,6 @@ void tips_draw(Surf *b)
 }
 
 int tips_rect(RECT *r) { if (GetTickCount() - g_tip_at > 150) return 0; *r = g_tip; return 1; }
+/* minimap.c's blip tip (never shown together with a HUD tip): kept clear of the enlarged HUD groups the same way
+ * (2026-11-20, user screenshot: the air support box was drawn over a blip's details) */
+void tips_note_rect(RECT r) { g_tip = r; g_tip_at = GetTickCount(); }

@@ -473,6 +473,7 @@ void minimap_draw_tip(Surf *b)
     if (y0 < 0) y0 = sy + 18;
     if (y0 + h > H) y0 = H - h;
     if (y0 < 0) y0 = 0;
+    tips_note_rect((RECT){ x0, y0, x0 + w < W ? x0 + w : W, y0 + h < H ? y0 + h : H });
     BYTE *shade = SHADE_40;
     for (int y = y0; y < y0 + h && y < H; y++) {
         BYTE *row = b->bits + (size_t)y * b->pitch;
