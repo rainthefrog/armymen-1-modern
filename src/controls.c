@@ -2128,7 +2128,7 @@ static void apply_modern_controls(void)
              * combat_lock_ms, default 1500; 0 = the old 300 ms "no walk" pause) */
             else if (now - S.fire_end_at < (DWORD)combat_lock_ms()) S.lmode = combat_lock_ms() > WALK_LOCK_AFTER_SHOT_MS ? LM_FIRE : LM_NONE;
             else S.lmode = LM_PENDING;
-            lrun = S.lmode == LM_PENDING && dbl;
+            lrun = (S.lmode == LM_PENDING || S.lmode == LM_ENTER) && dbl;   /* double-click on a vehicle too: sprint to it (2026-11-20, user) */
             press_on_sarge = pointer && field && !veh && hover == HOVER_GROUND && on_sarge(px, py, sx, sy);
             if (g_cfg.log >= 2) mlog("controls: left press -> %s (hover %d)", S.lmode == LM_FIRE ? "fire" : S.lmode == LM_ENTER ? "enter" :
                                      S.lmode == LM_PENDING ? (lrun ? "run" : "walk") : "none", hover);
