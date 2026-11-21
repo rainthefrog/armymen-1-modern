@@ -64,6 +64,13 @@ if [ -n "${CLICKS:-}" ]; then
       rdbldown) xdotool click 3; sleep 0.12; xdotool mousedown 3 ;;   # double-click right and KEEP holding (until rup)
       rdown) xdotool mousedown 3 ;;   # press right and KEEP holding (until rup)
       rup) xdotool mouseup 3 ;;
+      ldown) xdotool mousedown 1 ;;   # press left and KEEP holding (until lup; e.g. the stance drag on Sarge)
+      lup) xdotool mouseup 1 ;;
+      mdown) xdotool mousedown 2 ;;   # middle button down / up (radial)
+      mup) xdotool mouseup 2 ;;
+      mclick) xdotool click 2 ;;
+      dtap:*) k="${s#dtap:}"; xdotool keydown "$k"; sleep 0.1; xdotool keyup "$k"; sleep 0.08; xdotool keydown "$k"; sleep 0.1; xdotool keyup "$k" ;;   # double-tap a key
+      xclick:*) xdotool click "${s#xclick:}" ;;   # side buttons: xclick:8 = Mouse4 (X1), xclick:9 = Mouse5 (X2)
       drag:*) d=(${s#drag:}); d=(${d//,/ }); xdotool mousemove ${d[0]} ${d[1]}; sleep 0.3; xdotool mousedown 1; sleep 0.3
               for i in 1 2 3 4 5 6 7 8; do xdotool mousemove $(( d[0] + (d[2]-d[0])*i/8 )) $(( d[1] + (d[3]-d[1])*i/8 )); sleep 0.1; done
               xdotool mouseup 1 ;;   # drag:x1,y1,x2,y2 with the left button (e.g. a window corner)
@@ -86,4 +93,5 @@ if [ -n "${DPI:-}" ]; then wine reg delete "HKCU\Control Panel\Desktop" /v LogPi
 kill $XPID 2>/dev/null
 echo "done; game pid was $GPID"
 cp "$GAMEDIR"/armymen-mod.log "$OUT/" 2>/dev/null
+cp "$GAMEDIR"/armymen-mod.ini "$OUT/armymen-mod.after.ini" 2>/dev/null   # what the run wrote (bindings, switches)
 ls -la "$OUT"

@@ -145,7 +145,7 @@ static const Item MINIMAP[] = {
 };
 static const Item MODERN1[] = {
     { "Dodge roll key", 1, MOD_ROLL }, { "Sprint stamina", 1, MOD_STAMINA },
-    { "Side btn weapons", 1, MOD_SIDE_BUTTONS }, { "Sprint toggle", 1, MOD_SPRINT_TOGGLE },
+    { "Side buttons", 1, MOD_SIDE_BUTTONS }, { "Sprint toggle", 1, MOD_SPRINT_TOGGLE },
     { "Off-screen arrows", 1, MOD_ARROWS }, { "Ammo at reticle", 1, MOD_AMMO },
     { "Range at reticle", 1, MOD_RANGE_RING }, { "Route marker", 1, MOD_ROUTE }, { "Mission path", 0, 22 }, { "Edge peek key", 1, MOD_PEEK },
     { "No vehicle zoom", 1, MOD_VEHICLE_ZOOM }, { "No screen shake", 1, MOD_NO_SHAKE }, { "Skip videos", 1, MOD_SKIP_VIDEO },

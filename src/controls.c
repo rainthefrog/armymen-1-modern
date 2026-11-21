@@ -195,9 +195,14 @@ static void **g_kb_vtable_patched;
  *   G        -> 3       = Special item    M      -> V       = View map
  *   J        -> O       = Objective       Q, X   hidden (quick swap, hold-X drop: controls_frame)
  * The original Fire keys (Ctrl, Space) are mouse buttons now; Defend Now (F), Change Gunsight (G),
- * Mouse Button 2 (M) and Gun Left/Right (Z/X) stay on their other keys (F10 etc.). g_pulse_key
- * presses one key for a single read (hold-X drop -> F8 = Drop Item). */
-static volatile BYTE g_pulse_key;
+ * Mouse Button 2 (M) and Gun Left/Right (Z/X) stay on their other keys (F10 etc.). pulse() presses a key
+ * for a single read (hold-X drop -> F8 = Drop Item); g_force holds a key down while set (a held binding the
+ * game must see, e.g. Slow on a shared key).
+ * 2026-11-20: the keys are BINDINGS now (bindings.c, F10 panel BINDS page, ini [bindings]): every key above
+ * is the default of an action and can be changed; kb_get_state hides the bound keys (bindings_hide). */
+static volatile BYTE g_pulse[256];
+static BYTE g_force[256];
+static void pulse(int dik) { if (dik > 0 && dik < 256) g_pulse[dik] = 1; }
 
 /* ---------------------------------------------------------------- the game's own key table, modern layout
  * The modern keys used to be remapped in kb_get_state (C -> Num5 etc.), which assumed the game's DEFAULT keys:
@@ -218,28 +223,31 @@ enum { GK_FOLLOW, GK_ATTACK, GK_DEFEND, GK_ATTACK_NOW, GK_DEFEND_NOW, GK_NEXT_UN
        GK_SCROLL, GK_CHAT, GK_OBJECTIVE, GK_VIEW_MAP, GK_GUNSIGHT, GK_MOUSE_BUTTON, GK_ROWS };
 static BYTE *key_row(int game, int row) { return (BYTE *)(intptr_t)((game ? GAME_KEY_TABLE : SARGE_KEY_TABLE) + row * 24 + 0x14); }
 
-static const struct { BYTE game, row, dik; } MODERN_GAME_KEYS[] = {
-    { 0, SK_KNEEL,   0x2e },     /* C      kneel / prone */
-    { 0, SK_DIVE,    0x39 },     /* Space  dive */
-    { 0, SK_SLOW,    0x1d },     /* Ctrl   slow (walk) */
-    { 0, SK_ENTER,   0x21 },     /* F      enter / leave vehicle */
-    { 0, SK_SPECIAL, 0x22 },     /* G      special item */
-    { 1, GK_VIEW_MAP,  0x32 },   /* M      map */
-    { 1, GK_OBJECTIVE, 0x24 },   /* J      objective */
+/* The game rows the modern layout puts a key on: the key is the action's keyboard binding (bindings.c; defaults
+ * C Space Ctrl F G M J), worked out in controls_game_keys (g_row_dik; a spare key when the action has none - then
+ * only its mouse binding / the stance code presses it). The stance row is always pressed by us (tap / hold /
+ * double on C); the others are read by the game directly unless the binding needs us (bindings_direct). */
+static const struct { BYTE game, row, act; } MODERN_GAME_KEYS[] = {
+    { 0, SK_KNEEL,   ACT_KNEEL },     /* C      kneel / prone */
+    { 0, SK_DIVE,    ACT_DIVE },      /* Space  dive */
+    { 0, SK_SLOW,    ACT_SLOW },      /* Ctrl   slow (walk) */
+    { 0, SK_ENTER,   ACT_ENTER },     /* F      enter / leave vehicle */
+    { 0, SK_SPECIAL, ACT_SPECIAL },   /* G      special item */
+    { 1, GK_VIEW_MAP,  ACT_MAP },     /* M      map */
+    { 1, GK_OBJECTIVE, ACT_OBJECTIVE },   /* J      objective */
 };
+#define N_MODERN_GAME_KEYS ((int)(sizeof MODERN_GAME_KEYS / sizeof *MODERN_GAME_KEYS))
+static BYTE g_row_dik[N_MODERN_GAME_KEYS] = { 0x2e, 0x39, 0x1d, 0x21, 0x22, 0x32, 0x24 };
 static BYTE g_key_first[2][SK_ROWS][2], g_key_wrote[2][SK_ROWS][2];
 static int g_keys_seen, g_keys_modern;
 #define KEY_NAMES 0x4cf940          /* char *[256] DIK -> name (FUN_004609a0); NULL / "" = "undefined" */
 
-/* keys the mod itself uses in modern mode: W A S D, 1-6, Q, X, Shift (sprint), the mod's own feature keys */
+/* keys the mod itself uses in modern mode: every active keyboard binding (bindings.c: W A S D, 1-6, Q, X, Shift,
+ * the feature keys ...) and the keys on the game rows above */
 static int modern_reserved_key(int dik)
 {
-    if (dik == 0x11 || dik == 0x1e || dik == 0x1f || dik == 0x20 || (dik >= 0x02 && dik <= 0x07) || dik == 0x10 ||
-        dik == 0x2d || dik == 0x2a || dik == 0x36) return 1;
-    static const int feat[MK_COUNT] = { MOD_ROLL, MOD_PEEK, MOD_STATS, MOD_RADIAL, MOD_PING, MOD_RESTART };
-    for (int k = 0; k < MK_COUNT; k++)
-        if (modern_on(feat[k]) && (int)MapVirtualKeyA((UINT)modern_key(k), MAPVK_VK_TO_VSC) == dik) return 1;
-    for (size_t i = 0; i < sizeof MODERN_GAME_KEYS / sizeof *MODERN_GAME_KEYS; i++) if (MODERN_GAME_KEYS[i].dik == dik) return 1;
+    if (bindings_reserved_dik(dik)) return 1;
+    for (int i = 0; i < N_MODERN_GAME_KEYS; i++) if (g_row_dik[i] == dik) return 1;
     return 0;
 }
 
@@ -304,9 +312,9 @@ static void dispatch_modern(int modern)
         for (BYTE *e = list; *(DWORD *)(e + 4); e += 24) {
             if (!e[0] || !modern_reserved_key(e[0])) continue;
             int ours = 0;                                        /* the entry of the command that owns this key */
-            for (size_t i = 0; i < sizeof MODERN_GAME_KEYS / sizeof *MODERN_GAME_KEYS; i++) {
+            for (int i = 0; i < N_MODERN_GAME_KEYS; i++) {
                 BYTE *k = key_row(MODERN_GAME_KEYS[i].game, MODERN_GAME_KEYS[i].row);
-                if (MODERN_GAME_KEYS[i].dik == e[0] && MODERN_GAME_KEYS[i].game == t && *(DWORD *)(k - 0x14) == *(DWORD *)(e + 4)) ours = 1;
+                if (g_row_dik[i] == e[0] && MODERN_GAME_KEYS[i].game == t && *(DWORD *)(k - 0x14) == *(DWORD *)(e + 4)) ours = 1;
             }
             if (ours || g_ncleared >= 64) continue;
             g_cleared[g_ncleared] = e; g_cleared_key[g_ncleared++] = e[0];
@@ -325,12 +333,16 @@ void controls_game_keys(int modern)
         g_keys_seen = 1;
     }
     int changed = 0;
+    if (modern) {                                                  /* the rows' keys from the bindings (spare if none) */
+        for (int i = 0; i < N_MODERN_GAME_KEYS; i++) { BYTE d[2]; g_row_dik[i] = bindings_key_diks(MODERN_GAME_KEYS[i].act, d) ? d[0] : 0; }
+        for (int i = 0; i < N_MODERN_GAME_KEYS; i++) if (!g_row_dik[i]) g_row_dik[i] = (BYTE)spare_key();
+    }
     for (int t = 0; t < 2; t++)
         for (int r = 0; r < rows[t]; r++) {
             BYTE *k = key_row(t, r);
             int ours = -1;
-            for (size_t i = 0; i < sizeof MODERN_GAME_KEYS / sizeof *MODERN_GAME_KEYS; i++)
-                if (MODERN_GAME_KEYS[i].game == t && MODERN_GAME_KEYS[i].row == r) ours = MODERN_GAME_KEYS[i].dik;
+            for (int i = 0; i < N_MODERN_GAME_KEYS; i++)
+                if (MODERN_GAME_KEYS[i].game == t && MODERN_GAME_KEYS[i].row == r) ours = g_row_dik[i];
             int want[2] = { k[0], k[1] };
             if (modern) {
                 if (want[1] && modern_reserved_key(want[1]) && want[1] != ours) want[1] = 0;   /* fixed slot: blank is safe */
@@ -376,21 +388,33 @@ void controls_stance_keys(char *down, char *up, int n)
 static HRESULT WINAPI kb_get_state(void *dev, DWORD size, void *data)
 {
     HRESULT hr = g_real_get_state(dev, size, data);
-    if (hr == S_OK && size >= 256 && g_cfg.controls_modern && dev == (void *)DI_KEYBOARD) {
+    if (hr == S_OK && size >= 256 && dev == (void *)DI_KEYBOARD) {
         BYTE *keys = data;
-        keys[0x11] = keys[0x1e] = keys[0x1f] = keys[0x20] = 0;   /* DIK_W, DIK_A, DIK_S, DIK_D */
-        for (int k = 0x02; k <= 0x07; k++) keys[k] = 0;          /* 1-6: weapon boxes (ours; G -> 3 below) */
-        {                                                         /* the mod's own keys (modern.c): not the game's */
-            static const int feat[MK_COUNT] = { MOD_ROLL, MOD_PEEK, MOD_STATS, MOD_RADIAL, MOD_PING, MOD_RESTART };
-            for (int k = 0; k < MK_COUNT; k++) {
-                UINT dik = MapVirtualKeyA((UINT)modern_key(k), MAPVK_VK_TO_VSC);
-                if (modern_on(feat[k]) && dik > 0 && dik < 256) keys[dik] = 0;
+        /* a key used on the F10 panel stays away from the game until it is let go: the Esc that closes the panel opened
+         * the game's pause menu one frame later (Wine 2026-11-20) */
+        static BYTE swallow[256];
+        int open = panel_is_open();
+        static int was_open; static DWORD closed_at;
+        if (was_open && !open) closed_at = GetTickCount();
+        was_open = open;
+        int just_closed = !open && closed_at && GetTickCount() - closed_at < 300;   /* the closing key went to the panel as a message */
+        for (int i = 0; i < 256; i++) {
+            if ((open || just_closed) && (keys[i] & 0x80)) swallow[i] = 1;
+            else if (swallow[i] && !(keys[i] & 0x80)) swallow[i] = 0;
+            if (swallow[i]) keys[i] = 0;
+        }
+        if (open) {                                              /* the F10 panel takes the keys (BINDS page: arrows, Enter, capture) */
+            memset(keys, 0, 256);
+            for (int i = 0; i < 256; i++) g_pulse[i] = 0;
+        } else if (g_cfg.controls_modern) {
+            /* the bound keys (bindings.c: W A S D, 1-6, Q, X, Shift, C, the feature keys ...) are ours; game rows the
+             * game reads itself (Space dive, Ctrl slow, F G M J by default) stay (controls_game_keys put them in its table) */
+            bindings_hide(keys);
+            for (int i = 0; i < 256; i++) {
+                if (g_force[i]) keys[i] = 0x80;
+                if (g_pulse[i]) { keys[i] = 0x80; g_pulse[i] = 0; }
             }
         }
-        keys[0x2a] = keys[0x36] = 0;                             /* Shift = sprint (ours) */
-        /* C Space Ctrl F G M J: the game's own key table holds them now (controls_game_keys) */
-        keys[0x10] = keys[0x2d] = 0;                             /* Q, X: ours */
-        if (g_pulse_key) { keys[g_pulse_key] = 0x80; g_pulse_key = 0; }
     }
     return hr;
 }
@@ -446,7 +470,7 @@ static struct {
     int lpress_x, lpress_y;             /* pointer (game screen) at the press */
     DWORD fire_end_at;                  /* last time a fire press ended: no walking for 300 ms after */
 } S;
-enum { LM_NONE, LM_PENDING, LM_WALK, LM_FIRE, LM_ENTER, LM_TURN };
+enum { LM_NONE, LM_PENDING, LM_WALK, LM_FIRE, LM_ENTER, LM_TURN, LM_PICK };   /* LM_PICK: the drag stance picker */
 #define WALK_LOCK_AFTER_SHOT_MS  300    /* Army Men II: no walking right after a shot (mis-clicks) */
 static DWORD g_fire_cancel_at, g_fire_lock_until, g_click_hint_at;
 /* modern.c: the rifle fires once per click - the button is held after its shot (2026-11-20, user: "the regular rifle
@@ -832,7 +856,7 @@ static void vehicle_controls(BYTE *u, BYTE *v, int pointer, int px, int py, int 
         }
     } else reversing = flipped = 0;
     if (right_tap && pointer && VEH_MOVER(v)) {      /* click on the vehicle itself: get out (mouse only) */
-        if (on_own_vehicle(v, px, py)) { g_pulse_key = game_command_key(0, SK_ENTER); right_tap = 0; mlog("controls: click on own vehicle: get out"); }
+        if (on_own_vehicle(v, px, py)) { pulse(game_command_key(0, SK_ENTER)); right_tap = 0; mlog("controls: click on own vehicle: get out"); }
     }
     if (right_tap && pointer) {
         S.going = 1; S.target_x = px + CAMERA_X; S.target_y = py + CAMERA_Y; S.going_since = now; S.enter = NULL;
@@ -1212,26 +1236,112 @@ static BYTE *own_unit_at(int wx, int wy)
     return NULL;
 }
 
-/* the pointer (screen) is on Sarge's body: his feet are at (sx, sy), the figure is ~24 px tall */
-static int on_sarge(int px, int py, int sx, int sy) { return abs(px - sx) <= 9 && py - sy >= -26 && py - sy <= 3; }
+/* the pointer (screen) is on Sarge's body: his feet are at (sx, sy), the figure is ~24 px tall (lying: wider, lower) */
+static int on_sarge(int px, int py, int sx, int sy)
+{
+    BYTE *u = SARGE;
+    if (u && SARGE_POSE(u) == POSE_PRONE) return abs(px - sx) <= 14 && py - sy >= -16 && py - sy <= 4;
+    return abs(px - sx) <= 9 && py - sy >= -26 && py - sy <= 3;
+}
 
-static int g_mid_radial;             /* middle button held: radial menu (apply_modern_controls -> modern_controls) */
-#define MID_HOLD_MS 300
-static DWORD g_stand_until;          /* standing up (prone -> kneel -> stand) until done or this time */
-static void stance_cycle(BYTE *u, DWORD now)
+/* ---------------------------------------------------------------- stance (2026-11-20, user design)
+ * The game has no "go to pose X": the Kneel/Prone command (FUN_004473a0, the dispatcher key handler of row
+ * SK_KNEEL) steps stand -> kneel -> prone (sets the target pose +0x6c and the pose-change flag +0x70); the move
+ * input (FUN_00447290) raises one step while kneeling / prone without walking (prone -> kneel -> stand). So a
+ * wanted pose is reached by single steps over frames: press the row's key for one frame (pulse) to go down,
+ * INPUT_FORWARD for one frame to go up, wait for the pose change to finish (+0x70 back to 0), again. The game's
+ * own rules stay: with a grenade / flamer / bazooka the animation kneels instead of lying (FUN_00439c50), the
+ * mortar with fire held does not stand. Given up after STANCE_TIMEOUT_MS or when a step changes nothing.
+ * Inputs: tap C / click Sarge = one down (prone: stand up), hold C / double-click Sarge = prone, double-tap C /
+ * click prone Sarge = stand, the drag picker and the stance radial = any. log=2: "controls: stance ... reached". */
+#define STANCE_TIMEOUT_MS 2500
+#define STANCE_STEP_MS    120      /* at least this long between two steps (the pose flag shows up a frame later) */
+#define SARGE_DBL_MS      350      /* a second click on Sarge within this: double-click (prone) */
+static int g_mid_radial;             /* (kept for the radial's state; the middle button itself is a binding now) */
+static int g_stance_want, g_stance_tries, g_stance_last;
+static DWORD g_stance_until, g_stance_next;
+static const char *g_stance_why = "";
+static int pose_rank(int p) { return p == POSE_STAND ? 2 : p == POSE_KNEEL ? 1 : p == POSE_PRONE ? 0 : -1; }
+static const char *pose_name(int p) { return p == POSE_STAND ? "stand" : p == POSE_KNEEL ? "kneel" : p == POSE_PRONE ? "prone" : "?"; }
+static void stance_goto(BYTE *u, int pose, DWORD now, const char *why)
+{
+    if (!u || SARGE_VEHICLE(u)) return;
+    g_stance_want = pose; g_stance_until = now + STANCE_TIMEOUT_MS; g_stance_next = 0; g_stance_tries = 0; g_stance_last = -1;
+    g_stance_why = why;
+    if (g_cfg.log >= 2) mlog("controls: stance %s -> %s (%s)", pose_name(SARGE_POSE(u)), pose_name(pose), why);
+}
+/* one step down; lying: stand up (the click on Sarge since 2026-11-17, now also tap C) */
+static void stance_cycle(BYTE *u, DWORD now, const char *why)
 {
     int pose = SARGE_POSE(u);
-    if (pose == POSE_STAND || pose == POSE_KNEEL) g_pulse_key = game_command_key(0, SK_KNEEL);   /* down one step */
-    else if (pose == POSE_PRONE) g_stand_until = now + 2500;                                   /* back up */
-    if (g_cfg.log >= 2) mlog("controls: click on Sarge: stance %d -> %s", pose, pose == POSE_PRONE ? "stand up" : "down");
+    stance_goto(u, pose == POSE_STAND ? POSE_KNEEL : pose == POSE_KNEEL ? POSE_PRONE : POSE_STAND, now, why);
 }
 static void stance_update(BYTE *u, DWORD now)
 {
-    if (!g_stand_until) return;
+    if (!g_stance_want) return;
     int pose = SARGE_POSE(u);
-    if (pose == POSE_STAND || now > g_stand_until) { g_stand_until = 0; return; }
-    if (!SARGE_POSING(u) && (pose == POSE_KNEEL || pose == POSE_PRONE)) INPUT |= INPUT_FORWARD;   /* one step up, no walk */
+    if (pose == g_stance_want || SARGE_VEHICLE(u) || now > g_stance_until) {
+        if (g_cfg.log >= 2) mlog("controls: stance %s %s (%s, state %d)", pose_name(g_stance_want), pose == g_stance_want ? "reached" : "not reached (timeout)",
+                                 g_stance_why, SARGE_STATE(u));
+        g_stance_want = 0;
+        return;
+    }
+    if (SARGE_POSING(u) || now < g_stance_next) return;
+    int r = pose_rank(pose), w = pose_rank(g_stance_want);
+    if (r < 0) return;
+    if (pose == g_stance_last && ++g_stance_tries >= 4) {            /* the game does not take the step (its rule) */
+        if (g_cfg.log >= 2) mlog("controls: stance %s refused by the game at %s (%s)", pose_name(g_stance_want), pose_name(pose), g_stance_why);
+        g_stance_want = 0;
+        return;
+    }
+    if (pose != g_stance_last) g_stance_tries = 0;
+    g_stance_last = pose;
+    if (r > w) pulse(game_command_key(0, SK_KNEEL));                 /* one step down */
+    else INPUT |= INPUT_FORWARD;                                     /* one step up (kneeling / prone: no walk) */
+    g_stance_next = now + STANCE_STEP_MS;
 }
+/* modern.c stance radial: the six moves */
+void controls_stance_command(int cmd)
+{
+    BYTE *u = SARGE;
+    if (!u || SARGE_VEHICLE(u)) return;
+    DWORD now = GetTickCount();
+    switch (cmd) {
+    case STANCE_CMD_STAND: stance_goto(u, POSE_STAND, now, "stance radial"); break;
+    case STANCE_CMD_KNEEL: stance_goto(u, POSE_KNEEL, now, "stance radial"); break;
+    case STANCE_CMD_PRONE: stance_goto(u, POSE_PRONE, now, "stance radial"); break;
+    case STANCE_CMD_DIVE: pulse(game_command_key(0, SK_DIVE)); if (g_cfg.log >= 2) mlog("controls: dive (stance radial)"); break;
+    case STANCE_CMD_ROLL_L: case STANCE_CMD_ROLL_R:
+        pulse(game_command_key(0, cmd == STANCE_CMD_ROLL_R ? SK_ROLL_R : SK_ROLL_L));
+        if (g_cfg.log >= 2) mlog("controls: roll %s (stance radial)", cmd == STANCE_CMD_ROLL_R ? "right" : "left");
+        break;
+    }
+}
+/* the drag picker (press on Sarge + drag >= STANCE_PICKER_DRAG px up / down; modern.c draws it) */
+static int g_picker, g_picker_sel;
+static int picker_select(BYTE *u, int pointer_wy)
+{
+    int best = 0, bd = 1 << 30;
+    for (int i = 0; i < 3; i++) {
+        int cy = SARGE_Y(u) - STANCE_PICKER_BASE - (2 - i) * STANCE_PICKER_STEP, d = abs(pointer_wy - cy);
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
+int controls_stance_picker(int *wx, int *wy, int *sel, int *cur)
+{
+    BYTE *u = SARGE;
+    if (!g_picker || !u) return 0;
+    *wx = SARGE_X(u); *wy = SARGE_Y(u); *sel = g_picker_sel;
+    int p = SARGE_POSE(u);
+    *cur = p == POSE_STAND ? 0 : p == POSE_KNEEL ? 1 : p == POSE_PRONE ? 2 : -1;
+    return 1;
+}
+static const int PICK_POSE[3] = { POSE_STAND, POSE_KNEEL, POSE_PRONE };
+/* the radial being opened: on Sarge (stance ring) - set by modern_controls just before modern_radial opens it */
+static int g_radial_sarge;
+static int g_mpress_sarge[3];         /* Middle / Mouse4 / Mouse5: the last press started on Sarge */
+int controls_radial_on_sarge(void) { return g_radial_sarge; }
 
 static int hover_at(BYTE *u, BYTE *veh, int wx, int wy, BYTE **thing);
 
@@ -1567,7 +1677,7 @@ void controls_block_left(void) { g_block_left = 1; }        /* panel.c: a click 
 static int sprint_wanted(void)
 {
     if (modern_on(MOD_SPRINT_TOGGLE)) return g_sprint_latched;
-    return key_down(VK_SHIFT) || g_sprint_latched;
+    return bindings_held(ACT_SPRINT) || g_sprint_latched;
 }
 
 /* Sprint stamina: ~4 s of running from full, back in ~6 s; at empty no running until a third is back. */
@@ -1626,8 +1736,8 @@ static void dodge_roll(BYTE *u, int kx, int ky)
     double fx = FACING_DX[f], fy = FACING_DY[f];
     double cross = fx * ky - fy * kx;              /* > 0: the movement is to Sarge's right on screen */
     int right = (kx || ky) && cross > 0;
-    g_pulse_key = game_command_key(0, right ? SK_ROLL_R : SK_ROLL_L);    /* the key the game has for it now */
-    if (g_cfg.log >= 2) mlog("controls: dodge roll %s (key %02x)", right ? "right" : "left", g_pulse_key);
+    pulse(game_command_key(0, right ? SK_ROLL_R : SK_ROLL_L));    /* the key the game has for it now */
+    if (g_cfg.log >= 2) mlog("controls: dodge roll %s (key %02x)", right ? "right" : "left", game_command_key(0, right ? SK_ROLL_R : SK_ROLL_L));
 }
 
 static void modern_controls(BYTE *u, int sx, int sy, int *px, int *py, int *pointer, int *field,
@@ -1654,52 +1764,49 @@ static void modern_controls(BYTE *u, int sx, int sy, int *px, int *py, int *poin
         WORD p = pad->pressed;
         if (p & XB_LB) weapons_wheel(1);
         if (p & XB_RB) weapons_wheel(-1);
-        if (p & XB_A) g_pulse_key = game_command_key(0, SK_DIVE);
-        if (p & XB_B) g_pulse_key = game_command_key(0, SK_KNEEL);
-        if (p & XB_X) g_pulse_key = game_command_key(0, SK_ENTER);
+        if (p & XB_A) pulse(game_command_key(0, SK_DIVE));
+        if (p & XB_B) pulse(game_command_key(0, SK_KNEEL));
+        if (p & XB_X) pulse(game_command_key(0, SK_ENTER));
         if (p & XB_Y) weapons_quick_swap();
-        if (p & XB_BACK) g_pulse_key = game_command_key(1, GK_VIEW_MAP);
-        if (p & XB_DPAD_UP) g_pulse_key = DIK_F1;
-        if (p & XB_DPAD_LEFT) g_pulse_key = DIK_F2;
-        if (p & XB_DPAD_RIGHT) g_pulse_key = DIK_F3;
-        if (p & XB_DPAD_DOWN) g_pulse_key = DIK_TAB;
+        if (p & XB_BACK) pulse(game_command_key(1, GK_VIEW_MAP));
+        if (p & XB_DPAD_UP) pulse(DIK_F1);
+        if (p & XB_DPAD_LEFT) pulse(DIK_F2);
+        if (p & XB_DPAD_RIGHT) pulse(DIK_F3);
+        if (p & XB_DPAD_DOWN) pulse(DIK_TAB);
         if (p & XB_LTHUMB) g_sprint_latched = !g_sprint_latched;
         if (p & XB_RTHUMB) dodge_roll(u, *kx, *ky);
         if ((p & XB_START) && g_dd && g_dd->hwnd) { PostMessageA(g_dd->hwnd, WM_KEYDOWN, VK_ESCAPE, 0x00010001); PostMessageA(g_dd->hwnd, WM_KEYUP, VK_ESCAPE, 0xC0010001); }
         if (!(pad->held & XB_LTHUMB) && !*kx && !*ky && !modern_on(MOD_SPRINT_TOGGLE)) g_sprint_latched = 0;
     }
-    /* sprint toggle: Shift switches it on and off (it also ends when Sarge stops) */
+    /* sprint toggle: the sprint key switches it on and off (it also ends when Sarge stops) */
     {
         static int shift_was;
-        int sh = key_down(VK_SHIFT);
+        int sh = bindings_held(ACT_SPRINT);
         if (modern_on(MOD_SPRINT_TOGGLE) && sh && !shift_was) g_sprint_latched = !g_sprint_latched;
         if (modern_on(MOD_SPRINT_TOGGLE) && !*kx && !*ky && !*right && !S.going && !*left) g_sprint_latched = 0;
         shift_was = sh;
     }
-    /* mouse side buttons: back = previous weapon, forward = next */
-    {
-        static int x1_was, x2_was;
-        int x1 = key_down(VK_XBUTTON1), x2 = key_down(VK_XBUTTON2);
-        if (modern_on(MOD_SIDE_BUTTONS) && !veh) { if (x1 && !x1_was) weapons_wheel(1); if (x2 && !x2_was) weapons_wheel(-1); }
-        x1_was = x1; x2_was = x2;
-    }
-    /* dodge roll key */
-    {
-        static int was;
-        int d = key_down(modern_key(MK_ROLL));
-        if (modern_on(MOD_ROLL) && d && !was && !veh) dodge_roll(u, *kx, *ky);
-        was = d;
-    }
+    /* one-shot actions (bindings.c; the defaults: Space / Mouse4 dive, Z roll, T ping, Mouse5 previous weapon,
+     * middle click next weapon, F G M J the game's rows when not read by the game itself). X1 / X2 since
+     * 2026-11-20 (user design): Mouse4 = dive, Mouse5 = previous weapon - no longer next / previous both. */
+    if (bindings_pressed(ACT_DIVE) && !veh) { pulse(game_command_key(0, SK_DIVE)); if (g_cfg.log >= 2) mlog("controls: dive (%s)", bindings_from_mouse(ACT_DIVE) ? "mouse" : "key"); }
+    if (bindings_pressed(ACT_ROLL) && !veh) dodge_roll(u, *kx, *ky);
+    if (bindings_pressed(ACT_ENTER)) pulse(game_command_key(0, SK_ENTER));
+    if (bindings_pressed(ACT_SPECIAL)) pulse(game_command_key(0, SK_SPECIAL));
+    if (bindings_pressed(ACT_MAP)) pulse(game_command_key(1, GK_VIEW_MAP));
+    if (bindings_pressed(ACT_OBJECTIVE)) pulse(game_command_key(1, GK_OBJECTIVE));
+    if (bindings_pressed(ACT_NEXT_WEAPON)) weapons_wheel(-1);
+    if (bindings_pressed(ACT_PREV_WEAPON)) weapons_wheel(1);
     /* ping: a marker at the pointer and the squad's Attack Now */
+    if (bindings_pressed(ACT_PING) && *pointer) { modern_ping(*px + CAMERA_X, *py + CAMERA_Y); CMD_ATTACK_NOW(); }
+    /* radial menu: hold its key / button, move the pointer onto a command, release. Opened ON Sarge (the button
+     * pressed on him / the key held with the pointer on him): the stance ring (modern.c STANCE_RADIAL). */
     {
-        static int was;
-        int d = key_down(modern_key(MK_PING));
-        if (modern_on(MOD_PING) && d && !was && *pointer) { modern_ping(*px + CAMERA_X, *py + CAMERA_Y); CMD_ATTACK_NOW(); }
-        was = d;
-    }
-    /* radial menu: hold its key, move the pointer onto a command, release */
-    {
-        int d = modern_on(MOD_RADIAL) && (key_down(modern_key(MK_RADIAL)) || g_mid_radial) && *pointer;
+        int d = bindings_held(ACT_RADIAL) && *pointer;
+        if (d && !modern_radial_open()) {
+            int vk = bindings_source_vk(ACT_RADIAL), mi = vk == VK_MBUTTON ? 0 : vk == VK_XBUTTON1 ? 1 : vk == VK_XBUTTON2 ? 2 : -1;
+            g_radial_sarge = !veh && (bindings_from_mouse(ACT_RADIAL) && mi >= 0 ? g_mpress_sarge[mi] : *field && on_sarge(*px, *py, sx, sy));
+        }
         if (d || modern_radial_open()) modern_radial(d, *px, *py);
         if (d) { *left = *right = 0; g_block_left = g_block_right = 1; }
     }
@@ -1720,7 +1827,7 @@ static void modern_controls(BYTE *u, int sx, int sy, int *px, int *py, int *poin
 }
 
 /* controls_camera: edge peek (hold its key) looks four times further toward the pointer */
-static float peek_scale(void) { return modern_on(MOD_PEEK) && key_down(modern_key(MK_PEEK)) ? 4.0f : 1.0f; }
+static float peek_scale(void) { return bindings_held(ACT_PEEK) ? 4.0f : 1.0f; }   /* feature switch: bindings.c */
 
 static void apply_wheel(BYTE *u);
 
@@ -1948,7 +2055,7 @@ static void apply_modern_controls(void)
         S.right_was_down = S.left_was_down = 0;
         S.active = 0;
         S.charging = 0;
-        g_hide_reticle = 0; g_cursor_kind = -1; S.lmode = LM_NONE;
+        g_hide_reticle = 0; g_cursor_kind = -1; S.lmode = LM_NONE; g_picker = 0; g_stance_want = 0;
         return;
     }
     if (!S.active) {
@@ -1959,6 +2066,7 @@ static void apply_modern_controls(void)
         S.left_blocked = key_down(VK_LBUTTON);
         S.right_blocked = key_down(VK_RBUTTON);
         controls_game_keys(1);                    /* the game's key table: modern layout (pause menu shows it) */
+        bindings_reset_state();                   /* keys / buttons held now: ignored until released */
         S.left_was_down = S.right_was_down = 0;
         S.active = 1;
         return;
@@ -2031,32 +2139,37 @@ static void apply_modern_controls(void)
     int right_tap = right_quick_click ||
                     (!right && S.right_was_down && now - S.right_down_at < (DWORD)g_cfg.controls_tap_ms);
     int right_hold = right && (S.running || now - S.right_down_at >= (DWORD)g_cfg.controls_tap_ms);
-    /* keyboard: W A S D as a screen direction */
-    int kx = key_down('D') - key_down('A');
-    int ky = key_down('S') - key_down('W');
-    /* Shift held while moving = sprint (same as double-click right and hold): after modern_controls below */
-    /* Q = quick swap to the previous weapon; hold X = drop the current item (F8 = Drop Item) */
-    {
-        static int q_was, x_was, x_done;
-        static DWORD x_since;
-        int q = key_down('Q'), x = key_down('X');
-        if (q && !q_was) weapons_quick_swap();
-        if (x && !x_was) { x_since = now; x_done = 0; }
-        if (x && !x_done && now - x_since >= 400) { g_pulse_key = 0x42; x_done = 1; }
-        q_was = q; x_was = x;
+    /* keyboard / extra mouse buttons: the bindings (bindings.c). Mouse buttons count only when pressed over the
+     * battlefield (the middle click / hold always did); the F10 panel open = nothing counts. */
+    bindings_poll(now, field, panel_is_open());
+    if ((lstate & 1) || (rstate & 1)) bindings_note_device(0);    /* a left / right click: the mouse is in use */
+    {                                                            /* where the extra buttons were pressed (stance radial) */
+        static const int MVK[3] = { VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2 };
+        static int was[3];
+        for (int i = 0; i < 3; i++) {
+            int d = key_down(MVK[i]);
+            if (d && !was[i]) g_mpress_sarge[i] = field && !SARGE_VEHICLE(u) && on_sarge(px, py, sx, sy);
+            was[i] = d;
+        }
     }
-    /* keys 1-6 = the six weapon boxes (A1 A2 A3 B1 B2 B3); middle click = next weapon (Army Men II) */
-    {
-        static int num_was[6], mid_was;
-        for (int k = 0; k < 6; k++) { int d = key_down('1' + k); if (d && !num_was[k]) weapons_select_box(k); num_was[k] = d; }
-        /* middle button: click = next weapon (on release), hold 300 ms = the radial menu (mouse only) */
-        static DWORD mid_at; static int mid_field;
-        int mid = key_down(VK_MBUTTON);
-        if (mid && !mid_was) { mid_at = now; mid_field = field; }
-        g_mid_radial = mid && mid_field && modern_on(MOD_RADIAL) && now - mid_at >= MID_HOLD_MS;
-        if (!mid && mid_was && mid_field && now - mid_at < MID_HOLD_MS) weapons_wheel(-1);
-        mid_was = mid;
+    memset(g_force, 0, sizeof g_force);
+    if (bindings_held(ACT_SLOW) && !bindings_direct(ACT_SLOW)) g_force[game_command_key(0, SK_SLOW)] = 1;   /* Slow on a shared key */
+    /* walking: a screen direction (default W A S D) */
+    int kx = bindings_held(ACT_RIGHT) - bindings_held(ACT_LEFT);
+    int ky = bindings_held(ACT_DOWN) - bindings_held(ACT_UP);
+    /* the sprint key held while moving = sprint (same as double-click and hold): after modern_controls below */
+    /* quick swap to the previous weapon (Q); hold to drop the current item (X 400 ms -> F8 = Drop Item) */
+    if (bindings_pressed(ACT_QUICK_SWAP)) weapons_quick_swap();
+    if (bindings_pressed(ACT_DROP)) pulse(0x42);
+    /* the six weapon boxes (A1 A2 A3 B1 B2 B3; default 1-6) */
+    for (int k = 0; k < 6; k++) if (bindings_pressed(ACT_WEAPON1 + k)) weapons_select_box(k);
+    /* stance keys (default C: tap = one down, hold = prone, double-tap = stand up) */
+    if (!SARGE_VEHICLE(u)) {
+        if (bindings_pressed(ACT_KNEEL)) stance_cycle(u, now, "stance-down key");
+        if (bindings_pressed(ACT_PRONE)) stance_goto(u, POSE_PRONE, now, bindings_from_mouse(ACT_PRONE) ? "prone button" : "prone key (hold)");
+        if (bindings_pressed(ACT_STAND)) stance_goto(u, POSE_STAND, now, bindings_from_mouse(ACT_STAND) ? "stand button" : "stand key (double-tap)");
     }
+    g_mid_radial = 0;
     modern_controls(u, sx, sy, &px, &py, &pointer, &field, &left, &right, &kx, &ky, now);
     {                                                             /* sprint: Shift (or its toggle) */
         if (sprint_wanted() && (kx || ky || right)) S.running = 1;
@@ -2121,7 +2234,7 @@ static void apply_modern_controls(void)
             /* a radio drawn by the mod (radio.c) is no panel: the click that closes the briefing / mission-over radio
              * walked Sarge there (2026-11-20, user) - bDisplayRecall 0x505d00, SCREEN state 16 */
             else if (*(volatile BYTE *)0x505d00 || (*(BYTE **)0x6a5944 && *(int *)(*(BYTE **)0x6a5944 + 4) == 16)) S.lmode = LM_NONE;
-            else if (key_down(VK_SHIFT) || kx || ky || hover == HOVER_TARGET || hover == HOVER_FAR_ENEMY) S.lmode = LM_FIRE;
+            else if (bindings_held(ACT_SPRINT) || kx || ky || hover == HOVER_TARGET || hover == HOVER_FAR_ENEMY) S.lmode = LM_FIRE;   /* sprint key + left = force fire */
             else if (hover == HOVER_ENTER) S.lmode = LM_ENTER;
             /* in a fire fight (user: "if I move the mouse off the enemy while clicking, sarge will start running over"):
              * a click within combat_lock_ms of the last shot FIRES at the pointer instead of walking ([controls]
@@ -2133,6 +2246,15 @@ static void apply_modern_controls(void)
             if (g_cfg.log >= 2) mlog("controls: left press -> %s (hover %d)", S.lmode == LM_FIRE ? "fire" : S.lmode == LM_ENTER ? "enter" :
                                      S.lmode == LM_PENDING ? (lrun ? "run" : "walk") : "none", hover);
         }
+        /* the drag stance picker: a press on Sarge dragged up / down STANCE_PICKER_DRAG px opens three pose boxes
+         * above him (modern.c draws them); the release picks the box nearest the pointer's height; no walk, no turn */
+        if (left && press_on_sarge && !g_picker && (S.lmode == LM_PENDING || S.lmode == LM_TURN || S.lmode == LM_WALK) && pointer && abs(py - S.lpress_y) >= STANCE_PICKER_DRAG) {
+            g_picker = 1; S.lmode = LM_PICK;
+            if (g_cfg.log >= 2) mlog("controls: stance picker open");
+        }
+        if (g_picker && left && pointer) g_picker_sel = picker_select(u, py + CAMERA_Y);
+        if (g_picker && lrelease) { g_picker = 0; stance_goto(u, PICK_POSE[g_picker_sel], now, "drag picker"); }
+        if (g_picker && !left) g_picker = 0;
         if (left && (S.lmode == LM_PENDING || S.lmode == LM_TURN)) {
             int dxs = px - sx, dys = py - sy;
             int close_by = dxs * dxs + dys * dys <= TURN_ONLY_RADIUS * TURN_ONLY_RADIUS && now - S.lpress_at < TURN_ONLY_MS;
@@ -2144,7 +2266,16 @@ static void apply_modern_controls(void)
         }
         int tap = lrelease && (lmode_before == LM_PENDING || lmode_before == LM_ENTER);
         int tap_run = tap && lrun;                  /* double-click: sprint to the spot */
-        if (tap && press_on_sarge && lmode_before == LM_PENDING) { stance_cycle(u, now); tap = tap_run = 0; }
+        /* click on Sarge = stance (2026-11-20 user design): click = one down (lying: stand up), double-click = prone.
+         * Standing / kneeling the first click acts at once (the second only goes further down); lying, the click
+         * waits SARGE_DBL_MS for a second one (else a double-click would stand him up and lie him down again). */
+        static DWORD sarge_tap_at; static int sarge_pending;
+        if (tap && press_on_sarge && lmode_before == LM_PENDING) {
+            tap = tap_run = 0;
+            if (sarge_tap_at && now - sarge_tap_at <= SARGE_DBL_MS) { sarge_tap_at = 0; sarge_pending = 0; stance_goto(u, POSE_PRONE, now, "double-click on Sarge"); }
+            else { sarge_tap_at = now; if (SARGE_POSE(u) == POSE_PRONE) sarge_pending = 1; else stance_cycle(u, now, "click on Sarge"); }
+        }
+        if (sarge_pending && now - sarge_tap_at > SARGE_DBL_MS) { sarge_pending = 0; stance_cycle(u, now, "click on prone Sarge"); }
         if (lrelease) press_on_sarge = 0;
         /* right click on one of your soldiers: select his unit (no shot at him) */
         static int rsel;
@@ -2163,7 +2294,7 @@ static void apply_modern_controls(void)
         static int cancel_hold;
         int both_new = left && right && (!S.right_was_down || lpress);
         if (both_new && !cancel_hold) {
-            cancel_hold = 1; S.lmode = LM_NONE; S.fire_end_at = 0; g_fire_cancel_at = now; lrun = 0;
+            cancel_hold = 1; S.lmode = LM_NONE; S.fire_end_at = 0; g_fire_cancel_at = now; lrun = 0; g_picker = 0;
             S.firing = S.pressing = 0;
             if (g_cfg.log >= 1) mlog("controls: fire cancelled (both buttons)");
         }
@@ -2397,6 +2528,7 @@ static volatile LONG g_wheel;                    /* wheel notches since the last
 
 int controls_wheel(int delta)
 {
+    if (panel_wheel(delta)) return 1;                /* the F10 panel open: it scrolls (BINDS page) */
     if (!g_cfg.controls_modern || !layout_view_is_gameplay() || MENU_CURSOR_SHOWN) return 0;
     InterlockedExchangeAdd(&g_wheel, delta / WHEEL_DELTA ? delta / WHEEL_DELTA : (delta > 0 ? 1 : -1));
     return 1;
@@ -3190,3 +3322,11 @@ void __cdecl controls_camera(void) { PROF_BEGIN(t); controls_camera_body(); PROF
 
 /* modern.c: unit vector (screen x, y) of a game facing 0..255 */
 void controls_facing_vector(int f, double *dx, double *dy) { if (!g_units_ready) prepare_facings(); f &= FACINGS - 1; *dx = g_units_ready ? g_unit_dx[f] : 0; *dy = g_units_ready ? g_unit_dy[f] : 0; }
+
+/* bindings.c: a binding was changed on the BINDS page - the game's key table / dispatcher follow at once (in a
+ * mission; otherwise at the next return to gameplay, as always) */
+void controls_bindings_changed(void)
+{
+    if (g_cfg.controls_modern && S.active) controls_game_keys(1);
+    bindings_reset_state();
+}

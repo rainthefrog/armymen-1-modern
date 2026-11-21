@@ -41,7 +41,7 @@ static Feature FEATURES[MOD_COUNT] = {
     [MOD_AIM_ASSIST]   = { "aim_assist",    "Aim assist on hovered enemy",          'S', 0 },
     [MOD_ROLL]         = { "dodge_roll",    "Dodge roll key",                       'S', 1 },
     [MOD_STAMINA]      = { "stamina",       "Sprint stamina",                       'S', 0 },
-    [MOD_SIDE_BUTTONS] = { "side_buttons",  "Mouse side buttons switch weapons",    'S', 1 },
+    [MOD_SIDE_BUTTONS] = { "side_buttons",  "Mouse side buttons: dive / prev. weapon",'S', 1 },
     [MOD_SPRINT_TOGGLE]= { "sprint_toggle", "Shift toggles sprint (not hold)",      'S', 0 },
     [MOD_HIT_MARKERS]  = { "hit_markers",   "Hit markers",                          'S', 1 },
     [MOD_DAMAGE_DIR]   = { "damage_dir",    "Damage direction indicator",           'S', 1 },
@@ -74,7 +74,7 @@ static void load(void)
     g_loaded = 1;
     for (int i = 0; i < MOD_COUNT; i++)
         FEATURES[i].on = GetPrivateProfileIntA("modern", FEATURES[i].key, FEATURES[i].def, mod_ini_path());
-    modern_keys_load();
+
 }
 
 int modern_on(int f) { if (!g_loaded) load(); return f >= 0 && f < MOD_COUNT && FEATURES[f].on; }
@@ -94,49 +94,10 @@ void modern_toggle(int f)
     if (f == MOD_COLOURBLIND) colourblind_reapply();
 }
 
-/* ---------------------------------------------------------------- the mod's keys (rebindable) */
-
-typedef struct { const char *key, *name; int def; int vk; } ModKey;
-static ModKey KEYS[MK_COUNT] = {
-    [MK_ROLL]    = { "dodge_roll", "Dodge roll",                'Z' },
-    [MK_PEEK]    = { "edge_peek",  "Edge peek (hold)",          'E' },
-    [MK_STATS]   = { "stats",      "Mission stats (hold)",      'I' },
-    [MK_RADIAL]  = { "radial",     "Radial menu (hold)",        'B' },
-    [MK_PING]    = { "ping",       "Ping",                      'T' },
-    [MK_RESTART] = { "restart",    "Restart mission (hold 1 s)", VK_F12 },
-};
-static int g_capture = -1;                    /* waiting for a key for this row (panel) */
-
-void modern_keys_load(void)
-{
-    for (int i = 0; i < MK_COUNT; i++) KEYS[i].vk = GetPrivateProfileIntA("keys", KEYS[i].key, KEYS[i].def, mod_ini_path());
-}
-int modern_key(int k) { if (!g_loaded) load(); return k >= 0 && k < MK_COUNT ? KEYS[k].vk : 0; }
-int modern_key_count(void) { return MK_COUNT; }
-void modern_key_text(int k, char *buf, int n)
-{
-    char kn[32] = "?";
-    UINT sc = MapVirtualKeyA((UINT)KEYS[k].vk, MAPVK_VK_TO_VSC);
-    if (!sc || !GetKeyNameTextA((LONG)(sc << 16), kn, sizeof kn)) wsprintfA(kn, "key %d", KEYS[k].vk);
-    if (g_capture == k) lstrcpynA(kn, "press a key...", sizeof kn);
-    _snprintf(buf, n, "%-26s %s", KEYS[k].name, kn);
-    buf[n - 1] = 0;
-}
-void modern_key_capture(int k) { g_capture = k >= 0 && k < MK_COUNT ? k : -1; }
-int modern_key_capturing(void) { return g_capture >= 0; }
-/* panel.c: a key was pressed while capturing (Esc cancels). Returns 1 when it was used. */
-int modern_key_pressed(int vk)
-{
-    if (g_capture < 0) return 0;
-    if (vk != VK_ESCAPE) {
-        KEYS[g_capture].vk = vk;
-        char v[16]; wsprintfA(v, "%d", vk);
-        WritePrivateProfileStringA("keys", KEYS[g_capture].key, v, mod_ini_path());
-        mlog("modern: key %s = %d", KEYS[g_capture].key, vk);
-    }
-    g_capture = -1;
-    return 1;
-}
+/* ---------------------------------------------------------------- the mod's keys
+ * The old KEYS page ([keys], MK_*) is part of the bindings now (bindings.c: roll, peek, stats, radial, ping,
+ * restart; the old [keys] values are taken over as their defaults). */
+int modern_key(int k) { return bindings_mk_vk(k); }
 
 /* ---------------------------------------------------------------- drawing into the finished frame */
 
@@ -780,36 +741,163 @@ static void enemy_arrow(BYTE *it, int cx, int cy, int top, int veh)
     g_near_count++;
 }
 
-/* Radial menu (hold its key): eight commands around the point where it was opened; release over one
- * to give it. Squad orders and air support use the game's own key handlers. */
-static const struct { const char *name; uintptr_t handler; } RADIAL[8] = {
-    { "FOLLOW", 0x460dc0 }, { "ATTACK", 0x460dd0 }, { "DEFEND", 0x460e00 }, { "ATTACK NOW", 0x460e30 },
-    { "AIR STRIKE", 0x440dc0 }, { "PARATROOPS", 0x440d30 }, { "RECON", 0x440e50 }, { "NEXT UNIT", 0x460ee0 },
+/* Radial menu (hold its key / the middle button): eight commands around the point where it was opened; move the
+ * pointer toward one and release to give it; release in the middle (dead zone) = cancel. Squad orders and air
+ * support use the game's own key handlers. 2026-11-20 (user: "the radial menu needs some TLC - its ugly"): restyled
+ * (radial_draw: shaded disc, sectors, stencil labels, key hints, CANCEL centre); the centre is
+ * moved clear of the HUD and the window edges, the pick is the pointer's MOVE since the opening (so a moved ring
+ * still starts on "cancel"). Short labels (the sectors are ~35 px wide). */
+static const struct { const char *name; uintptr_t handler; const char *hint; } RADIAL[8] = {
+    { "FOLLOW", 0x460dc0, "F1" }, { "ATTACK", 0x460dd0, "F2" }, { "DEFEND", 0x460e00, "F3" }, { "CHARGE", 0x460e30, "" },   /* attack now */
+    { "STRIKE", 0x440dc0, "F5" }, { "PARA", 0x440d30, "F6" }, { "RECON", 0x440e50, "F7" }, { "NEXT", 0x460ee0, "TAB" },
 };
-static int g_radial_open, g_radial_x, g_radial_y, g_radial_pick = -1;
+/* The STANCE ring (2026-11-20, user design): the radial opened with the press on Sarge (middle button) or the
+ * pointer on Sarge (radial key) - six moves of Sarge himself, done by controls_stance_command (controls.c).
+ * Clockwise from the right: ROLL R, PRONE, DIVE, ROLL L, STAND, KNEEL. Hints = the current bindings. */
+static const struct { const char *name; int cmd, act; } STANCE_RADIAL[6] = {
+    { "ROLL R", STANCE_CMD_ROLL_R, ACT_ROLL }, { "PRONE", STANCE_CMD_PRONE, ACT_PRONE }, { "DIVE", STANCE_CMD_DIVE, ACT_DIVE },
+    { "ROLL L", STANCE_CMD_ROLL_L, ACT_ROLL }, { "STAND", STANCE_CMD_STAND, ACT_STAND }, { "KNEEL", STANCE_CMD_KNEEL, ACT_KNEEL },
+};
+static int g_radial_open, g_radial_x, g_radial_y, g_radial_ox, g_radial_oy, g_radial_pick = -1, g_radial_stance, g_radial_centre;
+static int radial_n(void) { return g_radial_stance ? 6 : 8; }
+static const char *radial_name(int i) { return g_radial_stance ? STANCE_RADIAL[i].name : RADIAL[i].name; }
+/* the ring's look (drawn by radial_draw in modern_draw_body) */
+#define RADIAL_RADIUS 74          /* game px: outer radius of the ring */
+#define RADIAL_DEAD   17          /* game px: the centre dead zone (release there = cancel) */
+static char g_radial_hint[8][16];
+static void radial_hints(void)
+{
+    for (int i = 0; i < radial_n(); i++) {
+        if (g_radial_stance) bindings_short(STANCE_RADIAL[i].act, g_radial_hint[i], sizeof g_radial_hint[i]);
+        else if (i == 3) bindings_short(ACT_PING, g_radial_hint[i], sizeof g_radial_hint[i]);   /* ping = attack now too */
+        else lstrcpynA(g_radial_hint[i], RADIAL[i].hint, sizeof g_radial_hint[i]);
+    }
+}
 void modern_radial(int open, int px, int py)
 {
-    if (open && !g_radial_open) {                 /* opened: centred on the pointer, kept on the battlefield */
-        g_radial_open = 1; g_radial_pick = -1;
-        g_radial_x = px < 90 ? 90 : px > g_cfg.width - 90 ? g_cfg.width - 90 : px;
-        g_radial_y = py < 60 ? 60 : py > g_cfg.height - 170 ? g_cfg.height - 170 : py;
+    if (open && !g_radial_open) {                 /* opened at the pointer; the ring kept clear of the HUD / edges */
+        g_radial_open = 1; g_radial_pick = -1; g_radial_centre = 1;
+        g_radial_stance = controls_radial_on_sarge();
+        g_radial_ox = px; g_radial_oy = py;
+        int m = RADIAL_RADIUS + 6, top = layout_hud_top() - RADIAL_RADIUS - 20;
+        if (top > g_cfg.height - RADIAL_RADIUS - 20) top = g_cfg.height - RADIAL_RADIUS - 20;
+        g_radial_x = px < m ? m : px > g_cfg.width - m ? g_cfg.width - m : px;
+        g_radial_y = py > top ? top : py;
+        if (g_radial_y < m) g_radial_y = m;
+        if (g_cfg.log >= 2) mlog("modern: radial menu open (%s) at %d,%d (ring %d,%d)", g_radial_stance ? "stance ring" : "commands", px, py, g_radial_x, g_radial_y);
+        radial_hints();
         return;
     }
     if (open) {
-        int dx = px - g_radial_x, dy = py - g_radial_y;
-        g_radial_pick = dx * dx + dy * dy < 14 * 14 ? -1 : ((int)lround(atan2((double)dy, (double)dx) / (6.2831853 / 8)) + 8) % 8;
+        int dx = px - g_radial_ox, dy = py - g_radial_oy, n = radial_n();
+        g_radial_centre = dx * dx + dy * dy < RADIAL_DEAD * RADIAL_DEAD;
+        g_radial_pick = g_radial_centre ? -1 : ((int)lround(atan2((double)dy, (double)dx) / (6.2831853 / n)) + n) % n;
+        radial_hints();
         return;
     }
     if (g_radial_open) {
         g_radial_open = 0;
+        radial_hints();
         if (g_radial_pick >= 0) {
-            mlog("modern: radial menu -> %s", RADIAL[g_radial_pick].name);
-            ((VoidFnPtr)RADIAL[g_radial_pick].handler)();
-        }
+            mlog("modern: radial menu -> %s", radial_name(g_radial_pick));
+            if (g_radial_stance) controls_stance_command(STANCE_RADIAL[g_radial_pick].cmd);
+            else ((VoidFnPtr)RADIAL[g_radial_pick].handler)();
+        } else if (g_cfg.log >= 2) mlog("modern: radial menu cancelled (released in the centre)");
     }
 }
 int modern_radial_open(void) { return g_radial_open; }
 
+/* The drag stance picker (2026-11-20, user design): press on Sarge and drag up / down - three small pose boxes
+ * stacked above him (STAND top, KNEEL, PRONE bottom; geometry STANCE_PICKER_* in common.h, the same numbers
+ * controls.c picks with), the selected one green, the current pose with a yellow edge; the release picks.
+ * Each box: a 9 x 9 silhouette + the name. Drawn from the game's data (Sarge's world position). */
+static const char *const POSE_ICON[3][9] = {
+    { "....#....", "...###...", "....#....", "..#####..", ".#.###.#.", "...###...", "...#.#...", "...#.#...", "..##.##.." },   /* stand */
+    { ".........", ".........", "....#....", "...###...", "..#####..", "...###...", "...###...", "..#####..", ".##...##." },   /* kneel */
+    { ".........", ".........", ".........", ".........", ".........", ".........", "#........", "#########", ".#######." },   /* prone */
+};
+static void stance_picker_draw(void)
+{
+    int wx, wy, sel, cur;
+    if (!controls_stance_picker(&wx, &wy, &sel, &cur)) return;
+    static const char *const NAME[3] = { "STAND", "KNEEL", "PRONE" };
+    int sx, sy; to_screen(wx, wy, &sx, &sy);
+    for (int i = 0; i < 3; i++) {
+        int cy = sy - STANCE_PICKER_BASE - (2 - i) * STANCE_PICKER_STEP;     /* box centre */
+        int x0 = sx - STANCE_PICKER_W / 2, x1 = sx + STANCE_PICKER_W / 2, y0 = cy - STANCE_PICKER_STEP / 2 + 1, y1 = cy + STANCE_PICKER_STEP / 2;
+        BYTE bg = i == sel ? C_GREEN : C_BLACK, fg = i == sel ? C_BLACK : C_WHITE;
+        box(x0, y0, x1, y1, bg);
+        if (i == cur) { for (int x = x0; x < x1; x++) { px(x, y0, C_YELLOW); px(x, y1 - 1, C_YELLOW); } for (int y = y0; y < y1; y++) { px(x0, y, C_YELLOW); px(x1 - 1, y, C_YELLOW); } }
+        for (int r = 0; r < 9; r++) for (int c = 0; c < 9; c++) if (POSE_ICON[i][r][c] == '#') px(x0 + 3 + c, y0 + 2 + r, fg);
+        text(x0 + 15, y0 + 3, NAME[i], fg, 0);
+    }
+}
+
+/* The radial ring (2026-11-20 restyle, user: "the radial menu needs some TLC - its ugly"): a darkened see-through
+ * disc (the game's x0.40 shade table over the battlefield), N sectors with khaki separators and rim, the hovered
+ * sector filled army green with a light outline, stencil-style capitals (the mod's 5x7 font) with the key / button
+ * hint under each, the centre a darker dead zone with an X ("CANCEL" while the pointer is there), a caption under
+ * the ring. Drawn into the finished frame at game resolution (whole-number output scale: crisp, render rule 3);
+ * every pixel through px()/shade() so the HUD stays clear and the upscaled battlefield does not paint over it. */
+#define SHADE_040 (*(BYTE **)0x4e2448)          /* palette index -> index of the same colour x0.40 (panel.c uses it) */
+static void shade(int x, int y, int times)
+{
+    Surf *b = g_b; BYTE *t = SHADE_040;
+    if (!b || !t || x < 0 || y < 0 || x >= g_cfg.width || y >= g_cfg.height || x >= b->w || y >= b->h || on_interface(x, y)) return;
+    BYTE *p = &b->bits[(size_t)y * b->pitch + x];
+    while (times-- > 0) *p = t[*p];
+    hdworld_clear_run(b, y, x, x + 1);
+}
+static void text_centred(int cx, int y, const char *s, BYTE c) { text(cx - (int)strlen(s) * 3, y, s, c, 1); }
+static void radial_draw(void)
+{
+    static BYTE olive, khaki, light, ink, red; static Pal *pal_was; static int seen;
+    if (!seen || (g_dd && g_dd->pal != pal_was)) {
+        olive = (BYTE)nearest(72, 100, 42); khaki = (BYTE)nearest(190, 178, 128); light = (BYTE)nearest(230, 236, 190);
+        ink = (BYTE)nearest(236, 228, 196); red = (BYTE)nearest(200, 60, 40);
+        pal_was = g_dd ? g_dd->pal : NULL; seen = 1;
+    }
+    int cx = g_radial_x, cy = g_radial_y, n = radial_n(), R1 = RADIAL_RADIUS, R0 = RADIAL_DEAD;
+    const double TAU = 6.2831853;
+    for (int y = -R1; y <= R1; y++)
+        for (int x = -R1; x <= R1; x++) {
+            int d2 = x * x + y * y;
+            if (d2 > R1 * R1) continue;
+            if (d2 <= R0 * R0) { shade(cx + x, cy + y, 2); continue; }        /* dead zone: darker */
+            double a = atan2((double)y, (double)x); if (a < 0) a += TAU;
+            int sec = ((int)floor(a / (TAU / n) + 0.5)) % n;
+            if (sec == g_radial_pick) px(cx + x, cy + y, olive); else shade(cx + x, cy + y, 1);
+        }
+    for (int i = 0; i < n; i++) {                                          /* separators */
+        double a = (i + 0.5) * TAU / n;
+        line(cx + (int)lround(cos(a) * (R0 + 1)), cy + (int)lround(sin(a) * (R0 + 1)), cx + (int)lround(cos(a) * R1), cy + (int)lround(sin(a) * R1), khaki, 0);
+    }
+    circle(cx, cy, R1, khaki, 0); circle(cx, cy, R1 - 1, khaki, 0); circle(cx, cy, R0, khaki, 0);
+    if (g_radial_pick >= 0) {                                              /* light outline of the hovered sector */
+        double a0 = (g_radial_pick - 0.5) * TAU / n, a1 = (g_radial_pick + 0.5) * TAU / n;
+        for (int s = 0; s < 2; s++) { double a = s ? a1 : a0; line(cx + (int)lround(cos(a) * (R0 + 1)), cy + (int)lround(sin(a) * (R0 + 1)), cx + (int)lround(cos(a) * (R1 - 1)), cy + (int)lround(sin(a) * (R1 - 1)), light, 0); }
+        int steps = R1 * 2;
+        for (int k = 0; k <= steps; k++) {
+            double a = a0 + (a1 - a0) * k / steps;
+            px(cx + (int)lround(cos(a) * (R1 - 2)), cy + (int)lround(sin(a) * (R1 - 2)), light);
+            px(cx + (int)lround(cos(a) * (R0 + 1)), cy + (int)lround(sin(a) * (R0 + 1)), light);
+        }
+    }
+    for (int i = 0; i < n; i++) {                                          /* labels + hints */
+        double a = i * TAU / n; int r = 50;
+        int tx = cx + (int)lround(cos(a) * r), ty = cy + (int)lround(sin(a) * r);
+        int hot = i == g_radial_pick, two = g_radial_hint[i][0] != 0;
+        int top = ty - (two ? 8 : 4);
+        text_centred(tx, top, radial_name(i), hot ? light : ink);
+        if (two) { char h[16]; lstrcpynA(h, g_radial_hint[i], sizeof h); CharUpperA(h); text_centred(tx, top + 9, h, hot ? ink : khaki); }
+    }
+    if (g_radial_centre) text_centred(cx, cy - 3, "CANCEL", red);
+    else for (int k = -5; k <= 5; k++) { px(cx + k, cy + k, khaki); px(cx + k, cy - k, khaki); px(cx + k + 1, cy + k, khaki); px(cx + k + 1, cy - k, khaki); }
+    const char *cap = g_radial_stance ? "STANCE" : "COMMANDS - OPEN ON SARGE: STANCE";
+    int cw = (int)strlen(cap) * 6;
+    for (int y = cy + R1 + 3; y < cy + R1 + 14; y++) for (int x = cx - cw / 2 - 4; x < cx + cw / 2 + 4; x++) shade(x, y, 2);
+    text_centred(cx, cy + R1 + 5, cap, g_radial_stance ? light : khaki);
+}
 static void modern_draw_body(Surf *b)
 {
     BYTE *u = SARGE;
@@ -1090,17 +1178,8 @@ static void modern_draw_body(Surf *b)
         box(x - 6, y - 6, x + 146, y + 34, C_BLACK);
         text(x, y, l1, C_YELLOW, 0); text(x, y + 10, l2, C_WHITE, 0); text(x, y + 20, l3, C_WHITE, 0);
     }
-    if (g_radial_open) {
-        int cx = g_radial_x, cy = g_radial_y;
-        circle(cx, cy, 14, C_GREY, 1);
-        for (int i = 0; i < 8; i++) {
-            double a = i * 6.2831853 / 8;
-            int tx = cx + (int)(cos(a) * 52), ty = cy + (int)(sin(a) * 40);
-            int w = (int)strlen(RADIAL[i].name) * 6;
-            box(tx - w / 2 - 3, ty - 3, tx + w / 2 + 2, ty + 10, i == g_radial_pick ? C_GREEN : C_BLACK);
-            text(tx - w / 2, ty, RADIAL[i].name, i == g_radial_pick ? C_BLACK : C_WHITE, 0);
-        }
-    }
+    if (g_radial_open) radial_draw();
+    stance_picker_draw();
     g_b = NULL;
     mt[5] += 0; if (GetTickCount() - mt_at > 2000) { if (g_cfg.log >= 2) mlog("modern times 2s (ms): enemy bars %.1f target bars %.1f mpath build %.1f mpath draw %.1f", mt[0], mt[1], mt[2], mt[3]); memset(mt, 0, sizeof mt); mt_at = GetTickCount(); }
 }
