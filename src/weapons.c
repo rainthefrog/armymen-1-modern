@@ -642,6 +642,89 @@ static void draw_columns(Surf *back, BYTE *u)
     if (!keep && cur_box > 0) frame_box(back, box_rect(cur_box), (BYTE)nearest_colour(40, 240, 40));
 }
 
+/* The minesweeper's box (2026-11-21, mines.c detector): a lamp in its top-left corner - dark green = on, nothing in
+ * range; blinking red = mines within the detector radius (faster the nearer the closest), with their count beside
+ * it. Drawn every frame into the game's own HUD rows (the game redraws the boxes each frame), black-outlined. */
+#define TYPE_SWEEPER   20
+#define LAMP_BLINK_FAR 900       /* ms per blink with the nearest mine at the edge of the radius ... */
+#define LAMP_BLINK_NEAR 160      /* ... and right next to Sarge */
+static const BYTE DIGIT3x5[10][5] = {
+    { 7,5,5,5,7 }, { 2,6,2,2,7 }, { 7,1,7,4,7 }, { 7,1,3,1,7 }, { 5,5,7,1,1 },
+    { 7,4,7,1,7 }, { 7,4,7,5,7 }, { 7,1,1,2,2 }, { 7,5,7,5,7 }, { 7,5,7,1,7 },
+};
+static void put_px(Surf *back, int x, int y, BYTE c)
+{
+    if (x >= 0 && y >= 0 && x < back->w && y < back->h) back->bits[(size_t)y * back->pitch + x] = c;
+}
+static void draw_sweeper_lamp(Surf *back, BYTE *u)
+{
+    int count, nearest;
+    if (!u || !mines_sweep_hud(&count, &nearest)) return;
+    int b = carried_box(u, TYPE_SWEEPER);
+    if (b < 0) return;
+    RECT r = box_rect(b);
+    int cx = r.left + 7, cy = r.top + 6;
+    BYTE black = (BYTE)nearest_colour(0, 0, 0), fill;
+    if (count > 0) {
+        int d = nearest < 0 ? 96 : nearest > 96 ? 96 : nearest;
+        DWORD period = LAMP_BLINK_NEAR + (DWORD)((LAMP_BLINK_FAR - LAMP_BLINK_NEAR) * d / 96);
+        fill = (GetTickCount() % period) < period / 2 ? (BYTE)nearest_colour(255, 50, 30) : (BYTE)nearest_colour(90, 18, 12);
+    } else fill = (BYTE)nearest_colour(40, 110, 40);
+    for (int y = -4; y <= 4; y++)
+        for (int x = -4; x <= 4; x++) {
+            int q = x * x + y * y;
+            if (q <= 6) put_px(back, cx + x, cy + y, fill);
+            else if (q <= 16) put_px(back, cx + x, cy + y, black);
+        }
+    if (count > 0) {                              /* the count beside it, yellow on a black edge */
+        char s[4]; wsprintfA(s, "%d", count > 99 ? 99 : count);
+        BYTE ink = (BYTE)nearest_colour(255, 220, 40);
+        int x = cx + 6;
+        for (const char *p = s; *p; p++, x += 4)
+            for (int row = 0; row < 5; row++)
+                for (int k = 0; k < 3; k++)
+                    if (DIGIT3x5[*p - '0'][row] & (4 >> k)) {
+                        for (int oy = -1; oy <= 1; oy++) for (int ox = -1; ox <= 1; ox++) {
+                            int rr = row + oy, kk = k + ox;
+                            if (rr < 0 || rr > 4 || kk < 0 || kk > 2 || !(DIGIT3x5[*p - '0'][rr] & (4 >> kk))) put_px(back, x + k + ox, cy - 2 + row + oy, black);
+                        }
+                    }
+        x = cx + 6;
+        for (const char *p = s; *p; p++, x += 4)
+            for (int row = 0; row < 5; row++)
+                for (int k = 0; k < 3; k++)
+                    if (DIGIT3x5[*p - '0'][row] & (4 >> k)) put_px(back, x + k, cy - 2 + row, ink);
+    }
+}
+
+/* mines.c: the record (and item) of a carried weapon of this type - in a game slot or kept in a box */
+BYTE *weapons_carried(int type, void **item)
+{
+    BYTE *u = SARGE;
+    if (!u || SARGE_HEALTH(u) <= 0) return NULL;
+    for (int c = 0; c < SLOTS; c++) {
+        BYTE *w = SLOT_TYPE(u, c);
+        if (w && !IsBadReadPtr(w, 0x10) && *(int *)w == type) { if (item) *item = SLOT_ITEM(u, c); return w; }
+    }
+    if (six() && u == g_owner)
+        for (int b = 0; b < BOXES; b++) {
+            BYTE *w = g_store[b].type;
+            if (w && !IsBadReadPtr(w, 0x10) && *(int *)w == type) { if (item) *item = g_store[b].item; return w; }
+        }
+    return NULL;
+}
+
+/* mines.c: would a special weapon (not carried yet) be taken if picked up now? (weapons_touch: a free box;
+ * the original: an empty special slot) */
+int weapons_room_for_special(void)
+{
+    BYTE *u = SARGE;
+    if (!u || SARGE_VEHICLE(u)) return 0;
+    if (!six()) return SLOT_ITEM(u, 2) == NULL;
+    valid(u); sync(u);
+    return first_free_box(u) >= 0;
+}
+
 /* Called with the finished game picture (before it is shown). */
 void weapons_draw_markers(Surf *back)
 {
@@ -652,6 +735,7 @@ void weapons_draw_markers(Surf *back)
     if (alive) { valid(u); sync(u); }
     /* the column stays on screen while Sarge is dead or respawning (empty: the boxes are cleared) */
     draw_columns(back, alive ? u : NULL);
+    if (alive) draw_sweeper_lamp(back, u);
 }
 
 /* Keys 1-6 (modern controls): use box b directly, screen order A1 A2 A3 B1 B2 B3 (b = key - 1). */

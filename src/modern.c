@@ -1099,6 +1099,65 @@ static void modern_draw_body(Surf *b)
             }
         }
     }
+    {   /* the minesweeper carried (mines.c, 2026-11-21): from the game's data (Sarge, the mine objects, the plate =
+         * the hand point of his animation frame), drawn last, clear of the HUD (px):
+         *   - the detector radius, faint (dotted sky blue) - where carrying it reveals mines;
+         *   - each visible laid mine in view: an outlined ring, enemy red (breathing 8..10 px), own green;
+         *   - sweeper selected: pulses out of the plate while mines are in range, faster / red the nearer (a metal
+         *     detector), a small steady green dot when nothing is in range;
+         *   - the pointer: on a mine the disarm pointer (crosshair ring on the mine + what a click does, greyed with
+         *     the reason when the mine would be destroyed), elsewhere a detector pip (red, blinking with proximity, while
+         *     a mine is within the radius; dark when not). */
+        SweepInfo si;
+        if (mines_sweep_info(&si)) {
+            DWORD t = GetTickCount();
+            int cx, cy; to_screen(si.sarge_x, si.sarge_y, &cx, &cy);
+            circle(cx, cy, si.radius, C_SKY, 1);
+            static SweepMark mk[96];
+            int n = mines_sweep_marks(mk, 96, CAMERA_X - 16, CAMERA_Y - 16, CAMERA_X + g_cfg.width + 16, CAMERA_Y + g_cfg.height + 16 + layout_field_shift());
+            int breathe = (int)((t / 120) % 6); breathe = breathe > 3 ? 6 - breathe : breathe;   /* 0..3..0 */
+            for (int i = 0; i < n; i++) {
+                int x, y; to_screen(mk[i].x, mk[i].y, &x, &y);
+                int r = mk[i].own ? 8 : 8 + breathe * 2 / 3;
+                BYTE c = mk[i].own ? C_GREEN : C_RED;
+                circle(x, y, r + 1, C_BLACK, 0); circle(x, y, r, c, 0); circle(x, y, r - 1, C_BLACK, 0);
+            }
+            int period = si.nearest < 0 ? 1400 : 250 + 1150 * (si.nearest > si.radius ? si.radius : si.nearest) / si.radius;
+            if (si.selected) {
+                int qx, qy; to_screen(si.plate_x, si.plate_y, &qx, &qy);
+                if (si.count) {
+                    BYTE c = si.nearest >= 0 && si.nearest < 40 ? C_RED : C_YELLOW;
+                    for (int k = 0; k < 2; k++) {
+                        int ph = (int)((t + (DWORD)(k * period / 2)) % (DWORD)period), r = 2 + ph * 12 / period;
+                        circle(qx, qy, r + 1, C_BLACK, 1); circle(qx, qy, r, c, 0);
+                    }
+                    box(qx - 1, qy - 1, qx + 2, qy + 2, c);
+                } else { box(qx - 2, qy - 2, qx + 3, qy + 3, C_BLACK); box(qx - 1, qy - 1, qx + 2, qy + 2, C_GREEN); }
+            }
+            int ppx, ppy;
+            if (si.hover) {
+                int x, y; to_screen(si.hover_x, si.hover_y, &x, &y);
+                int ok = si.hover_plan == SWEEP_COLLECT;
+                BYTE c = ok ? C_YELLOW : C_GREY;
+                circle(x, y, 14, C_BLACK, 0); circle(x, y, 13, c, 0); circle(x, y, 12, c, 0); circle(x, y, 11, C_BLACK, 0);
+                for (int k = 10; k <= 17; k++) {                  /* crosshair ticks: "disarm here" */
+                    px(x - k, y, c); px(x + k, y, c); px(x, y - k, c); px(x, y + k, c);
+                    px(x - k, y - 1, C_BLACK); px(x + k, y + 1, C_BLACK); px(x - 1, y + k, C_BLACK); px(x + 1, y - k, C_BLACK);
+                }
+                static const char *WHY[] = { "CLICK: COLLECT", "FULL - WILL DESTROY", "NO MINE PACK - WILL DESTROY", "NO FREE BOX - WILL DESTROY" };
+                const char *s = si.hover_plan >= 0 && si.hover_plan <= SWEEP_NO_ROOM ? WHY[si.hover_plan] : "";
+                text(x + 18, y - 16, ok && si.hover_own ? "CLICK: TAKE BACK" : s, c, 1);
+                if (!ok) text(x + 18, y - 6, "CLICK: DISARM", C_GREY, 1);
+            } else if (controls_pointer(&ppx, &ppy) && !controls_pointer_on_ui()) {
+                int x = ppx + 13, y = ppy + 13;
+                BYTE c = si.count ? ((t % (DWORD)period) < (DWORD)period / 2 ? C_RED : C_ORANGE) : C_GREY;
+                for (int yy = -3; yy <= 3; yy++) for (int xx = -3; xx <= 3; xx++) {
+                    int q = xx * xx + yy * yy;
+                    if (q <= 4) px(x + xx, y + yy, c); else if (q <= 10) px(x + xx, y + yy, C_BLACK);
+                }
+            }
+        }
+    }
     if (controls_reticle(&rx, &ry)) {
         /* Range on the reticle (no circle): four corner ticks, red while the reticle is within the
          * current weapon's maximum range, grey beyond it; for grenades and mortar (hold-to-aim types 2
