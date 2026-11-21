@@ -615,6 +615,10 @@ int aware_info(BYTE *t, float *level);      /* flags or -1 (unknown / off); *lev
 int aware_exposure(int *targeting, int *could);   /* 0..10 halves; noticed-and-targeting count, could-see count */
 int __fastcall aware_sight_tick(int *weapon, BYTE *shooter, int cell);                         /* call 0x43ccc3 */
 void __fastcall aware_fire_step(BYTE *t, BYTE *victim, int p1, int p2, int p3, int p4);        /* call 0x43d05b */
+void aware_note_damage(BYTE *item, DWORD from);                    /* bullets.c ItemDamage wrap: Sarge (or his vehicle) did damage */
+int aware_filter_seen(BYTE *viewer, BYTE *target, int seen);       /* bullets.c bullets_can_see: Sarge seen only by units that noticed him */
+void __fastcall aware_unit_target(BYTE *target, BYTE *entry);      /* call 0x43aa03 (FUN_0043aa10) */
+void __fastcall aware_script_attack(DWORD who, DWORD target, int a, int b, int c, int d);   /* call 0x4526ab (log only) */
 void modern_ping(int wx, int wy);
 void modern_frame(void);                    /* controls.c dispatcher, every gameplay frame */
 int modern_no_zoom_now(void);               /* zoom.c */

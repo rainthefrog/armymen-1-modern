@@ -328,6 +328,8 @@ void patches_apply(void)
      * recorded when the victim is Sarge) and its fire step (held until the trooper has noticed Sarge) */
     hook_call("aware: trooper tick sight test (call 0x43ccc3) -> aware.c", 0x43ccc3, 0x43b2e0, (void *)aware_sight_tick);
     hook_call("aware: trooper tick fire step (call 0x43d05b) -> aware.c", 0x43d05b, 0x43d0d0, (void *)aware_fire_step);
+    hook_call("aware: unit target entry set (call 0x43aa03) -> aware.c", 0x43aa03, 0x43aa10, (void *)aware_unit_target);
+    hook_call("aware: mission script ATTACK (call 0x4526ab) -> aware.c (log only)", 0x4526ab, 0x41e9c0, (void *)aware_script_attack);
 
     {   /* [gameplay] resume_wait_ms (2026-11-20, stutter hunt; default 100 = the original, nothing patched).
          * Entering play - about 50 frames into every mission, and each time a menu / pause closes - the game sets

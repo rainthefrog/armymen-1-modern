@@ -963,6 +963,7 @@ static int rear_hit(BYTE *item, int *diff)
 }
 void __fastcall bullets_item_damage(BYTE *item, int damage, int type, void *at, DWORD from)
 {
+    if (damage > 0) aware_note_damage(item, from);     /* aware.c: splash / vehicle hits by Sarge count as "hit by Sarge" */
     int mode = g_cfg.height_rules;
     if ((mode == HEIGHTS_STANCE || mode == HEIGHTS_AM2) && item && damage > 0) {
         int t = UID_RAW_TYPE(*(DWORD *)item);
@@ -1030,7 +1031,7 @@ int __cdecl bullets_can_see(BYTE *viewer, unsigned tile, BYTE *target)
             }
         }
     }
-    return CAN_SEE_FROM_ITEM(viewer, tile);
+    return aware_filter_seen(viewer, target, CAN_SEE_FROM_ITEM(viewer, tile));   /* aware.c: only units that noticed Sarge */
 }
 __asm__(".globl _bullets_sight_stub\n"
         "_bullets_sight_stub:\n"                  /* at 0x44a47d: ecx viewer, edx tile, esi the item looked at */
