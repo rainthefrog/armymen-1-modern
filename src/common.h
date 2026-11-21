@@ -740,6 +740,7 @@ int objectives_need(const char *need);                             /* objectives
 int objectives_item_ground(const char *name, int *x, int *y, int *raw, BYTE **item);   /* objectives.c: named item on the ground */
 typedef struct { short x, y; BYTE dashed, wp; } MissionPt;   /* dashed: the leg INTO this point was not found (straight); wp: 1.. waypoint number, 0 = bend */
 int path_line_free(int x0, int y0, int x1, int y1);                 /* pathfind.c */
+void missionpath_install(void);                                    /* missionpath.c: [debug] start_mission (state 2 update entry) */
 void missionpath_frame(void);                                      /* missionpath.c: per gameplay frame (game thread): build once per mission */
 int missionpath_points(const MissionPt **pts);                     /* missionpath.c: the route (world px), 0 = none / not built yet */
 /* capture.c: Sarge drives empty enemy vehicles ([gameplay] drive_enemy_vehicles) */

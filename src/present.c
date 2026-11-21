@@ -448,6 +448,26 @@ static void map_axis(int o, int src_len, int dst_len, int mode, int *i0, int *w)
     *w = (int)((t - i) * 256 + 0.5);
 }
 
+/* [debug] rig_coords=1 (Wine test rig, 2026-11-21): log where the shown view lands on the SCREEN each time that
+ * changes (menu 640x480 picture <-> battlefield frame, window moved / resized), as
+ *   "rig: view L,T,R,B screen X,Y WxH"   (view = game pixels shown, screen rect = where they are on the desktop).
+ * scripts/run-wine.sh reads the last such line to turn `g:x,y` (game pixels of what is on screen now) into
+ * desktop coordinates. Off by default (user logs stay clean). */
+static void rig_coords_note(HWND hwnd, const ViewLayout *L)
+{
+    static int on = -1;
+    static RECT last_v, last_d;
+    if (on < 0) on = GetPrivateProfileIntA("debug", "rig_coords", 0, mod_ini_path()) > 0;
+    if (!on) return;
+    POINT o = { L->dest.left, L->dest.top };
+    if (!ClientToScreen(hwnd, &o)) return;
+    RECT d = { o.x, o.y, o.x + (L->dest.right - L->dest.left), o.y + (L->dest.bottom - L->dest.top) };
+    if (EqualRect(&d, &last_d) && EqualRect(&L->view, &last_v)) return;
+    last_d = d; last_v = L->view;
+    mlog("rig: view %ld,%ld,%ld,%ld screen %ld,%ld %ldx%ld", L->view.left, L->view.top, L->view.right, L->view.bottom,
+         d.left, d.top, d.right - d.left, d.bottom - d.top);
+}
+
 /* Under the lock: convert the view (view.c) to 32-bit colour at the size it is shown in the
  * window, keeping only the part that is inside the window. */
 static int snapshot(Frame *f)
@@ -457,6 +477,7 @@ static int snapshot(Frame *f)
     RECT cr;
     if (!GetClientRect(s.hwnd, &cr) || cr.right <= 0 || cr.bottom <= 0) return 0;
     ViewLayout L = view_layout(cr.right, cr.bottom);
+    rig_coords_note(s.hwnd, &L);
     RECT vis;
     if (!IntersectRect(&vis, &L.dest, &cr)) return 0;
 
