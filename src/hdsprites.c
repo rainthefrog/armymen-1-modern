@@ -438,6 +438,21 @@ int hdsprites_prepare(const BYTE *bits, int pitch, RECT view, const HdOp **ops, 
         }
         memset(pt, 0, sizeof pt); memset(pc, 0, sizeof pc); pframes = 0;
     }
+    /* The mod's boxes drawn over the HUD after it (the minimap blip tooltip / HUD tooltip: tips_rect, the F10 panel:
+     * panel_rect) are never an HD picture's pixels (2026-11-21, user: "the mini map hover is still not drawn on top
+     * correctly" - the enlarged minimap's colour rule above (any colour the picture uses counts as the picture) took
+     * the tip's darkened pixels, and the HD minimap frame with its A-F row was drawn over the tip). Render rule 1: our
+     * own box is known by its rectangle, not by comparing pixels. */
+    {
+        RECT keep[2]; int nk = 0;
+        if (tips_rect(&keep[nk])) nk++;
+        if (panel_rect(&keep[nk])) nk++;
+        for (int i = 0; i < nk; i++) {
+            RECT c;
+            if (!IntersectRect(&c, &keep[i], &view)) continue;
+            for (int y = c.top; y < c.bottom; y++) memset(g_idmap + (size_t)(y - view.top) * vw + (c.left - view.left), 0, (size_t)(c.right - c.left));
+        }
+    }
     *ops = g_out;
     *idmap = g_idmap;
     return n;

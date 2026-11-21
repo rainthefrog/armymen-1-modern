@@ -652,7 +652,11 @@ void layout_scale_corners(Surf *b)
                 /* panel pixels only: in the art's see-through MARGIN the battlefield shows - put back from the
                  * map (the group's own 1x picture lies under it), unless an earlier piece painted it */
                 int margin = !kept && sy < col_top[x];
-                int restore = margin && pr && !pr[x];
+                /* 2026-11-21 (user: "the UI is still cutting through the mission path"): only where a 1x HUD picture lay (the
+                 * band of the bottom PANEL_ROWS rows) - above it the margin already shows the battlefield WITH the overlays
+                 * drawn before (mission path lane, route, rings): putting the map back there erased them in a rectangle
+                 * between the group's box top and its visible art */
+                int restore = margin && pr && !pr[x] && Y >= y0;
                 if (!restore && rest >= 0) { hdworld_restore_field(b, Y, dx0 + rest, dx0 + x); rest = -1; }
                 if (kept || margin) {
                     if (run >= 0) { hdworld_clear_run(b, Y, dx0 + run, dx0 + x); run = -1; }
@@ -726,6 +730,21 @@ void layout_note_click(const RECT *on, int dx, int dy)
     }
     g_clicks[slot].on = *on; g_clicks[slot].dx = dx; g_clicks[slot].dy = dy; g_clicks[slot].at = GetTickCount(); g_clicks[slot].state = screen_state_now();
 }
+/* 2026-11-21 (user: "the follow UI command is not working on click", "the air strike ui click is not enabling the state"):
+ * a note made during PLAY lived as long as the screen state did - and the state does not change during a mission. The
+ * map view (M) / objective pictures (640x480, moved by 192,30) left a note over the whole centre, so every later HUD click
+ * was mapped with the picture's offset instead of the HUD's: FOLLOW (design y 441) became 471 = DEFEND, the air support
+ * box (zone offset 320, not 192) fell outside its columns. Now a note holds while its picture is still being drawn
+ * (CLICK_LIVE_MS), and for longer only on the screens that draw a button once and wait: the full-screen menus (not
+ * the battlefield view) and the mission-over screen (SCREEN state 16, CONTINUE beside the radio). */
+#define CLICK_LIVE_MS 400
+#define SCREEN_MISSION_OVER 16
+static int click_note_live(int i, DWORD now)
+{
+    if (now - g_clicks[i].at < CLICK_LIVE_MS) return 1;
+    if (g_clicks[i].state != screen_state_now()) return now - g_clicks[i].at < CLICK_LINGER_MS && !layout_view_is_gameplay();
+    return !layout_view_is_gameplay() || g_clicks[i].state == SCREEN_MISSION_OVER;
+}
 void layout_pointer_to_game(int x, int y, int *gx, int *gy)
 {
     *gx = x; *gy = y;
@@ -733,11 +752,23 @@ void layout_pointer_to_game(int x, int y, int *gx, int *gy)
     {
         POINT p = { x, y };
         DWORD now = GetTickCount();
-        for (int i = 0; i < MAX_CLICKS; i++)
-            if (g_clicks[i].at && (now - g_clicks[i].at < CLICK_LINGER_MS || g_clicks[i].state == screen_state_now()) && PtInRect(&g_clicks[i].on, p) && !layout_menu_scale()) {
-                *gx = x - g_clicks[i].dx; *gy = y - g_clicks[i].dy;
-                return;
+        int on_hud = layout_view_is_gameplay() && layout_on_hud_panel(x, y);
+        for (int i = 0; i < MAX_CLICKS; i++) {
+            if (!g_clicks[i].at || !PtInRect(&g_clicks[i].on, p) || layout_menu_scale()) continue;
+            /* on the HUD panel only a picture drawn right now counts (render rule 2: one mapping - the HUD's own) */
+            int live = on_hud ? now - g_clicks[i].at < CLICK_LIVE_MS : click_note_live(i, now);
+            if (!live) {
+                static DWORD said;
+                if (on_hud && now - said > 5000) {
+                    said = now;
+                    mlog("layout: HUD click at %d,%d: old picture note %ld,%ld-%ld,%ld (offset %d,%d, %lu ms old) ignored", x, y, g_clicks[i].on.left,
+                         g_clicks[i].on.top, g_clicks[i].on.right, g_clicks[i].on.bottom, g_clicks[i].dx, g_clicks[i].dy, (unsigned long)(now - g_clicks[i].at));
+                }
+                continue;
             }
+            *gx = x - g_clicks[i].dx; *gy = y - g_clicks[i].dy;
+            return;
+        }
     }
     int k = layout_menu_scale();
     if (k) {                                                  /* an in-game menu is up: it is everything */

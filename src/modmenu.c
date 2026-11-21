@@ -598,3 +598,108 @@ int game_menu_up(void)
     int st = SCRN_GET_STATE();
     return (st >= 7 && st <= 14) || (st >= 17 && st <= 20);
 }
+
+/* ---------------------------------------------------------------- hover info (2026-11-21, user: "add hover over info on
+ * the items in the mod menu"): a row the pointer rests on (HOVER_MS) gets a one- or two-line explanation ('|' = new
+ * line), drawn by menutext.c in its window-resolution layer under / above the row. Texts: short forms of the ini
+ * comments. Called on the DISPLAY thread (menutext_overlay): reads only the constant tables, g_page and the pointer. */
+#define HOVER_MS 350
+static const struct { const char *label, *text; } DESC[] = {
+    { "Modern controls", "Mouse aims and walks (one-button mouse), W A S D move.|OFF: the original keyboard controls." },
+    { "Upscaled art", "AI-upscaled pictures for the battlefield, figures and menus|(the hd folder next to the game)." },
+    { "CRT filter", "Scanlines and a soft blend of the pixels (also F9)." },
+    { "Edge fog", "Darkness over the map edge, outside the area the game|means to show (matters on wide screens)." },
+    { "See-through roofs", "Sarge shows through buildings, walls and other tall objects|drawn over him." },
+    { "Enemies in bldgs", "Enemies behind buildings and trees are shown through them." },
+    { "Building interior", "Inside a building, the floor plan around Sarge is shown." },
+    { "Pinned objective", "The mission objective stays pinned at the top left|instead of filling the message box." },
+    { "Target sector", "The objective's target sector blinks on the minimap." },
+    { "Target outline", "The objective's target area is outlined on the ground." },
+    { "HUD in corners", "Message box and minimap in the screen corners, enlarged.|OFF: the original centred panel." },
+    { "Game speed", "Game speed 0.5x - 2x (sound and videos are not affected)." },
+    { "Zoom", "Battlefield zoom: soldiers and map bigger, the HUD stays.|In game: Ctrl + mouse wheel." },
+    { "Minimap size", "Size of the minimap group (1x - 2.5x)." },
+    { "Message box size", "Size of the message box (1x - 2.5x)." },
+    { "Centre HUD size", "Size of the weapons / health / squad group (1x - 2.5x)." },
+    { "Air support size", "Size of the air support box (1x - 2.5x)." },
+    { "Barricade rules", "Your rifle fire flies over fences, walls and gates; buildings|stop it only where they stand, not on the drawn roof." },
+    { "Enemies use them", "Enemy fire follows the same barricade rules." },
+    { "Corner shots", "Shots past a building corner fly on: only the building's|base stops them." },
+    { "Leg hits", "A round that reaches a soldier's legs counts as a hit." },
+    { "Height rules", "STANCE: heights ignored, stance + cover decide.|AM2: Army Men II rules. ORIG: the 1998 rules." },
+    { "Longer range", "Weapons reach 20 % farther." },
+    { "No corner squash", "Soldiers are not crushed to death at fence / wall corners." },
+    { "Health regen", "Sarge slowly heals after a while without a hit;|every hit restarts the wait." },
+    { "Half damage", "Easier: Sarge takes half damage." },
+    { "Aim assist", "Shots at a hovered enemy go to that enemy." },
+    { "Hit markers", "A mark at the reticle when your shot hits." },
+    { "Damage direction", "Shows the direction a hit on Sarge came from." },
+    { "Health bars", "Health bars over hurt enemies and targets." },
+    { "Enemy vehicles", "Sarge may drive an EMPTY enemy vehicle (click it or the|Enter Vehicle key). One-player only." },
+    { "Vehicle bail-out", "A destroyed vehicle throws Sarge out alive, a little hurt." },
+    { "Enemy awareness", "Enemies must NOTICE Sarge before they fire (yellow bar,|red ! / yellow ?). OFF: the original game." },
+    { "Sharp menu text", "Menu labels drawn sharp at window resolution." },
+    { "Buttons press in", "Menu buttons show a pressed state when clicked." },
+    { "Radio overlay", "Radio messages over the battlefield, text redrawn sharp.|OFF: the game's own pictures." },
+    { "Bigger blips", "Bigger minimap blips in bright army colours, steady." },
+    { "Sarge marked", "Sarge's blip bigger, with a blinking frame." },
+    { "Map contrast", "The minimap picture darker, with more contrast." },
+    { "Hover details", "Pointer over a blip: army, kind, men, health, distance." },
+    { "Dodge roll key", "A key for a dodge roll (default Z; keys: F10 panel, BINDS)." },
+    { "Sprint stamina", "Sprinting uses stamina (~4 s from full, back in ~6 s)." },
+    { "Side buttons", "Mouse side buttons: Mouse4 = dive, Mouse5 = previous weapon." },
+    { "Sprint toggle", "The sprint key switches sprint on / off instead of holding." },
+    { "Off-screen arrows", "Arrows at the screen edge to enemies and objectives." },
+    { "Ammo at reticle", "Ammo count next to the reticle." },
+    { "Range at reticle", "The reticle shows whether a target is in range." },
+    { "Route marker", "The click-to-walk route is shown on the ground." },
+    { "Mission path", "A path on the ground through the mission's waypoints." },
+    { "Edge peek key", "Hold a key (default E) to look farther toward the pointer." },
+    { "No vehicle zoom", "No battlefield zoom while driving." },
+    { "No screen shake", "Turns off the screen shake of explosions." },
+    { "Skip videos", "Any key or click skips a video." },
+    { "Stats key", "Hold a key (default I) for the mission stats." },
+    { "Restart key", "Hold a key (default F12) 1 s: lose the mission, Play Again." },
+    { "Gamepad", "Twin-stick gamepad (XInput)." },
+    { "Throw at pointer", "Grenades and mortar land at the pointer." },
+    { "Throw on release", "Hold = aim with the blast circle, release = throw." },
+    { "Colour-blind", "Tan enemies drawn blue." },
+    { "Ctrl+click orders", "Ctrl + left: squad attack / defend, Ctrl + right: follow." },
+    { "Radial menu", "Hold B or the middle button: command ring;|opened on Sarge: the stance ring." },
+    { "Ping key", "A key (default T): a marker at the pointer + squad attack now." },
+    { "Stance hints", "Hints to take cover / change stance while under fire." },
+};
+static const char *desc_of(const char *label)
+{
+    for (int i = 0; i < N(DESC); i++) if (!lstrcmpA(DESC[i].label, label)) return DESC[i].text;
+    return NULL;
+}
+
+/* menutext.c (display thread): the explanation of the row under the pointer once it rested there HOVER_MS; *row =
+ * the row in design px (640x480). 0 = none. */
+int modmenu_hover(char *text, int n, RECT *row)
+{
+    static int last = -1, last_page = -1; static DWORD since;
+    if (!g_ready || SCRN_GET_STATE() != MODSET_STATE || !g_dd || !g_dd->hwnd) { last = -1; return 0; }
+    POINT p; RECT c;
+    GetCursorPos(&p); ScreenToClient(g_dd->hwnd, &p);
+    if (!GetClientRect(g_dd->hwnd, &c) || !PtInRect(&c, p)) { last = -1; return 0; }
+    view_client_to_game(&p);
+    int dx = p.x, dy = p.y;
+    if (layout_menu_scale()) layout_pointer_to_game(p.x, p.y, &dx, &dy);         /* as modmenu_slider_mouse */
+    else { RECT v = view_current(); if (v.right > v.left) { dx -= v.left; dy -= v.top; } }
+    int page = g_page, hit = -1;
+    const Item *items = PAGES[page].items;
+    for (int i = 0; i < PAGES[page].n && hit < 0; i++) {
+        int col = i / ROWS_PER_COL, r = i % ROWS_PER_COL, x = ROW_X0 + col * COL_W, y = ROW_Y0 + r * ROW_H;
+        if (dx >= x && dx < x + COL_W - 8 && dy >= y && dy < y + ROW_H) hit = i;
+    }
+    if (hit != last || page != last_page) { last = hit; last_page = page; since = GetTickCount(); }
+    if (hit < 0 || GetTickCount() - since < HOVER_MS) return 0;
+    const char *d = desc_of(items[hit].label);
+    if (!d) return 0;
+    lstrcpynA(text, d, n);
+    int col = hit / ROWS_PER_COL, r = hit % ROWS_PER_COL;
+    SetRect(row, ROW_X0 + col * COL_W, ROW_Y0 + r * ROW_H, ROW_X0 + col * COL_W + COL_W - 8, ROW_Y0 + r * ROW_H + ROW_H);
+    return 1;
+}
