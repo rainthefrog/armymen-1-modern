@@ -1849,6 +1849,8 @@ static void apply_wheel(BYTE *u);
 /* Where a lob goes: the pointer's world point (for a short while it was the hovered target's position - off
  * to the side on multi-part objects; the user wants the pointer). */
 static int g_throw_aiming;           /* hold-to-aim throw in progress (button held, circle shown) */
+static int g_lob_armed;              /* grenade / mortar ready and the pointer rested lob_dwell_ms: throw camera +
+                                        blast circle on (controls_camera_body) */
 static void throw_target(int px, int py, int *wx, int *wy)
 {
     /* always the pointer (user 2026-11-17: "the center should be ... where the mouse is"); the target's own
@@ -2838,7 +2840,9 @@ int controls_throw_preview(int *wx, int *wy, int *radius, int *type, int *clampe
         double ex = *wx - SARGE_X(u), ey = *wy - SARGE_Y(u); *dist = (int)lround(sqrt(ex * ex + ey * ey));
         return 1;
     }
-    if (!weapon_is_hold_to_aim(u) || !modern_on(MOD_THROW_POINTER) || (!on_target && !g_throw_aiming)) return 0;
+    /* 2026-11-21 (user: the circle should switch on when the pointer is held still): also once the throw camera is on
+     * (g_lob_armed: the pointer rested lob_dwell_ms with the grenade / set-up mortar), anywhere on the battlefield */
+    if (!weapon_is_hold_to_aim(u) || !modern_on(MOD_THROW_POINTER) || (!on_target && !g_throw_aiming && !g_lob_armed)) return 0;
     int tx, ty;
     if (g_throw_aiming) { tx = g_throw_wx; ty = g_throw_wy; } else throw_target(S.cursor_x, S.cursor_y, &tx, &ty);
     double sx, sy;
@@ -3127,6 +3131,7 @@ void controls_reset(void)
     if (g_keys_seen) controls_game_keys(g_cfg.controls_modern);   /* first snapshot at gameplay start (after custom.cfg) */
     controls_release_pointer();
     memset(&S, 0, sizeof S);
+    g_lob_armed = 0;
 }
 
 /* ---------------------------------------------------------------- smooth camera
@@ -3199,6 +3204,127 @@ static double clamp_centre(double c, int lo, int hi, int view)
     return clampd(c, lo + view / 2.0, hi - view / 2.0 - 1);
 }
 
+/* ---- throw camera: dwell, and the aimed world point held while the camera moves (2026-11-21)
+ * User: "when switching from walking to targeting, the cursor will jump and shoot much further in the distance than I
+ * want". Cause: the throw camera's long lead (lead_x / lead_up / lead_down up to LOB_CAMERA_LEAD_MAX x the pointer's
+ * offset from the middle, instead of camera_lead 0.15) switched on at once - for the mortar the moment Sarge stopped
+ * and knelt. The camera swung toward the pointer while the pointer kept its SCREEN spot, so its world point (= the
+ * throw target) ran far out: a pointer 200 px from the middle went ~(4 - 0.15) x 200 = 770 px further.
+ * Now:
+ *   - the throw camera and the blast circle switch on only after the pointer rested (moved < LOB_DWELL_MOVE game px)
+ *     for [controls] lob_dwell_ms (default 300, 0 = at once) with the grenade / the set-up mortar ready. Once on they
+ *     stay on however the pointer moves, until the weapon changes / the mortar packs up (Sarge walks).
+ *   - while it is on, and while the camera eases back to the normal lead afterwards (no snap), the pointer is moved
+ *     with the camera (the Windows pointer by SetCursorPos, in window pixels through the view / zoom mapping; raw
+ *     mouse mode also the game cursor, mouse_nudge_cursor), so the world point under it moves only with the player's
+ *     own mouse motion and with Sarge himself (as before: a target rides along when Sarge walks). The pointer stays
+ *     LOB_POINTER_MARGIN inside the battlefield above the HUD panel; easing back, the camera is held there instead
+ *     of pushing the pointer out (for at most LOB_EASE_MAX_MS, then the normal camera takes over smoothly).
+ * Not with the gamepad's right stick (its reticle is placed round Sarge, camera-independent) or in a vehicle. */
+#define LOB_DWELL_MOVE      6                  /* game px the pointer may move and still count as resting */
+#define LOB_POINTER_MARGIN  8                  /* game px the held pointer stays inside the battlefield */
+#define LOB_EASE_MAX_MS     2000               /* holding the pointer while the camera eases back: at most */
+
+static int lob_dwell_ms(void)
+{
+    static int v = -1;
+    if (v < 0) { v = GetPrivateProfileIntA("controls", "lob_dwell_ms", 300, mod_ini_path()); if (v < 0) v = 0; }
+    return v;
+}
+
+static struct {
+    int on;                    /* the pointer is held on a world point */
+    double wx, wy;             /* ... that point minus Sarge's position (estimate) */
+    POINT last; int last_ok;   /* client position last seen / set by us */
+    POINT set[4]; int nset, iset;  /* the last positions we set (Wine: GetCursorPos can still return one of them a frame later) */
+    double ux, uy;             /* the player's own pointer motion, summed (game px) */
+    double rest_x, rest_y;     /* dwell: where the resting started (in ux / uy) */
+    DWORD rest_since;
+    int ease; DWORD ease_at;   /* the throw camera ended: easing back, pointer still held */
+} L;
+
+/* After the camera is set (CAMERA_X / CAMERA_Y final for this frame). lob = grenade / set-up mortar ready (the camera
+ * condition); ex, ey = Sarge's smooth position the camera follows; fx..fvy = the camera spring (held back at the
+ * pointer margin while easing); settle = how far the spring still is from its goal; edge_x / edge_y = the view is at
+ * the map's edge on that axis (holding the spring there does nothing). */
+static void lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double *fx, double *fy, double *fvx, double *fvy,
+                              double settle, int edge_x, int edge_y)
+{
+    DWORD now = GetTickCount();
+    HWND h = g_dd ? g_dd->hwnd : NULL;
+    POINT c = { 0, 0 }, g;
+    int ok = h && GetForegroundWindow() == h && GetCursorPos(&c) && ScreenToClient(h, &c);
+    RECT cr;
+    if (ok) ok = GetClientRect(h, &cr) && PtInRect(&cr, c);
+    double ax = 0, ay = 0, kx = 0, ky = 0;              /* client = a + k x game, near the pointer */
+    if (ok) {
+        g = c; view_client_to_game(&g);
+        POINT a = g, b = { g.x + 32, g.y + 32 };
+        view_game_to_client(&a); view_game_to_client(&b);
+        kx = (b.x - a.x) / 32.0; ky = (b.y - a.y) / 32.0;
+        ok = kx > 0 && ky > 0 && !ui_at_steady(g.x, g.y);
+        ax = a.x - kx * g.x; ay = a.y - ky * g.y;
+    }
+    /* the player's own motion since the last frame (our SetCursorPos is not counted) */
+    double du = 0, dv = 0;
+    int stale = 0;
+    for (int i = 0; i < 4 && i < L.nset; i++) if (c.x == L.set[i].x && c.y == L.set[i].y) stale = 1;
+    if (ok && L.last_ok && !stale) { du = (c.x - L.last.x) / kx; dv = (c.y - L.last.y) / ky; }
+    L.ux += du; L.uy += dv;
+    if (!stale || !ok) L.last = c;
+    L.last_ok = ok;
+
+    /* dwell: the throw camera + circle on after the pointer rested with the weapon ready */
+    if (!lob) {
+        if (g_lob_armed) { g_lob_armed = 0; L.ease = 1; L.ease_at = now; if (g_cfg.log >= 1) mlog("lob: throw camera off (easing back)"); }
+        L.rest_x = L.ux; L.rest_y = L.uy; L.rest_since = now;
+    } else if (!g_lob_armed) {
+        if (!ok || fabs(L.ux - L.rest_x) > LOB_DWELL_MOVE || fabs(L.uy - L.rest_y) > LOB_DWELL_MOVE) { L.rest_x = L.ux; L.rest_y = L.uy; L.rest_since = now; }
+        if (ok && now - L.rest_since >= (DWORD)lob_dwell_ms()) {
+            g_lob_armed = 1; L.ease = 0;
+            if (g_cfg.log >= 1) mlog("lob: throw camera on (pointer rested %lu ms) at world %d,%d", now - L.rest_since,
+                                     (int)floor((c.x - ax) / kx) + CAMERA_X, (int)floor((c.y - ay) / ky) + layout_field_shift() + CAMERA_Y);
+        }
+    }
+    if (L.ease && (settle < 1.0 || now - L.ease_at > LOB_EASE_MAX_MS || SARGE_VEHICLE(u))) {
+        L.ease = 0;
+        if (g_cfg.log >= 1) mlog("lob: camera back to normal (%s)", settle < 1.0 ? "settled" : "time / vehicle");
+    }
+
+    int hold = (g_lob_armed || L.ease) && ok && !SARGE_VEHICLE(u) && GetTickCount() - g_pad_aim_at > 1500;
+    if (!hold) { L.on = 0; return; }
+    int fs = layout_field_shift();
+    double gx = (c.x - ax) / kx, gy = (c.y - ay) / ky;   /* pointer, game px of the picture (fractional) */
+    if (!L.on) { L.on = 1; L.wx = gx + CAMERA_X - ex; L.wy = gy + fs + CAMERA_Y - ey; }
+    else { L.wx += du; L.wy += dv; }
+    /* where the pointer must be for the held world point now */
+    double tx = L.wx + ex - CAMERA_X, ty = L.wy + ey - CAMERA_Y - fs;
+    double lo_x = LOB_POINTER_MARGIN, hi_x = VIEW_W - 1 - LOB_POINTER_MARGIN;
+    double lo_y = LOB_POINTER_MARGIN, hi_y = VIEW_H - 1 - LOB_POINTER_MARGIN - (g_cfg.width > LAYOUT_DESIGN_W ? HUD_COVER_H : 0);
+    double cx = clampd(tx, lo_x, hi_x), cy = clampd(ty, lo_y, hi_y);
+    if (cx != tx) {
+        if (L.ease && !edge_x) *fx -= cx - tx, *fvx = 0;  /* easing back: hold the camera, not the pointer */
+        else L.wx += cx - tx;                              /* (throw camera on: only at the map's edge) */
+    }
+    if (cy != ty) {
+        if (L.ease && !edge_y) *fy -= cy - ty, *fvy = 0;
+        else L.wy += cy - ty;
+    }
+    POINT t = { (LONG)floor(ax + kx * cx + 0.5), (LONG)floor(ay + ky * cy + 0.5) };
+    if (t.x != c.x || t.y != c.y) {
+        POINT s = t; ClientToScreen(h, &s);
+        SetCursorPos(s.x, s.y);
+        POINT g0 = c, g1 = t; view_client_to_game(&g0); view_client_to_game(&g1);
+        mouse_nudge_cursor(g1.x - g0.x, g1.y - g0.y);    /* raw mouse mode: the game's own cursor too */
+        L.last = t;
+        L.set[L.iset = (L.iset + 1) & 3] = t; if (L.nset < 4) L.nset++;
+    }
+    {   /* the reticle and a click this frame use the moved pointer */
+        POINT gp = t; view_client_to_game(&gp);
+        S.cursor_x = gp.x; S.cursor_y = gp.y + fs; S.have_cursor = 1;
+    }
+}
+
 static void controls_camera_body(void)
 {
     /* The camera is locked to Sarge (as the original is): only the LEAD toward the pointer is eased.
@@ -3222,7 +3348,10 @@ static void controls_camera_body(void)
         return;
     }
     double tlx = 0, tly = 0;                   /* wanted lead */
-    int lob_snap = 0;                          /* the mortar camera just ended: jump to the normal lead */
+    /* the mortar only while it is set up (Sarge kneeling, not walking): once he moves the camera eases back
+     * to the normal lead (user 2026-11-17; it snapped until 2026-11-21); the grenade always */
+    int lob = !SARGE_VEHICLE(u) && weapon_is_hold_to_aim(u) && modern_on(MOD_THROW_POINTER) &&
+              (SARGE_WEAPON_TYPE(u) != 5 || (SARGE_POSE(u) == POSE_KNEEL && !S.going && !(INPUT & (INPUT_FORWARD | INPUT_BACK))));
     if (S.have_cursor && g_cfg.controls_camera_lead > 0) {
         tlx = (S.cursor_x - VIEW_W / 2.0) * g_cfg.controls_camera_lead * peek_scale();   /* modern.c edge peek */
         tly = (S.cursor_y - VIEW_H / 2.0) * g_cfg.controls_camera_lead * peek_scale();
@@ -3230,20 +3359,15 @@ static void controls_camera_body(void)
          * way"): a long lead toward the pointer, and aiming down the camera also slides by up to the HUD
          * panel's height, so the whole throw range shows above the panel (below Sarge only ~H/2 - 94 px
          * were visible, a grenade reaches ~260 px) */
-        /* the mortar only while it is set up (Sarge kneeling, not walking): once he moves the camera snaps back
-         * to the normal lead (user 2026-11-17); the grenade always */
-        int lob = !SARGE_VEHICLE(u) && weapon_is_hold_to_aim(u) && modern_on(MOD_THROW_POINTER) &&
-                  (SARGE_WEAPON_TYPE(u) != 5 || (SARGE_POSE(u) == POSE_KNEEL && !S.going && !(INPUT & (INPUT_FORWARD | INPUT_BACK))));
-        static int was_lob;
-        if (was_lob && !lob) lob_snap = 1;
-        was_lob = lob;
+        /* only once the pointer rested (g_lob_armed, lob_pointer_frame): switched on at once it threw the pointer's
+         * world point far out (user 2026-11-21) */
         if (COMMAND_CURSOR == 1) {
             /* picking an air strike / paratroop target: the view follows the pointer far (to the window edge =
              * AIR_TARGET_REACH px away) so any spot nearby can be picked - the screen was locked (user) */
             double lx2 = AIR_TARGET_REACH / (VIEW_W / 2.0) - 1, ly2 = AIR_TARGET_REACH / (VIEW_H / 2.0) - 1;
             tlx = (S.cursor_x - VIEW_W / 2.0) * clampd(lx2, 0.5, LOB_CAMERA_LEAD_MAX);
             tly = (S.cursor_y - VIEW_H / 2.0) * clampd(ly2, 0.5, LOB_CAMERA_LEAD_MAX);
-        } else if (lob) {
+        } else if (lob && g_lob_armed) {
             /* the lead is sized so the window edge (the HUD panel top when aiming down) is the weapon's
              * longest throw (user: "need mortar updated to go further": a fixed 0.5 reached ~260 px, the
              * mortar flies ~500) */
@@ -3267,7 +3391,7 @@ static void controls_camera_body(void)
         }
     }
     double dt = have ? (double)(now.QuadPart - last.QuadPart) * 1000.0 / (double)freq.QuadPart : 0;
-    if (!have || lob_snap) {
+    if (!have) {
         lx = tlx; ly = tly; have = 1;
     } else if (dt > 0) {
         double k = g_cfg.controls_camera_smooth_ms > 0 ? 1.0 - exp(-dt / g_cfg.controls_camera_smooth_ms) : 1.0;
@@ -3331,6 +3455,18 @@ static void controls_camera_body(void)
         if (ms - logged >= 250) { logged = ms; mlog("camera: sarge %d,%d lead %.0f,%.0f centre %.0f,%.0f", SARGE_X(u), SARGE_Y(u), lx, ly, tx, ty); }
     }
     controls_camera_original();
+    lob_pointer_frame(u, lob, ex, ey, &fx, &fy, &fvx, &fvy, fabs(gx - fx) + fabs(gy - fy) + (fabs(fvx) + fabs(fvy)) * 100,
+                      fabs(ccx - cx) > 0.5, fabs(ccy - cy) > 0.5);
+    if (g_cfg.log >= 2 && (lob || L.ease || g_lob_armed)) {   /* testing the throw camera: the aimed world point */
+        static DWORD logged;
+        DWORD ms = GetTickCount();
+        int px, py;
+        if (ms - logged >= 100 && pointer_on_battlefield(&px, &py)) {
+            logged = ms;
+            mlog("lob: armed %d ease %d pointer %d,%d world %d,%d centre %.1f,%.1f lead %.0f,%.0f sarge %d,%d", g_lob_armed, L.ease,
+                 px, py, px + CAMERA_X, py + CAMERA_Y, ccx, ccy, tlx, tly, SARGE_X(u), SARGE_Y(u));
+        }
+    }
 }
 
 /* How many rows the battlefield picture should move UP so the bottom of the map is not hidden

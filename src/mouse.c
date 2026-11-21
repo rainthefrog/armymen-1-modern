@@ -251,3 +251,13 @@ void mouse_poll_pointer(void)
 {
     if (g_cfg.mouse_pointer && g_cfg.mouse_fix) mouse_update(0, 0);
 }
+
+/* controls.c (throw camera holding the aimed point): raw mouse mode - move the game's own cursor by dx, dy game px
+ * along with the Windows pointer (pointer mode: the game cursor follows the Windows pointer by itself) */
+void mouse_nudge_cursor(int dx, int dy)
+{
+    if (g_cfg.mouse_pointer || (!dx && !dy)) return;
+    int x, y;
+    mouse_real_cursor(&x, &y);
+    set_cursor(x + dx, y + dy);
+}
