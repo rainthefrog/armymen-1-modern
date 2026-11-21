@@ -88,6 +88,7 @@ void config_load(void)
     g_cfg.break_fences = GetPrivateProfileIntA("gameplay", "break_fences", 1, ini);   /* fences.c (2026-11-20) */
     /* aware.c / modern.c (2026-11-20): enemy_awareness groups the enemy alerts; the older key enemy_alerts is the fallback */
     g_cfg.enemy_awareness = GetPrivateProfileIntA("modern", "enemy_awareness", GetPrivateProfileIntA("modern", "enemy_alerts", 1, ini), ini);
+    g_cfg.squad_sprint = GetPrivateProfileIntA("gameplay", "squad_sprint", 1, ini);   /* squad.c (2026-11-20) */
     g_cfg.see_interior = GetPrivateProfileIntA("display", "see_interior", 1, ini);
     g_cfg.menu_text = GetPrivateProfileIntA("display", "menu_text", 1, ini);
     g_cfg.radio_overlay = GetPrivateProfileIntA("display", "radio_overlay", 1, ini);

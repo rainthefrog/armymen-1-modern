@@ -86,6 +86,7 @@ void gameplay_frame(void)
     capture_frame();                             /* capture.c: Sarge in an enemy vehicle */
     barricades_frame();                          /* barricades.c: Sarge stuck on a barricade */
     fences_frame();                              /* fences.c: Sarge pushing against a wooden fence breaks it */
+    squad_frame();                               /* squad.c: troopers following Sarge sprint with him */
     vehicle_regen();
     static BYTE *who;
     static int last_hp, since_hurt_ms;
