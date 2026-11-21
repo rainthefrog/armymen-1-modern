@@ -801,6 +801,8 @@ typedef struct { short x, y; char own, in_range; } SweepMark;
 int mines_sweep_info(SweepInfo *si);       /* modern.c: the sweeper is carried (detector state, the mine under the pointer) */
 int mines_sweep_marks(SweepMark *m, int max, int x0, int y0, int x1, int y1);   /* modern.c: visible laid mines in a world box */
 int mines_sweep_hud(int *count, int *nearest);   /* weapons.c: the sweeper box lamp */
+int mines_free_charges(BYTE *weapon);       /* weapons.c: real free charges of a mine weapon (ammo cap for the top-up) */
+int mines_transfer(BYTE *to, BYTE *from, int n);   /* weapons.c: move free charges of a pack into used-up slots */
 BYTE *weapons_carried(int type, void **item); /* weapons.c: record of a carried weapon of this type (any slot / box) */
 int weapons_room_for_special(void);         /* weapons.c: a special weapon picked up now would be taken */
 void __fastcall mines_lay(BYTE *weapon, int army, DWORD point);   /* call 0x445f44 -> MineLay 0x446600 */

@@ -601,3 +601,30 @@ void __fastcall mines_lay(BYTE *weapon, int army, DWORD point)
              (short)LOWORD(game_point), (short)HIWORD(game_point), SARGE_X(u), SARGE_Y(u), before, after, total, ammo, ammo > 0 ? ammo - 1 : 0);
     }
 }
+
+/* weapons.c (mine pack top-up, 2026-11-21): how many charges of this mine weapon really lie in the bag - its ammo may
+ * never go above this (the top-up used to raise only the ammo count: "more ammo than free charges") */
+int mines_free_charges(BYTE *weapon) { return weapon ? free_charges(weapon, NULL) : 0; }
+/* weapons.c (mine pack top-up): move up to n FREE charges of the pack weapon `from` into used-up slots of `to` (the two
+ * object numbers are swapped, so each array keeps pointing at real objects). Ammo is NOT changed here; returns how many
+ * were moved (the caller adds them to `to`'s ammo and takes them from the pack's). */
+int mines_transfer(BYTE *to, BYTE *from, int n)
+{
+    if (!to || !from || to == from || !OBJECTS) return 0;
+    short *ct = W_CHARGES(to), *cf = W_CHARGES(from);
+    int nt = W_MAX(to), nf = W_MAX(from), moved = 0;
+    if (!ct || !cf || nt <= 0 || nf <= 0 || IsBadWritePtr(ct, (UINT_PTR)nt * 2) || IsBadWritePtr(cf, (UINT_PTR)nf * 2)) return 0;
+    while (moved < n) {
+        int k = used_slot(to), j = -1;
+        if (k < 0) break;
+        for (int i = 0; i < nf && j < 0; i++) {
+            if (cf[i] < 0 || cf[i] >= OBJECT_COUNT) continue;
+            BYTE f = OBJ_FLAGS(object(cf[i]));
+            if ((f & OF_IN_BAG) && !(f & OF_USED)) j = i;
+        }
+        if (j < 0) break;
+        short t = ct[k]; ct[k] = cf[j]; cf[j] = t;
+        moved++;
+    }
+    return moved;
+}
