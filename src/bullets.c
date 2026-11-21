@@ -319,7 +319,9 @@ static int direct_fire(int weapon) { return is_bullet(weapon) || weapon == 4 || 
 int __fastcall bullets_stops(BYTE *item, BYTE *proj, int height, int distance)
 {
     if (g_true_height != NO_HEIGHT) height = g_true_height;     /* vehicle_hills raised ANIM_Z only for the ground test */
-    if (g_cfg.downhill_hits && item && proj && direct_fire(PROJ_WEAPON(proj)) && UID_ARMY(*(DWORD *)proj) == ARMY_PLAYER) {   /* group 4, DOWNHILL HITS */
+    /* 2026-11-20 (user: elevation rules are hard "without visual queues" -> "Both"): every army's direct fire hits what
+     * its tracer crosses (was the player's only); the ground still stops shots (cliffs, ridges: modern.c shows it) */
+    if (g_cfg.downhill_hits && item && proj && direct_fire(PROJ_WEAPON(proj))) {   /* group 4, DOWNHILL HITS */
         int t = UID_RAW_TYPE(*(DWORD *)item);
         if (t == 3 || t == 5 || t == 6) {
             int h = GET_ITEM_HEIGHT(item);
@@ -398,7 +400,7 @@ static const SPoint *vehicle_hills(BYTE *proj, const SPoint *p, SPoint *q, int *
 {
     int weapon = PROJ_WEAPON(proj);
     DWORD from = FROM_UID(proj);
-    if ((weapon != CANNON_WEAPON && weapon != 7 && weapon != 8) || UID_ARMY(*(DWORD *)proj) != ARMY_PLAYER || UID_RAW_TYPE(from) != 3)
+    if ((weapon != CANNON_WEAPON && weapon != 7 && weapon != 8) || UID_RAW_TYPE(from) != 3)   /* every army's vehicles (2026-11-20) */
         return p;
     int z = ANIM_Z(PROJ_ANIM), shooter = z - VEHICLE_FIRE_Z;
     if (weapon != CANNON_WEAPON && shooter > 0) {                       /* 1. the test line follows the tracer */
@@ -548,6 +550,40 @@ static int aimed_target_in_front(BYTE *obj, const SPoint *p)
         if ((t == 3 || t == 5) && UID_ARMY(*(DWORD *)ow) != ARMY_PLAYER && *(short *)(ow + 0x1c) > 0) target = 1;
         if (t >= 7 && t <= 9 && OBJ_CATEGORY(ow) == 9 && !(ow[0x70] & 0x04)) target = 1;
         if (target && *(short *)(cl[i] + 0x12) >= by) return 1;
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------- shot prediction for the reticle (2026-11-20)
+ * User: "gameplay wise it makes it much more difficult without visual queues ... provide an indicator to show height
+ * differences. and queues on how to fix it". The ground rule of a shot from Sarge (on foot or in his vehicle) to the
+ * world point (tx, ty), as the game + vehicle_hills apply it:
+ *   on foot: height = GetItemHeight(Sarge) + 1 (pose + elevation + 1, FUN_00447c30); stopped where ground >= height;
+ *   vehicle: height = ground + VEHICLE_FIRE_Z; stopped where ground >= height + CANNON_GROUND and the ground there is
+ *            higher than the ground at the aimed spot (aimed_ground).
+ * Walked in 4 px steps from the shooter. Returns 0 = clear, 1 = cliff (the target's ground is at least as high as
+ * the stop: go up), 2 = ridge (higher ground between: move round); *bx, *by = the stop point. Levels: ground / 4. */
+int bullets_level_at(int x, int y) { int e = ground_elev(x, y); return e < 0 ? -1 : e / 4; }
+int bullets_shot_block(int tx, int ty, int *bx, int *by)
+{
+    BYTE *s = SARGE_UNIT, *v = s ? *(BYTE **)(s + 0x2d0) : NULL;
+    if (!s || !g_cfg.downhill_hits) return 0;
+    BYTE *sh = v ? v : s;
+    int x0 = *(short *)(sh + 4), y0 = *(short *)(sh + 6), g0 = ground_elev(x0, y0), z, margin;
+    if (g0 < 0) return 0;
+    int aim = -1;
+    if (v) {
+        z = g0 + VEHICLE_FIRE_Z; margin = CANNON_GROUND;
+        for (int dy = -AIM_TILES; dy <= AIM_TILES; dy++)
+            for (int dx = -AIM_TILES; dx <= AIM_TILES; dx++) { int e = ground_elev(tx + dx * 16, ty + dy * 16); if (e > aim) aim = e; }
+    } else { z = GET_ITEM_HEIGHT(s) + 1; margin = 0; }
+    int dx = tx - x0, dy = ty - y0, n = (abs(dx) > abs(dy) ? abs(dx) : abs(dy)) / 4;
+    for (int i = 1; i <= n; i++) {
+        int x = x0 + dx * i / n, y = y0 + dy * i / n, e = ground_elev(x, y);
+        if (e < 0 || e < z + margin || (v && aim >= e)) continue;
+        *bx = x; *by = y;
+        int tg = ground_elev(tx, ty);
+        return tg >= e ? 1 : 2;
     }
     return 0;
 }

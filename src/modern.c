@@ -968,7 +968,23 @@ static void modern_draw_body(Surf *b)
                     int tr = controls_target_in_range();     /* a target under the pointer decides; else the pointer's distance */
                     int ok = tr >= 0 ? tr : d <= hi;
                     if (shooter != u && !vehicles_aim_reachable(shooter, rx + CAMERA_X, ry + CAMERA_Y)) ok = 0;   /* halftrack: outside its gun arc */
-                    BYTE c = ok ? C_RED : C_GREY;
+                    /* height cues (2026-11-20, user: "provide an indicator to show height differences. and queues on
+                     * how to fix it"): the ground the shot stops at (bullets_shot_block) - ticks yellow, an X there,
+                     * the fix under the reticle; and the pointed ground's level against the shooter's ("UP 2") */
+                    int wx = rx + CAMERA_X, wy = ry + CAMERA_Y, bx, by, blk = 0;
+                    if (type != 2 && type != 3 && type != 5) blk = bullets_shot_block(wx, wy, &bx, &by);
+                    if (blk && (bx - wx) * (bx - wx) + (by - wy) * (by - wy) < 12 * 12) blk = 0;   /* stops at the target itself */
+                    int l0 = bullets_level_at(*(short *)(shooter + 4), *(short *)(shooter + 6)), l1 = bullets_level_at(wx, wy);
+                    if (l0 >= 0 && l1 >= 0 && l1 != l0) {
+                        char hs[16]; wsprintfA(hs, l1 > l0 ? "UP %d" : "DOWN %d", l1 > l0 ? l1 - l0 : l0 - l1);
+                        text(rx + 13, sy0 - 4, hs, l1 > l0 ? C_YELLOW : C_WHITE, 1);
+                    }
+                    if (blk) {
+                        int xs = bx - CAMERA_X, ys = by - CAMERA_Y - layout_field_shift();
+                        for (int k = -4; k <= 4; k++) { px(xs + k, ys + k, C_YELLOW); px(xs + k, ys - k, C_YELLOW); px(xs + k + 1, ys + k, C_BLACK); px(xs + k + 1, ys - k, C_BLACK); }
+                        text(rx - 30, sy0 + 28, blk == 1 ? "CLIFF: GO UP" : "RIDGE: MOVE", C_YELLOW, 1);
+                    }
+                    BYTE c = blk ? C_YELLOW : ok ? C_RED : C_GREY;
                     for (int s = -1; s <= 1; s += 2)
                         for (int t = -1; t <= 1; t += 2)
                             for (int k = 0; k < 3; k++) { px(rx + s * (9 - k), sy0 + t * 9, c); px(rx + s * 9, sy0 + t * (9 - k), c); }

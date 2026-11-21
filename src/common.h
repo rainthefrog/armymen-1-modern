@@ -632,7 +632,9 @@ extern SBtnStateFn screenbtn_set_state_original;
 int __fastcall screenbtn_set_state(BYTE *btn, int state);
 void screenbtn_lbuttondown(HWND h, int inside);
 int screenbtn_message(HWND h, UINT msg, WPARAM wp);
-int bullets_fired_within(DWORD uid, DWORD ms);   /* bullets.c: that unit fired a projectile within ms */
+int bullets_fired_within(DWORD uid, DWORD ms);
+int bullets_level_at(int x, int y);                 /* bullets.c: ground level (elevation / 4), -1 off the map */
+int bullets_shot_block(int tx, int ty, int *bx, int *by);   /* bullets.c: 0 clear, 1 cliff, 2 ridge stops Sarge's shot */   /* bullets.c: that unit fired a projectile within ms */
 
 /* guarded calls into game code (ddraw.c): see the comment there */
 typedef struct Guard { void *jb[5]; void *seh; const char *what; struct Guard *prev; } Guard;
