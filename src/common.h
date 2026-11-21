@@ -124,6 +124,8 @@ struct Config {
     int target_sector;              /* [hud] target_sector: blink the target sector on the minimap */
     int target_area;                /* [hud] target_area: faint highlight of the target sector on the battlefield (objectives.c, gpu.c) */
     int mission_path;               /* [hud] mission_path: route from Sarge's start through the mission's waypoints, painted on the ground (missionpath.c) */
+    int mission_path_variation;     /* [hud] mission_path_variation: each leg varied a little (seeded per mission entry, missionpath.c) */
+    int mission_path_all;           /* [hud] mission_path_all: all legs drawn at once (0 = only the current one) */
     int crt;                        /* [display] crt: CRT filter (gpu.c); F9 or Gameplay menu */
     int see_through;                /* [display] see_through: Sarge visible through buildings (roofs.c) */
     int see_enemies;                /* [display] see_enemies: enemies under tall cover show while they fire (roofs.c) */
@@ -745,6 +747,7 @@ int path_line_free(int x0, int y0, int x1, int y1);                 /* pathfind.
 void missionpath_install(void);                                    /* missionpath.c: [debug] start_mission (state 2 update entry) */
 void missionpath_frame(void);                                      /* missionpath.c: per gameplay frame (game thread): build once per mission */
 int missionpath_points(const MissionPt **pts);                     /* missionpath.c: the route (world px), 0 = none / not built yet */
+void missionpath_screen_note(void);                                /* missionpath.c: every frame (dd_present, game thread): menu seen / play left */
 /* capture.c: Sarge drives empty enemy vehicles ([gameplay] drive_enemy_vehicles) */
 typedef void (__fastcall *CaptureTwoFn)(BYTE *a, BYTE *b);
 typedef void (__fastcall *CaptureOneFn)(BYTE *a);

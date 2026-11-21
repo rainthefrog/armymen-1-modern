@@ -105,6 +105,8 @@ void config_load(void)
     g_cfg.target_sector = GetPrivateProfileIntA("hud", "target_sector", 1, ini);
     g_cfg.target_area = GetPrivateProfileIntA("hud", "target_area", 1, ini);
     g_cfg.mission_path = GetPrivateProfileIntA("hud", "mission_path", 1, ini);
+    g_cfg.mission_path_variation = GetPrivateProfileIntA("hud", "mission_path_variation", 1, ini);
+    g_cfg.mission_path_all = GetPrivateProfileIntA("hud", "mission_path_all", 0, ini);
     g_cfg.mm_blips = GetPrivateProfileIntA("hud", "minimap_blips", 1, ini);          /* minimap.c */
     g_cfg.mm_sarge = GetPrivateProfileIntA("hud", "minimap_sarge", 1, ini);
     g_cfg.mm_contrast = GetPrivateProfileIntA("hud", "minimap_contrast", 1, ini);
@@ -383,6 +385,7 @@ DDraw *g_dd;
 
 void dd_present(DDraw *dd, int frame_end)
 {
+    missionpath_screen_note();                      /* missionpath.c: restart vs fresh entry (menus seen) */
     if (!dd->primary || !dd->hwnd) return;
     if (dd->coop & DDSCL_FULLSCREEN) make_fullscreen_window(dd);
     present_request(dd, frame_end);
