@@ -112,6 +112,7 @@ struct Config {
     int break_fences;               /* [gameplay] break_fences: Sarge's routes cross wooden fences and he breaks them (fences.c) */
     int enemy_awareness;            /* [modern] enemy_awareness: could-see marks, exposure meter, delayed spotting, alerts (aware.c, modern.c) */
     int squad_sprint;               /* [gameplay] squad_sprint: troopers following Sarge sprint with him / to catch up (squad.c) */
+    int patrol_marches;             /* [gameplay] patrol_marches: enemy units marching to a far point at deploy patrol between their post and that point (patrol.c) */
     int am2_sounds;                 /* [audio] am2_sounds: Army Men II sound effects from <game>\am2_sounds (audio.c) */
     int am2_music;                  /* [audio] am2_music: Army Men II music from <game>\am2_music (music.c) */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
@@ -780,6 +781,11 @@ int minimap_hovering(void);                                           /* tips.c:
 int panel_row_of(const int *value);                                   /* panel.c: row switching that value (modmenu.c) */
 void bindings_short(int action, char *s, int n);   /* bindings.c: "C", "hold C", "2x C", "Mouse4", "" */
 void squad_frame(void);                                               /* squad.c: per gameplay frame, who of the squad sprints */
+void patrol_frame(void);                                              /* patrol.c: per gameplay frame, enemy march patrols turn round */
+void __fastcall patrol_order(BYTE *u, int order, DWORD goal, BYTE *target, int a3, int a4, int a5, int a6, int a7);   /* patrol.c: UnitOrders 0x41b990 wrap */
+typedef void (__fastcall *UnitOrderFn)(BYTE *unit, int order, DWORD goal, BYTE *target, int a3, int a4, int a5, int a6, int a7);
+extern UnitOrderFn patrol_order_original;                                 /* patrol.c: the original UnitOrders (trampoline) */
+int aware_unit_noticed(BYTE *unit);                                    /* aware.c: a trooper of the unit fully noticed Sarge */
 float squad_sprint_speed(BYTE *anim);                                 /* squad.c (controls.c controls_move): speed factor of this ANIM, 0 = none */
 void audio_find_wave_stub(void);                                      /* audio.c: call 0x40f42d (FUN_004107b0) - Army Men II sound swap */
 size_t __cdecl audio_fread(void *buf, size_t size, size_t count, void *file);   /* audio.c: call 0x40f515 (the effect data read) */
@@ -797,11 +803,13 @@ int mines_click(int wx, int wy, DWORD now, int *walk_x, int *walk_y);   /* contr
 int mines_frame(DWORD now, int walking, int *face_x, int *face_y);   /* controls.c after the on-foot controls, every frame */
 enum { SWEEP_COLLECT, SWEEP_FULL, SWEEP_NO_PACK, SWEEP_NO_ROOM };   /* what disarming a mine would do */
 typedef struct { int sarge_x, sarge_y, radius, selected, count, nearest, plate_x, plate_y, walking_to, hover, hover_x, hover_y, hover_plan, hover_own; } SweepInfo;
-typedef struct { short x, y; char own, in_range; } SweepMark;
+typedef struct { short x, y; char own, in_range, safe; } SweepMark;   /* safe: deactivated (revealed by the detector) */
 int mines_sweep_info(SweepInfo *si);       /* modern.c: the sweeper is carried (detector state, the mine under the pointer) */
 int mines_sweep_marks(SweepMark *m, int max, int x0, int y0, int x1, int y1);   /* modern.c: visible laid mines in a world box */
 int mines_sweep_hud(int *count, int *nearest);   /* weapons.c: the sweeper box lamp */
 int mines_free_charges(BYTE *weapon);       /* weapons.c: real free charges of a mine weapon (ammo cap for the top-up) */
+float mines_sweeper_walk_mul(BYTE *sarge, int speed);   /* controls.c controls_move: speed factor for Sarge walking with the sweeper selected (1 = none) */
+void __fastcall mines_step(BYTE *mine, DWORD *who);    /* mines.c: FUN_004398d0 rewrite (something moved onto a laid mine) */
 int mines_transfer(BYTE *to, BYTE *from, int n);   /* weapons.c: move free charges of a pack into used-up slots */
 BYTE *weapons_carried(int type, void **item); /* weapons.c: record of a carried weapon of this type (any slot / box) */
 int weapons_room_for_special(void);         /* weapons.c: a special weapon picked up now would be taken */
