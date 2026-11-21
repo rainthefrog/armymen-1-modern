@@ -228,6 +228,7 @@ BOOL WINAPI mouse_PostMessageA(HWND h, UINT msg, WPARAM wp, LPARAM lp);
 int WINAPI mouse_ShowCursor(BOOL show);
 int mouse_filter_message(HWND h, UINT msg, WPARAM *wp, LPARAM lp, LRESULT *result);
 void mouse_poll_pointer(void);
+void mouse_nudge_cursor(int dx, int dy);   /* raw mode: move the game cursor (controls.c throw camera) */
 /* layout.c: the 640x480 interface design on the real screen */
 #define LAYOUT_DESIGN_W     640
 #define LAYOUT_DESIGN_H     480
