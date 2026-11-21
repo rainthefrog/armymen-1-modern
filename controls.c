@@ -32,6 +32,7 @@
  * ============================================================================================ */
 #include "common.h"
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #define INPUT               (*(volatile DWORD *)0x6a547c)
@@ -571,6 +572,7 @@ static void turn_toward(BYTE *u, int target)
 
 static void walk_toward(BYTE *u, double vx, double vy)
 {
+    fences_walk(u, facing_toward(vx, vy), 0);       /* [gameplay] break_fences: pushing against a wooden fence breaks it (fences.c) */
     turn_toward(u, free_facing(u, facing_toward(vx, vy)));
     INPUT = (INPUT & ~(INPUT_BACK | INPUT_TURN_LEFT | INPUT_TURN_RIGHT)) | INPUT_FORWARD;
 }
@@ -598,6 +600,7 @@ static void walk_around_obstacles(BYTE *u, int vx, int vy, DWORD now)
         }
         S.last_x = x; S.last_y = y; S.check_at = now;
     }
+    fences_walk(u, facing_toward(vx, vy), 1);       /* break_fences: a fence on the click route breaks as he reaches it (fences.c) */
     int f = facing_toward(vx, vy);
     if ((LONG)(now - S.detour_until) < 0) f += S.detour;
     turn_toward(u, free_facing(u, f));
@@ -1701,14 +1704,44 @@ static void throw_target(int px, int py, int *wx, int *wy)
     *wx = px + CAMERA_X; *wy = py + CAMERA_Y;
 }
 
+/* [debug] fence_route = tx,ty[,delay_ms[,sx,sy]] (cheat_keys; testing break_fences in the container, where right-click
+ * taps on a world spot are hard to aim): once, delay_ms (default 4000) into the mission - Sarge first placed at sx,sy
+ * (the game's placement 0x448a90, invulnerable) and half a second later - a walk to tx,ty as if right-tapped there
+ * (on a vehicle: walk to it and climb in). */
+static int debug_fence_route(BYTE *u, int *x, int *y, DWORD now)
+{
+    static int state, tx, ty, delay, sx, sy, n; static DWORD t0;
+    if (state == 3 || !g_cfg.cheat_keys) return 0;
+    if (state == 0) {
+        char s[64] = "";
+        GetPrivateProfileStringA("debug", "fence_route", "", s, sizeof s, mod_ini_path());
+        n = sscanf(s, "%d,%d,%d,%d,%d", &tx, &ty, &delay, &sx, &sy);
+        if (n < 2) { state = 3; return 0; }
+        if (n < 3) delay = 4000;
+        state = 1; t0 = now; return 0;
+    }
+    if (now - t0 < (DWORD)delay) return 0;
+    if (state == 1 && n >= 5) {
+        typedef void (__fastcall *PlaceFn)(BYTE *unit, int x, int y);
+        *(volatile BYTE *)0x69752c = 1;                                  /* invulnerable */
+        ((PlaceFn)0x448a90)(u, sx, sy);
+        mlog("controls: [debug] fence_route: Sarge placed at %d,%d -> %d,%d", sx, sy, SARGE_X(u), SARGE_Y(u));
+        state = 2; t0 = now; delay = 500; return 0;
+    }
+    state = 3; *x = tx; *y = ty;
+    mlog("controls: [debug] fence_route: walk to %d,%d", tx, ty);
+    return 1;
+}
+
 static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer, int left, int fire_was,
                            int right_hold, int right_tap, int kx, int ky, DWORD now)
 {
-    if (right_tap && pointer) {
+    int dbg_x, dbg_y, dbg_tap = debug_fence_route(u, &dbg_x, &dbg_y, now);
+    if ((right_tap && pointer) || dbg_tap) {
         S.stuck = 0; S.check_at = 0; S.detour_until = now;
         S.going = 1;
-        S.target_x = px + CAMERA_X;
-        S.target_y = py + CAMERA_Y;
+        S.target_x = dbg_tap ? dbg_x : px + CAMERA_X;
+        S.target_y = dbg_tap ? dbg_y : py + CAMERA_Y;
         S.going_since = now;
         /* on a vehicle: walk to it and climb in */
         S.enter = vehicle_at(S.target_x, S.target_y);

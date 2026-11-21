@@ -22,8 +22,9 @@
 #define CLEAR       4
 #define MAX_EXPAND  40000               /* ~50 ms worst case, once per click */
 
-enum { UNKNOWN = 0, FREE = 1, BLOCKED = 2 };
-static BYTE g_state[GRID * GRID];       /* per search: UNKNOWN / FREE / BLOCKED */
+enum { UNKNOWN = 0, FREE = 1, BLOCKED = 2, FENCE = 3 };
+static BYTE g_state[GRID * GRID];       /* per search: UNKNOWN / FREE / BLOCKED / FENCE (passable: Sarge breaks it, fences.c) */
+#define FENCE_COST  10.0f               /* extra cost per fence cell entered (8 px): a way round up to ~30 cells (240 px) longer wins */
 static BYTE g_closed[GRID * GRID];
 static BYTE g_seen[GRID * GRID];        /* g_cost / g_from valid in this search */
 static float g_cost[GRID * GRID];
@@ -34,19 +35,38 @@ static int g_start = -1;               /* this search's start cell: next to it o
 /* A cell is free when none of a 4x4 grid of points inside it (every 2 px) is blocked: fences are 1-2 px
  * thin and slipped between the old centre + 4 sample points, so routes ran straight through them.
  * Next to Sarge's own cell only its centre is tested (he may stand right against a fence). */
+/* [gameplay] break_fences (fences.c, 2026-11-20): a sample point blocked only by breakable wooden fences does not
+ * block; a cell with such points (and no others) is FENCE - passable at FENCE_COST, Sarge breaks the fence there.
+ * Shared with the regions sweep (path_cell_class) and the mission route (missionpath.c). */
+int path_cell_class(int x0, int y0, int centre_only)
+{
+    int fence = 0;
+    #define PC_TEST(x, y) do { if (controls_blocked_at(x, y)) { if (fences_only_at(x, y, 1)) fence = 1; else return BLOCKED; } } while (0)
+    PC_TEST(x0 + CELL / 2, y0 + CELL / 2);
+    for (int sy = 1; sy < CELL && !centre_only; sy += 2)
+        for (int sx = 1; sx < CELL; sx += 2) PC_TEST(x0 + sx, y0 + sy);
+    #undef PC_TEST
+    return fence ? FENCE : FREE;
+}
 static int cell_free(int c)
 {
     if (g_state[c] == UNKNOWN) {
         int x0 = (c % GRID) * CELL, y0 = (c / GRID) * CELL;
         int near_start = g_start >= 0 && abs(c % GRID - g_start % GRID) <= 1 && abs(c / GRID - g_start / GRID) <= 1;
-        int blocked = controls_blocked_at(x0 + CELL / 2, y0 + CELL / 2);
-        for (int sy = 1; sy < CELL && !blocked && !near_start; sy += 2)
-            for (int sx = 1; sx < CELL && !blocked; sx += 2)
-                blocked = controls_blocked_at(x0 + sx, y0 + sy);
-        g_state[c] = blocked ? BLOCKED : FREE;
+        g_state[c] = (BYTE)path_cell_class(x0, y0, near_start);
         if (g_ntouched < (int)(sizeof g_touched / sizeof *g_touched)) g_touched[g_ntouched++] = c;
     }
-    return g_state[c] == FREE;
+    return g_state[c] == FREE || g_state[c] == FENCE;
+}
+
+/* The fence cells the last click route (path_find) goes through: fences.c breaks a fence at once only there. */
+#define ROUTE_FENCES 32
+static POINT g_route_fence[ROUTE_FENCES]; static int g_nroute_fence;
+int path_route_fence_near(int x, int y, int r)
+{
+    for (int i = 0; i < g_nroute_fence; i++)
+        if (abs(g_route_fence[i].x - x) <= r && abs(g_route_fence[i].y - y) <= r) return 1;
+    return 0;
 }
 
 /* binary heap of cells by f = cost + estimate */
@@ -108,10 +128,12 @@ static int in_map(int x, int y) { return x >= 0 && y >= 0 && x < GRID * CELL && 
 
 int path_find(int sx, int sy, int tx, int ty, POINT *out, int max)
 {
+    g_nroute_fence = 0;
     if (!in_map(sx, sy) || !in_map(tx, ty) || max < 1) return 0;
     reset();
     int start = (sy / CELL) * GRID + sx / CELL, goal = (ty / CELL) * GRID + tx / CELL;
     g_start = start;
+    if (cell_free(goal) && g_state[goal] == FENCE) g_state[goal] = BLOCKED;   /* a click on a fence: walk next to it */
     if (!cell_free(goal)) {                     /* clicked on an obstacle: nearest free cell to it */
         int best = -1;
         for (int r = 1; r <= 6 && best < 0; r++)
@@ -120,7 +142,7 @@ int path_find(int sx, int sy, int tx, int ty, POINT *out, int max)
                     if (abs(dx) != r && abs(dy) != r) continue;
                     int x = goal % GRID + dx, y = goal / GRID + dy;
                     if (x < 0 || y < 0 || x >= GRID || y >= GRID) continue;
-                    if (cell_free(y * GRID + x)) { best = y * GRID + x; break; }
+                    if (cell_free(y * GRID + x) && g_state[y * GRID + x] == FREE) { best = y * GRID + x; break; }
                 }
         if (best < 0) { if (g_cfg.log >= 2) mlog("path: %d,%d -> %d,%d: the spot and all around it are blocked", sx, sy, tx, ty); return 0; }
         goal = best;
@@ -156,7 +178,7 @@ int path_find(int sx, int sy, int tx, int ty, POINT *out, int max)
             int n = ny * GRID + nx;
             if (g_closed[n] || !cell_free(n)) continue;
             if (k >= 4 && (!cell_free(cy * GRID + nx) || !cell_free(ny * GRID + cx))) continue;   /* no corner cutting */
-            float g = g_cost[c] + (k >= 4 ? 1.4142f : 1.0f);
+            float g = g_cost[c] + (k >= 4 ? 1.4142f : 1.0f) + (g_state[n] == FENCE ? FENCE_COST : 0.0f);
             /* first visit or a cheaper way: (re)push; stale heap entries are skipped by g_closed */
             if (g_seen[n] && g_cost[n] <= g) continue;
             g_seen[n] = 1;
@@ -170,6 +192,8 @@ int path_find(int sx, int sy, int tx, int ty, POINT *out, int max)
     static int chain[MAX_EXPAND + 2]; int nc = 0;
     for (int c = end; c != -1 && nc < (int)(sizeof chain / sizeof *chain); c = g_from[c]) chain[nc++] = c;
     if (nc < 2 || chain[nc - 1] != start) { if (g_cfg.log >= 2) mlog("path: route too long (%d cells)", nc); return 0; }
+    for (int k = 0; k < nc && g_nroute_fence < ROUTE_FENCES; k++)          /* fences on the route (fences.c breaks them) */
+        if (g_state[chain[k]] == FENCE) g_route_fence[g_nroute_fence++] = (POINT){ (chain[k] % GRID) * CELL + CELL / 2, (chain[k] / GRID) * CELL + CELL / 2 };
     /* string pulling: from the current point, jump to the farthest chain point in straight sight */
     int n = 0, cx = sx, cy = sy, i = nc - 1;
     while (i > 0 && n < max) {
@@ -185,7 +209,7 @@ int path_find(int sx, int sy, int tx, int ty, POINT *out, int max)
         out[n++] = (POINT){ px, py };
         cx = px; cy = py; i = j;
     }
-    if (g_cfg.log >= 2) mlog("path: %d,%d -> %d,%d: %s after %d cells, %d waypoints", sx, sy, tx, ty, found ? "found" : "partial", expanded, n);
+    if (g_cfg.log >= 2 || (g_nroute_fence && g_cfg.log >= 1)) mlog("path: %d,%d -> %d,%d: %s after %d cells, %d waypoints, %d fence cells (break_fences)", sx, sy, tx, ty, found ? "found" : "partial", expanded, n, g_nroute_fence);
     return n;
 }
 
@@ -209,6 +233,7 @@ int path_reachable(int sx, int sy, int tx, int ty, int budget_ms)
     reset();
     int start = (sy / CELL) * GRID + sx / CELL, goal = (ty / CELL) * GRID + tx / CELL;
     g_start = start;
+    if (cell_free(goal) && g_state[goal] == FENCE) g_state[goal] = BLOCKED;
     if (!cell_free(goal)) {                       /* on an obstacle: the walk would end next to it */
         int best = -1;
         for (int r = 1; r <= 6 && best < 0; r++)
@@ -217,7 +242,7 @@ int path_reachable(int sx, int sy, int tx, int ty, int budget_ms)
                     if (abs(dx) != r && abs(dy) != r) continue;
                     int x = goal % GRID + dx, y = goal / GRID + dy;
                     if (x < 0 || y < 0 || x >= GRID || y >= GRID) continue;
-                    if (cell_free(y * GRID + x)) { best = y * GRID + x; break; }
+                    if (cell_free(y * GRID + x) && g_state[y * GRID + x] == FREE) { best = y * GRID + x; break; }
                 }
         if (best < 0) return 0;
         goal = best;
@@ -284,11 +309,7 @@ static uintptr_t g_rmap;                      /* which map the labels are for */
 static int region_cell_blocked(int c)
 {
     int x0 = (c % GRID) * CELL, y0 = (c / GRID) * CELL;
-    if (controls_blocked_at(x0 + CELL / 2, y0 + CELL / 2)) return 1;
-    for (int sy = 1; sy < CELL; sy += 2)
-        for (int sx = 1; sx < CELL; sx += 2)
-            if (controls_blocked_at(x0 + sx, y0 + sy)) return 1;
-    return 0;
+    return path_cell_class(x0, y0, 0) == BLOCKED;           /* break_fences: fence-only cells connect (fences.c) */
 }
 
 void path_regions_reset(void) { g_rready = 0; g_rphase = 0; g_rnext = 0; }
