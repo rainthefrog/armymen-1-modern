@@ -185,7 +185,7 @@ static const char *cycle_text(int which)
 {
     /* 2..5: HUD group sizes (layout.c groups: minimap 3, message box 0, centre 1, air support 2) */
     static const int GROUP[4] = { 3, 0, 1, 2 };
-    if (which == HEIGHT_CYCLE) { lstrcpynA(g_vtext[which], g_cfg.height_rules == HEIGHTS_AM2 ? "AM2" : g_cfg.height_rules == HEIGHTS_ORIGINAL ? "ORIG" : g_cfg.height_rules == HEIGHTS_MODDED ? "MOD" : "STANCE", 16); return g_vtext[which]; }
+    if (which == HEIGHT_CYCLE) { lstrcpynA(g_vtext[which], g_cfg.height_rules == HEIGHTS_AM2 ? "AM2" : g_cfg.height_rules == HEIGHTS_ORIGINAL ? "ORIG" : g_cfg.height_rules == HEIGHTS_MODDED ? "MOD" : "MODERN", 16); return g_vtext[which]; }
     double v = which == 0 ? clock_speed_now() : which == 1 ? zoom_target() : layout_group_scale(GROUP[which - 2]);
     int c = (int)(v * 100 + 0.5);
     wsprintfA(g_vtext[which], "%d.%02dx", c / 100, c % 100);

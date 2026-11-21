@@ -656,14 +656,14 @@ static int aimed_target_in_front(BYTE *obj, const SPoint *p)
  *              (vehicle_hills), prone-only low cover.
  * Grenades, mortar and flamer are not direct fire: unchanged in every mode.
  * ============================================================================================ */
-const char *const HEIGHT_RULE_NAMES[HEIGHTS_COUNT] = { "stance", "modded", "original", "am2" };
+const char *const HEIGHT_RULE_NAMES[HEIGHTS_COUNT] = { "modern", "modded", "original", "am2" };   /* "modern" was "stance" (2026-11-21, user rename) */
 const char *const HEIGHT_RULE_TEXT[HEIGHTS_COUNT] = {
-    "stance (heights ignored, stance + cover)", "modded (ini only: hits downhill, ground stops)",
+    "modern (heights ignored, stance + cover)", "modded (ini only: hits downhill, ground stops)",
     "original (the game's heights)", "am2 (Army Men II: aimed height, rear x2)" };
 int height_rules_parse(const char *v)
 {
     for (int i = 0; i < HEIGHTS_COUNT; i++) if (!_stricmp(v, HEIGHT_RULE_NAMES[i])) return i;
-    return HEIGHTS_STANCE;                                  /* "off" (round 1) and anything else */
+    return HEIGHTS_STANCE;                                  /* "stance" / "off" (older names) and anything else = modern */
 }
 void height_rules_set(int mode)
 {
