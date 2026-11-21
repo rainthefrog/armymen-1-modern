@@ -1065,6 +1065,40 @@ static void modern_draw_body(Surf *b)
             text(cx + 6, cy - 12, s, c, 1);
         }
     }
+    {   /* mines selected (mines.c, 2026-11-21): the placement ring round Sarge - the blast circle's look (2 px ring,
+         * black outline both sides, slowly turning white dashes) in yellow - and at the pointer's tile, when it is
+         * inside the ring, the mine marker: red X = a click lays it there, grey X + why = not there. From the game's
+         * data (Sarge's position, the tile MineLay snaps to); drawn last, clear of the HUD (px). */
+        MinePreview mp;
+        if (mines_preview(&mp)) {
+            int cx, cy, ir = mp.reach; to_screen(mp.sarge_x, mp.sarge_y, &cx, &cy);
+            BYTE c = mp.left > 0 ? C_YELLOW : C_GREY;
+            circle(cx, cy, ir + 1, C_BLACK, 0);
+            circle(cx, cy, ir, c, 0);
+            circle(cx, cy, ir - 1, c, 0);
+            circle(cx, cy, ir - 2, C_BLACK, 0);
+            {
+                int steps = ir * 6 + 8, rot = (int)((GetTickCount() / 40) % (unsigned)steps);
+                for (int i = 0; i < steps; i++) {
+                    if (((i + rot) / 6) % 4) continue;
+                    double a = i * 6.2831853 / steps;
+                    px(cx + (int)lround(cos(a) * (ir - 0.5)), cy + (int)lround(sin(a) * (ir - 0.5)), C_WHITE);
+                }
+            }
+            if (mp.state != MINE_OUT) {
+                static const char *WHY[] = { "", "", "BLOCKED", "NO WAY", "TOO CLOSE", "NO MINES" };
+                int mx, my; to_screen(mp.x, mp.y, &mx, &my);
+                BYTE m = mp.state == MINE_OK && !mp.busy ? C_RED : C_GREY;
+                for (int k = -6; k <= 6; k++) {                          /* the X, 2 px strokes, black outline */
+                    for (int o = -1; o <= 2; o++) { px(mx + k + o, my + k, C_BLACK); px(mx + k + o, my - k, C_BLACK); }
+                    px(mx + k, my + k - 1, C_BLACK); px(mx + k, my - k + 1, C_BLACK); px(mx + k + 1, my + k + 1, C_BLACK); px(mx + k + 1, my - k - 1, C_BLACK);
+                }
+                for (int k = -5; k <= 5; k++) { px(mx + k, my + k, m); px(mx + k + 1, my + k, m); px(mx + k, my - k, m); px(mx + k + 1, my - k, m); }
+                /* why not (the mines left show at the pointer already: ammo at the reticle) */
+                if (mp.state != MINE_OK) text(mx + 10, my - 12, WHY[mp.state], C_GREY, 1);
+            }
+        }
+    }
     if (controls_reticle(&rx, &ry)) {
         /* Range on the reticle (no circle): four corner ticks, red while the reticle is within the
          * current weapon's maximum range, grey beyond it; for grenades and mortar (hold-to-aim types 2

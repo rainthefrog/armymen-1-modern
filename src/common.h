@@ -780,3 +780,11 @@ size_t __cdecl audio_fread(void *buf, size_t size, size_t count, void *file);   
 void music_stub_create(void), music_stub_play(void), music_stub_fill(void), music_stub_rewind(void);   /* music.c: FUN_004107b0 calls of the stream code */
 int controls_sarge_running(void);                                     /* controls.c: Sarge sprints (modern controls) */
 void squad_debug_follow(void);                                        /* squad.c: testing aid, every player unit follows Sarge */
+/* mines.c (2026-11-21): mine placement with the mouse - a ring round Sarge, left click inside it lays the mine there */
+enum { MINE_OK, MINE_OUT, MINE_BLOCKED, MINE_NO_WAY, MINE_CLOSE, MINE_EMPTY };   /* mines_preview state */
+typedef struct { int sarge_x, sarge_y, reach, x, y, state, left, busy; } MinePreview;   /* world px; x, y = tile middle */
+int mines_preview(MinePreview *p);          /* modern.c: mines selected (modern controls, on foot): ring + marker */
+int mines_pointer_in_reach(void);           /* controls.c: the pointer is inside the ring (mine pointer, no walk ring) */
+int mines_click(int wx, int wy, DWORD now); /* controls.c: a left tap at the world point; 1 = taken (inside the ring) */
+int mines_frame(DWORD now, int *face_x, int *face_y);   /* controls.c after the on-foot controls: 1 = laying (face the spot) */
+void __fastcall mines_lay(BYTE *weapon, int army, DWORD point);   /* call 0x445f44 -> MineLay 0x446600 */
