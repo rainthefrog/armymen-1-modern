@@ -46,7 +46,10 @@
 #define MAX_WP         16
 
 enum { W_ITEM, W_PAD, W_POINT };
-typedef struct { int mission, stage, kind; const char *name; int pad, x, y; const char *need; const char *drive; int post; const char *until; } Way;
+/* join (2026-11-21, user: "some of the missions (like cross the bridge) should be combined with the next one (go to the weapon
+ * depot) and some should be split like get the tank and the cross the bridge"): this waypoint's leg is SHOWN together with
+ * the next leg (one continuous path); each still advances on its own. Splits = extra W_POINT stops in the table. */
+typedef struct { int mission, stage, kind; const char *name; int pad, x, y; const char *need; const char *drive; int post; const char *until; int join; } Way;
 /* need: as objectives.c TARGETS ("word" / "!word" in the briefing text; Alpine 1 scripts swapped, open point A).
  * drive: the leg TO this waypoint is driven in that vehicle (path_find_vehicle with its footprint).
  * post (2026-11-21): a unit that HOLDS ITS POST - the script orders it "GOTO <its own name>" (des4_2:25-31,
@@ -56,9 +59,10 @@ typedef struct { int mission, stage, kind; const char *name; int pad, x, y; cons
 #define POST(m, s, n) { m, s, W_ITEM, n, 0, 0, 0, 0, 0, 1, 0 }
 static const Way WAYS[] = {
     /* TanRifle10 patrols the bridge into town (patrol.c, 2026-11-21 user): the waypoint is the bridge, done when he is dead */
-    { 1, 0, W_POINT, 0, 0, 2520, 350, 0, 0, 0, "TanRifle10" }, { 1, 1, W_PAD, 0, 200 },   /* des1_1:49-51 */
+    { 1, 0, W_POINT, 0, 0, 2520, 350, 0, 0, 0, "TanRifle10", 1 }, { 1, 1, W_PAD, 0, 200 },   /* join: bridge + depot shown as one path */   /* des1_1:49-51 */
     { 2, 0, W_PAD, 0, 15 },             { 2, 1, W_PAD, 0, 200 },                         /* des1_2:28 BlueInside = the courier's end point (porch); 93-98 */
-    { 3, 0, W_POINT, 0, 0, 320, 3160 }, { 3, 1, W_PAD, 0, 75, 0, 0, 0, "GreenTank201" }, /* des1_3:45, 77, 81-82 */
+    { 3, 0, W_POINT, 0, 0, 320, 3160 },
+    { 3, 1, W_POINT, 0, 0, 2470, 2600, 0, "GreenTank201" },   /* split: drive to the Burgess Bridge (west end; objects 2406..3601 x 2188..2671), then across */ { 3, 1, W_PAD, 0, 75, 0, 0, 0, "GreenTank201" }, /* des1_3:45, 77, 81-82 */
     /* the squad TanRifle20-22 (des2_1:118-120: 618,395 / 524,546 / 306,541) - one rendezvous at their middle
      * (2026-11-20, user: "if [multiple targets], get the middle of these and use that as the target position") */
     { 4, 0, W_POINT, 0, 0, 483, 494, 0, 0, 0, "TanRifle20|TanRifle21|TanRifle22" },   /* done: the three killed */
@@ -134,13 +138,20 @@ static int g_cur;                        /* the waypoint the shown leg leads to 
 static int wcell_open(int c);
 static void route_done(void);
 
+static int wp_join(int k)                /* a member of waypoint k has join: its leg is shown with the next one */
+{
+    for (int i = 0; i < g_nmem; i++) if (g_mem_wp[i] == k && g_mem[i]->join) return 1;
+    return 0;
+}
 int missionpath_points(const MissionPt **pts)
 {
     *pts = g_pts;
     if (!g_cfg.mission_path || g_phase != 2) return 0;
     if (g_cfg.mission_path_all) return g_npts;
     if (g_cur >= g_nwp) return 0;
-    int a = g_leg_first[g_cur], b = g_leg_first[g_cur + 1];
+    int end = g_cur;
+    while (end + 1 < g_nwp && wp_join(end)) end++;          /* joined legs: one continuous path */
+    int a = g_leg_first[g_cur], b = g_leg_first[end + 1];
     if (a < 0 || b <= a || b >= g_npts) return 0;
     *pts = g_pts + a;
     return b - a + 1;
