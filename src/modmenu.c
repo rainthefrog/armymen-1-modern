@@ -129,7 +129,7 @@ static const Item GENERAL[] = {
 };
 static const Item COMBAT[] = {
     { "Barricade rules", 0, 3 }, { "Enemies use them", 0, 11 }, { "Corner shots", 0, 12 }, { "Leg hits", 0, 13 },
-    { "Downhill hits", 0, 14 }, { "Longer range", 0, 17 }, { "No corner squash", 0, 20 }, { "Health regen", 0, 2 }, { "Half damage", 1, MOD_HALF_DAMAGE },
+    { "Height rules", 2, 6 }, { "Longer range", 0, 17 }, { "No corner squash", 0, 20 }, { "Health regen", 0, 2 }, { "Half damage", 1, MOD_HALF_DAMAGE },
     { "Aim assist", 1, MOD_AIM_ASSIST }, { "Hit markers", 1, MOD_HIT_MARKERS }, { "Damage direction", 1, MOD_DAMAGE_DIR },
     { "Health bars", 1, MOD_HEALTH_BARS }, { "Enemy vehicles", 0, 23 }, { "Vehicle bail-out", 3, 4 },
 };
@@ -153,7 +153,7 @@ static const Item MODERN1[] = {
 static const Item MODERN2[] = {
     { "Stats key", 1, MOD_STATS }, { "Restart key", 1, MOD_RESTART }, { "Gamepad", 1, MOD_GAMEPAD },
     { "Throw at pointer", 1, MOD_THROW_POINTER }, { "Throw on release", 1, MOD_THROW_HOLD }, { "Colour-blind", 1, MOD_COLOURBLIND },
-    { "Ctrl+click orders", 1, MOD_SQUAD_MOUSE }, { "Radial menu", 1, MOD_RADIAL }, { "Ping key", 1, MOD_PING },
+    { "Ctrl+click orders", 1, MOD_SQUAD_MOUSE }, { "Radial menu", 1, MOD_RADIAL }, { "Ping key", 1, MOD_PING }, { "Stance hints", 1, MOD_STANCE_HINTS },
 };
 #define N(a) ((int)(sizeof a / sizeof a[0]))
 static const struct { const char *tab; const Item *items; int n; } PAGES[] = {
@@ -178,11 +178,13 @@ static void item_set(const Item *it, int on)
     else if (it->source == 0) panel_row_set(it->index, on);
     else if (it->source == 1 && modern_on(it->index) != (on != 0)) modern_toggle(it->index);
 }
-static char g_vtext[6][16];
+static char g_vtext[7][16];
+#define HEIGHT_CYCLE 6                 /* cycle 6: [gameplay] height_rules, a 3-stop slider (off / modded / original) */
 static const char *cycle_text(int which)
 {
     /* 2..5: HUD group sizes (layout.c groups: minimap 3, message box 0, centre 1, air support 2) */
     static const int GROUP[4] = { 3, 0, 1, 2 };
+    if (which == HEIGHT_CYCLE) { lstrcpynA(g_vtext[which], g_cfg.height_rules == HEIGHTS_OFF ? "OFF" : g_cfg.height_rules == HEIGHTS_MODDED ? "MOD" : "ORIG", 16); return g_vtext[which]; }
     double v = which == 0 ? clock_speed_now() : which == 1 ? zoom_target() : layout_group_scale(GROUP[which - 2]);
     int c = (int)(v * 100 + 0.5);
     wsprintfA(g_vtext[which], "%d.%02dx", c / 100, c % 100);
@@ -198,16 +200,19 @@ static const char *cycle_text(int which)
 static const double SL_SPEED[] = { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 };
 static const double SL_ZOOM[] = { 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0 };
 static const double SL_HUD[] = { 1.0, 1.25, 1.5, 2.0, 2.5 };
+static const double SL_HEIGHTS[] = { HEIGHTS_OFF, HEIGHTS_MODDED, HEIGHTS_ORIGINAL };
 static void cycle(int which);
 static double cycle_value(int which)
 {
     static const int GROUP[4] = { 3, 0, 1, 2 };
+    if (which == HEIGHT_CYCLE) return g_cfg.height_rules;
     return which == 0 ? clock_speed_now() : which == 1 ? zoom_target() : layout_group_scale(GROUP[which - 2]);
 }
 static const double *slider_stops(int which, int *n)
 {
     if (which == 0) { *n = 6; return SL_SPEED; }
     if (which == 1) { *n = 7; return SL_ZOOM; }
+    if (which == HEIGHT_CYCLE) { *n = 3; return SL_HEIGHTS; }
     *n = 5; return SL_HUD;
 }
 static int slider_pos(int which)
@@ -275,6 +280,7 @@ static void cycle(int which)
 {
     if (which == 0) panel_speed_cycle();
     else if (which == 1) panel_zoom_cycle();
+    else if (which == HEIGHT_CYCLE) height_rules_set((g_cfg.height_rules + 1) % 3);
     else { static const int GROUP[4] = { 3, 0, 1, 2 }; layout_group_cycle(GROUP[which - 2]); }
 }
 

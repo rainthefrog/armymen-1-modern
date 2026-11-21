@@ -357,6 +357,22 @@ static BYTE game_command_key(int game, int row)
     return k[0] ? k[0] : k[1] ? k[1] : k[2];
 }
 
+/* bullets.c stance hints: the keys that change Sarge's stance now - one step down (the game's Kneel/Prone command:
+ * modern C, classic the player's key) and one step up (forward input while kneeling / prone, FUN_00447290: modern W,
+ * classic the player's forward key). Upper case, for modern.c's small font. */
+static void dik_name(BYTE dik, char *s, int n)
+{
+    LONG lp = (LONG)(dik & 0x7f) << 16 | (dik & 0x80 ? 1L << 24 : 0);
+    if (!dik || !GetKeyNameTextA(lp, s, n)) wsprintfA(s, "KEY %d", dik);
+    CharUpperA(s);
+}
+void controls_stance_keys(char *down, char *up, int n)
+{
+    if (g_cfg.controls_modern) { lstrcpynA(down, "C", n); lstrcpynA(up, "W", n); return; }
+    dik_name(game_command_key(0, SK_KNEEL), down, n);
+    dik_name(game_command_key(0, SK_FORWARD), up, n);
+}
+
 static HRESULT WINAPI kb_get_state(void *dev, DWORD size, void *data)
 {
     HRESULT hr = g_real_get_state(dev, size, data);

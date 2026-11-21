@@ -261,7 +261,14 @@ void patches_apply(void)
     static const BYTE stops_o[] = { 0x56, 0x8b,0xf1, 0x8b,0x4a,0x78, 0x8b,0x06, 0x3b,0xc1 };   /* FUN_00435c80 (next: je rel32) */
     bullets_stops_original = (StopsFn)hook_wrap("bullets: stops missile (FUN_00435c80) -> bullets.c (downhill)",
                                                 0x435c80, stops_o, sizeof stops_o, (void *)bullets_stops);
-    static const BYTE dash_o[] = { 0x81,0xec,0x20,0x01,0x00,0x00, 0xa1,0xac,0x6e,0x69,0x00 };   /* FUN_00441300 */
+    /* height_rules (bullets.c): stance damage, the game's prone damage rule, prone spotting */
+    static const BYTE dmg_o[] = { 0x8b,0x01, 0xc1,0xf8,0x16, 0x83,0xe0,0x0f };   /* FUN_00431f60: mov eax,[ecx]; sar eax,16h; and eax,0Fh */
+    bullets_item_damage_original = (ItemDamageWrapFn)hook_wrap("bullets: ItemDamage (FUN_00431f60) -> bullets.c (stance damage)",
+                                                               0x431f60, dmg_o, sizeof dmg_o, (void *)bullets_item_damage);
+    hook_call("bullets: Sarge damage prone rule, GetPose (0x4480b8)", 0x4480b8, 0x43a140, (void *)bullets_damage_pose);
+    hook_call("bullets: trooper damage prone rule, GetPose (0x43c6c4)", 0x43c6c4, 0x43a140, (void *)bullets_damage_pose);
+    hook_call("bullets: ItemUpdateSeen -> CanSeeFromItem (0x44a47d)", 0x44a47d, 0x44af10, (void *)bullets_sight_stub);
+    static const BYTE dash_o[] ={ 0x81,0xec,0x20,0x01,0x00,0x00, 0xa1,0xac,0x6e,0x69,0x00 };   /* FUN_00441300 */
     objectives_dash_message_original = (DashMsgFn)hook_wrap("objectives: dashboard message (FUN_00441300) -> objectives.c",
                                                             0x441300, dash_o, sizeof dash_o, (void *)objectives_dash_message);
     static const BYTE cell_o[] = { 0x83,0xec,0x20, 0x8d,0x44,0x24,0x10, 0x53, 0x55, 0x8b,0xe9 };   /* FUN_0042eef0 */

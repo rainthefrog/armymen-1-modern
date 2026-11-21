@@ -18,6 +18,7 @@
  * [gameplay] shoot_over = 1
  * ============================================================================================ */
 #include "common.h"
+#include <math.h>
 
 #define PROJECTILE        (*(BYTE **)0x6918ec)     /* the projectile being updated (FLOAT_OBJ) */
 #define PROJ_WEAPON(p)    (*(int *)((p) + 0x7c))
@@ -69,6 +70,11 @@ static const SPoint *vehicle_hills(BYTE *proj, const SPoint *p, SPoint *q, int *
 static int g_true_height = NO_HEIGHT;               /* the shot's real height while ANIM_Z is raised (bullets_stops) */
 
 
+static const SPoint *flat_ground(BYTE *proj, const SPoint *p, SPoint *q, int *raise_to);
+static int proj_height(BYTE *proj);
+static void note_threat(BYTE *proj, const SPoint *p, int hit);
+static void shot_track(BYTE *proj, const SPoint *p, int stopped);
+
 int __fastcall bullets_collide(void *point, void **hit)
 {
     BYTE *pr = PROJECTILE;
@@ -77,15 +83,18 @@ int __fastcall bullets_collide(void *point, void **hit)
     SPoint q;
     int raise = NO_HEIGHT;
     BYTE *an = PROJ_ANIM;
-    if (pr && an && g_cfg.downhill_hits) p = vehicle_hills(pr, p, &q, &raise);    /* group 4, HILLS (vehicles) */
+    if (pr && an && g_cfg.height_rules == HEIGHTS_MODDED) p = vehicle_hills(pr, p, &q, &raise);   /* group 4, HILLS (vehicles) */
+    else if (pr && an && g_cfg.height_rules == HEIGHTS_OFF) p = flat_ground(pr, p, &q, &raise);  /* heights off */
     short z0 = 0;
-    if (raise != NO_HEIGHT) { z0 = ANIM_Z(an); g_true_height = z0; ANIM_Z(an) = (short)raise; }
+    if (raise != NO_HEIGHT) { z0 = ANIM_Z(an); g_true_height = proj_height(pr); ANIM_Z(an) = (short)raise; }
+    if (pr && an) note_threat(pr, p, 0);
     const SPoint *saved = g_point;
     g_point = p;
     int r = bullets_collide_original((void *)p, hit);
     if (!r) r = leg_retry(p, hit);
     g_point = saved;
     if (raise != NO_HEIGHT) { ANIM_Z(an) = z0; g_true_height = NO_HEIGHT; }
+    if (pr && g_cfg.log >= 2) shot_track(pr, p, r ? (*hit ? 2 : 1) : 0);
     return r;
 }
 
@@ -194,12 +203,53 @@ static BYTE *shooter_of(BYTE *proj)
     return t;
 }
 
+/* heights off (2026-11-20, user "Damage + cover"): a KNEELING soldier right behind low cover is half covered - of the
+ * rounds that meet that cover near him, every second one is stopped (deterministic alternation, one counter for all;
+ * one decision per round and cover object, cached while the round crosses it). */
+#define KNEEL_HEIGHT      6
+static int is_kneel_near(BYTE *t, void *ctx) { return near_point(t, ctx, COVER_RADIUS) && HEIGHT_NO_ELEV(t) == KNEEL_HEIGHT; }
+static BYTE *kneel_hostile_near(const SPoint *p, int army)
+{
+    for (int a = 0; a <= 3; a++) {
+        if (a == army || ALLIED(army, a)) continue;
+        BYTE *t = walk_troopers(a, is_kneel_near, (void *)p);
+        if (t) return t;
+        BYTE *s = SARGE_PTR;
+        if (a == ARMY_PLAYER && s && *(short *)(s + 0x1c) > 0 && is_kneel_near(s, (void *)p)) return s;
+    }
+    return NULL;
+}
+#define KNEEL_SLOTS 8
+static struct { BYTE *proj, *obj; DWORD at; int stop; } g_kneel[KNEEL_SLOTS];
+static int g_kneel_flip;
+static int kneel_cover_passes(BYTE *proj, BYTE *obj, BYTE *who)
+{
+    DWORD now = GetTickCount();
+    int old = 0;
+    for (int i = 0; i < KNEEL_SLOTS; i++) {
+        if (g_kneel[i].proj == proj && g_kneel[i].obj == obj && now - g_kneel[i].at < 400) { g_kneel[i].at = now; return !g_kneel[i].stop; }
+        if (g_kneel[i].at < g_kneel[old].at) old = i;
+    }
+    g_kneel_flip ^= 1;
+    g_kneel[old].proj = proj; g_kneel[old].obj = obj; g_kneel[old].at = now; g_kneel[old].stop = g_kneel_flip;
+    if (g_cfg.log >= 2) mlog("bullets: heights off: kneeling %s %p behind cover #%d (category %d): round of weapon %d %s",
+                             who == SARGE_PTR ? "Sarge" : "soldier", who, *(short *)(obj + 0x6a), OBJ_CATEGORY(obj),
+                             PROJ_WEAPON(proj), g_kneel_flip ? "STOPPED (every second round)" : "passes");
+    return !g_kneel_flip;
+}
+
 /* 1 = the bullet goes over this low cover */
-static int cover_passes(BYTE *proj, const SPoint *p)
+static int cover_passes(BYTE *proj, BYTE *obj, const SPoint *p)
 {
     BYTE *sh = shooter_of(proj);
     if (sh && near_point(sh, p, AT_COVER)) return !item_prone(sh);
-    return !prone_hostile_near(p, UID_ARMY(*(DWORD *)proj));
+    int army = UID_ARMY(*(DWORD *)proj);
+    if (prone_hostile_near(p, army)) return 0;
+    if (g_cfg.height_rules == HEIGHTS_OFF) {
+        BYTE *k = kneel_hostile_near(p, army);
+        if (k) return kneel_cover_passes(proj, obj, k);
+    }
+    return 1;
 }
 
 static int low_cover(BYTE *obj)
@@ -249,15 +299,19 @@ static int bullet_rule(BYTE *obj, BYTE *proj)
         int building = c == BASE || c == AUX_BASE || c == PRISON_CAMP || c == BUILDING || c == PILL_BOX || c == POWER_PLANT || c == RADAR_BUILDING;
         return player && g_cfg.corner_shots && building && !inside_footprint(g_point) ? RULE_PASS : RULE_GAME;
     }
+    int off = g_cfg.height_rules == HEIGHTS_OFF;
     switch (OBJ_CATEGORY(obj)) {
-    /* group 1, BARRICADES ([gameplay] shoot_over; enemy bullets: cover_enemies) */
+    /* group 1, BARRICADES ([gameplay] shoot_over; enemy bullets: cover_enemies). height_rules=original: the game's
+     * own rule. Heights off: every direct-fire weapon (also bazooka / cannon); with the barricade rules switched
+     * off the low cover stops the round like a wall (no height to fly over it). */
     case FENCE: case WALL: case GATE: case WALL_GATE: case ROCK: case FALLEN_TREE:
-        if (!g_cfg.shoot_over || (!player && !g_cfg.cover_enemies) || !low_cover(obj)) return RULE_GAME;
-        return cover_passes(proj, g_point) ? RULE_PASS : RULE_STOP;
+        if (g_cfg.height_rules == HEIGHTS_ORIGINAL || !low_cover(obj)) return RULE_GAME;
+        if (!g_cfg.shoot_over || (!player && !g_cfg.cover_enemies)) return off ? RULE_STOP : RULE_GAME;
+        return cover_passes(proj, obj, g_point) ? RULE_PASS : RULE_STOP;
     /* group 2, CORNER SHOTS ([gameplay] corner_shots): buildings, the player's bullets only */
     case GUN_TURRET: case AA_GUN: case BASE: case AUX_BASE: case PRISON_CAMP: case BUILDING:
     case PILL_BOX: case POWER_PLANT: case RADAR_BUILDING:
-        if (!player || !g_cfg.corner_shots) return RULE_GAME;
+        if (!player || !g_cfg.corner_shots || !is_bullet(PROJ_WEAPON(proj))) return RULE_GAME;
         if (!inside_footprint(g_point)) return RULE_PASS;      /* the picture, not the footprint (trimmed) */
         if (target_in_front(g_point->x, g_point->y)) return RULE_PASS;   /* a target stands in front of the wall here */
         if (aimed_target_in_front(obj, g_point)) return RULE_PASS;       /* the aimed target is drawn in front of it */
@@ -267,11 +321,26 @@ static int bullet_rule(BYTE *obj, BYTE *proj)
     return RULE_GAME;
 }
 
+static int direct_fire(int weapon);
+/* heights off, an object the rules above leave to the game: what blocks the TRACER stops the round whatever its
+ * height - tall objects (own height above STAND_HEIGHT: buildings, trees, boulders), buildings of any height and
+ * explosives (category 9, barrels: hit when the tracer crosses them). Other low objects keep the game's own height
+ * test. The game's exceptions and its see-through chance (OBJECTSTRUCT +0x78) stay: ObjectHitByMissile itself is
+ * called, with a height below everything. */
+#define EXPLOSIVES 9
+static int blocks_tracer(BYTE *obj)
+{
+    int c = OBJ_CATEGORY(obj);
+    return OBJ_HEIGHT(obj) > STAND_HEIGHT || c == EXPLOSIVES || c == GUN_TURRET || c == AA_GUN || c == BASE || c == AUX_BASE ||
+           c == PRISON_CAMP || c == BUILDING || c == PILL_BOX || c == POWER_PLANT || c == RADAR_BUILDING;
+}
+
 int __fastcall bullets_hit_object(BYTE *obj, int height)
 {
     static int faults;                                  /* guarded faults in the rules: after 3 the game's rules only */
     BYTE *proj = PROJECTILE;
-    if ((!g_cfg.shoot_over && !g_cfg.corner_shots) || faults >= 3 || !obj || !proj || !g_point || (!is_bullet(PROJ_WEAPON(proj)) && PROJ_WEAPON(proj) != GRENADE_WEAPON))
+    int w = proj ? PROJ_WEAPON(proj) : 0, off = g_cfg.height_rules == HEIGHTS_OFF && direct_fire(w);
+    if ((!g_cfg.shoot_over && !g_cfg.corner_shots && !off) || faults >= 3 || !obj || !proj || !g_point || (!is_bullet(w) && w != GRENADE_WEAPON && !off))
         return bullets_hit_object_original(obj, height);
     volatile int rule = RULE_GAME;
     Guard g;
@@ -279,6 +348,7 @@ int __fastcall bullets_hit_object(BYTE *obj, int height)
     else if (++faults >= 3) mlog("bullets: the mod's bullet rules are off for this session (3 guarded faults)");
     if (rule == RULE_PASS) return 0;
     if (rule == RULE_STOP) return 1;
+    if (off && blocks_tracer(obj)) return bullets_hit_object_original(obj, -0x7fff);
     return bullets_hit_object_original(obj, height);
 }
 
@@ -318,22 +388,24 @@ static int direct_fire(int weapon) { return is_bullet(weapon) || weapon == 4 || 
 
 int __fastcall bullets_stops(BYTE *item, BYTE *proj, int height, int distance)
 {
-    if (g_true_height != NO_HEIGHT) height = g_true_height;     /* vehicle_hills raised ANIM_Z only for the ground test */
+    if (g_true_height != NO_HEIGHT) height = g_true_height;     /* vehicle_hills / flat_ground raised ANIM_Z only for the ground test */
     /* 2026-11-20 (user: elevation rules are hard "without visual queues" -> "Both"): every army's direct fire hits what
-     * its tracer crosses (was the player's only); the ground still stops shots (cliffs, ridges: modern.c shows it) */
-    if (g_cfg.downhill_hits && item && proj && direct_fire(PROJ_WEAPON(proj))) {   /* group 4, DOWNHILL HITS */
+     * its tracer crosses (was the player's only); the ground still stops shots (cliffs, ridges: modern.c shows it).
+     * height_rules: modded = this height cap; off = no height at all (any elevation, any pose: the game's other
+     * tests - alive, not the shooter's own army, the muzzle distance - stay); original = the game's own test. */
+    if (g_cfg.height_rules != HEIGHTS_ORIGINAL && item && proj && direct_fire(PROJ_WEAPON(proj))) {   /* group 4, DOWNHILL HITS */
         int t = UID_RAW_TYPE(*(DWORD *)item);
         if (t == 3 || t == 5 || t == 6) {
-            int h = GET_ITEM_HEIGHT(item);
-            if (height > h) height = h;
+            if (g_cfg.height_rules == HEIGHTS_OFF) height = -0x7fff;
+            else { int h = GET_ITEM_HEIGHT(item); if (height > h) height = h; }
         }
     }
     int stops = bullets_stops_original(item, proj, height, distance);
-    if (stops && item && proj) note_for_modern(item, proj);
+    if (stops && item && proj) { note_for_modern(item, proj); if (item == SARGE_UNIT) note_threat(proj, NULL, 1); }
     return stops;
 }
 
-/* ---------------------------------------------------------------- vehicles on hills (group 4, [gameplay] downhill_hits)
+/* ---------------------------------------------------------------- vehicles on hills (group 4, [gameplay] height_rules = modded)
  * 2026-11-20, user: "all vehicles should be able to shoot enemies on 'higher' or 'lower' [ground] without issue. was
  * fixed for tanks but needs to be fixed for everything." Game facts (binary VehicleFireWeapon,
  * game binary ProjectileSet / UpdateProjectile / DoFloatCollisionAtPoint, checked in the exe 0x435250 / 0x435e20 /
@@ -554,36 +626,366 @@ static int aimed_target_in_front(BYTE *obj, const SPoint *p)
     return 0;
 }
 
-/* ---------------------------------------------------------------- shot prediction for the reticle (2026-11-20)
- * User: "gameplay wise it makes it much more difficult without visual queues ... provide an indicator to show height
- * differences. and queues on how to fix it". The ground rule of a shot from Sarge (on foot or in his vehicle) to the
- * world point (tx, ty), as the game + vehicle_hills apply it:
- *   on foot: height = GetItemHeight(Sarge) + 1 (pose + elevation + 1, FUN_00447c30); stopped where ground >= height;
- *   vehicle: height = ground + VEHICLE_FIRE_Z; stopped where ground >= height + CANNON_GROUND and the ground there is
- *            higher than the ground at the aimed spot (aimed_ground).
- * Walked in 4 px steps from the shooter. Returns 0 = clear, 1 = cliff (the target's ground is at least as high as
- * the stop: go up), 2 = ridge (higher ground between: move round); *bx, *by = the stop point. Levels: ground / 4. */
-int bullets_level_at(int x, int y) { int e = ground_elev(x, y); return e < 0 ? -1 : e / 4; }
-int bullets_shot_block(int tx, int ty, int *bx, int *by)
+
+/* ============================================================================================ height_rules
+ * [gameplay] height_rules = off | modded | original (2026-11-20, user; replaces downhill_hits):
+ *   modded   - the rules above as they were: downhill height cap for all armies (bullets_stops), vehicles on hills
+ *              (vehicle_hills), prone-only low cover; reticle cues by the same rules.
+ *   original - the game's own code: none of the mod's height / ground changes, the low-cover override (group 1)
+ *              off; reticle cues predicted with the game's rules (bullets_shot_cue).
+ *   off      - (default) heights do not decide hits:
+ *     - every direct-fire round (bullets, machine guns, cannon, bazooka; all armies) hits the first unit it
+ *       crosses whatever its elevation or pose (bullets_stops: height below everything);
+ *     - the ground never cuts a shot short (flat_ground below); the shot still ends where the game ends it: at
+ *       the weapon's range (UpdateProjectile 0x435e20: flown > range) or, for the rounds that sink (rifle
+ *       1 / 9 / 10, bazooka 4: height sinks linearly to FLOAT +0x74 over the flight length +0x70), by landing
+ *       where the game lands it once they have flown their flight length (the game's own ground test from there);
+ *     - tall objects, buildings and barrels stop / take the round where the tracer crosses them (blocks_tracer);
+ *       low cover: the barricade rules + kneeling = half covered (kneel_cover_passes);
+ *     - stance damage (bullets_item_damage) and prone spotting (bullets_can_see) below.
+ * Grenades, mortar and flamer are not direct fire: unchanged in every mode.
+ * ============================================================================================ */
+const char *const HEIGHT_RULE_NAMES[3] = { "off", "modded", "original" };
+void height_rules_set(int mode)
 {
+    if (mode < HEIGHTS_OFF || mode > HEIGHTS_ORIGINAL) mode = HEIGHTS_OFF;
+    g_cfg.height_rules = mode;
+    WritePrivateProfileStringA("gameplay", "height_rules", HEIGHT_RULE_NAMES[mode], mod_ini_path());
+    mlog("bullets: height_rules = %s", HEIGHT_RULE_NAMES[mode]);
+}
+
+#define SINKS(w)          ((w) == 1 || (w) == 4 || (w) == 9 || (w) == 10)   /* UpdateProjectile: height sinks to +0x74 */
+#define PROJ_TRAVELLED(p) (*(int *)((p) + 0x6c))    /* FLOAT_OBJ: distance flown (also StopsMissile's distance) */
+#define PROJ_FLIGHT(p)    (*(int *)((p) + 0x70))    /* ProjectileSet param 5: flight length the height sinks over */
+#define ANIM_Z_FRAC(a)    (*(float *)((a) + 0xc0))  /* the part of the sink not yet taken off world_z */
+#define POSE_KNEEL        0xb
+#define POSE_STAND        0xc
+#define POSE_PRONE        0xd
+
+/* the round's height as DoFloatCollisionAtPoint (0x435a45) tests it: world_z - the sink fraction (truncated) for the
+ * weapons that sink, world_z for the others */
+static int proj_height(BYTE *proj)
+{
+    BYTE *an = PROJ_ANIM;
+    if (!an) return 0;
+    if (SINKS(PROJ_WEAPON(proj))) return (int)((float)ANIM_Z(an) - ANIM_Z_FRAC(an));
+    return ANIM_Z(an);
+}
+
+/* heights off: the ground under a direct-fire round never stops it (before its flight length for the sinking ones).
+ * Done as vehicle_hills does it: world_z is raised for this one test so the ground test (0x435b66) passes, and units
+ * / objects get the real height back in bullets_stops (g_true_height). Vehicle machine guns: tested on the tracer
+ * line as in modded (vehicle_hills 1.). */
+static const SPoint *flat_ground(BYTE *proj, const SPoint *p, SPoint *q, int *raise_to)
+{
+    int w = PROJ_WEAPON(proj);
+    if (!direct_fire(w)) return p;
+    if ((w == 7 || w == 8) && UID_RAW_TYPE(FROM_UID(proj)) == 3) {
+        int shooter = ANIM_Z(PROJ_ANIM) - VEHICLE_FIRE_Z;
+        if (shooter > 0) { *q = *p; q->y = (short)(p->y - shooter > 0 ? p->y - shooter : 0); p = q; }
+    }
+    if (SINKS(w) && PROJ_TRAVELLED(proj) >= PROJ_FLIGHT(proj)) return p;     /* flown its length: lands as the game says */
+    int e = ground_elev(p->x, p->y);
+    if (e < 0) return p;
+    int h = proj_height(proj), margin = w == CANNON_WEAPON ? CANNON_GROUND : 0;
+    if (h + margin > e) return p;                                          /* the game would not stop it here */
+    *raise_to = ANIM_Z(PROJ_ANIM) + (e - margin - h) + 2;
+    static BYTE *l; static DWORD t;
+    if (log_once(&l, &t, proj)) mlog("bullets: heights off: weapon %d (army %d) height %d over ground %d at (%d,%d), flown %d of %d -> flies on",
+                                     w, UID_ARMY(*(DWORD *)proj), h, e, p->x, p->y, PROJ_TRAVELLED(proj), PROJ_FLIGHT(proj));
+    return p;
+}
+
+/* log=2: where each direct-fire shot ended (first and last tested point, why) - checks that heights off keeps the
+ * shots' length. A shot is written out once it has not been tested for SHOT_IDLE ms (or its slot is reused). */
+#define SHOT_SLOTS 12
+#define SHOT_IDLE  700
+static struct { BYTE *proj; short x0, y0, x1, y1; int flown, flight, weapon, army, end, h0, h1; DWORD at; } g_shot[SHOT_SLOTS];
+static void shot_flush(int i)
+{
+    if (!g_shot[i].proj) return;
+    int dx = g_shot[i].x1 - g_shot[i].x0, dy = g_shot[i].y1 - g_shot[i].y0;
+    mlog("bullets: shot end (height_rules %s): weapon %d army %d (%d,%d) -> (%d,%d) = %d px, flown %d, flight length %d, height %d -> %d, %s",
+         HEIGHT_RULE_NAMES[g_cfg.height_rules], g_shot[i].weapon, g_shot[i].army, g_shot[i].x0, g_shot[i].y0, g_shot[i].x1, g_shot[i].y1,
+         (int)sqrt((double)dx * dx + dy * dy), g_shot[i].flown, g_shot[i].flight, g_shot[i].h0, g_shot[i].h1,
+         g_shot[i].end == 2 ? "stopped by a unit / object" : g_shot[i].end == 1 ? "stopped by the GROUND" : "range end");
+    g_shot[i].proj = NULL;
+}
+static void shot_track(BYTE *proj, const SPoint *p, int stopped)
+{
+    DWORD now = GetTickCount();
+    int w = PROJ_WEAPON(proj), k = -1, old = 0;
+    for (int i = 0; i < SHOT_SLOTS; i++) {
+        if (g_shot[i].proj && now - g_shot[i].at > SHOT_IDLE) shot_flush(i);
+        if (g_shot[i].at < g_shot[old].at) old = i;
+    }
+    if (!direct_fire(w)) return;
+    for (int i = 0; i < SHOT_SLOTS; i++)
+        if (g_shot[i].proj == proj) { k = i; break; }
+    if (k >= 0 && PROJ_TRAVELLED(proj) < g_shot[k].flown) { shot_flush(k); k = -1; }   /* a new shot in that slot */
+    if (k < 0) {
+        k = old; shot_flush(k);
+        g_shot[k].proj = proj; g_shot[k].x0 = p->x; g_shot[k].y0 = p->y; g_shot[k].weapon = w; g_shot[k].army = UID_ARMY(*(DWORD *)proj);
+        g_shot[k].end = 0; g_shot[k].h0 = proj_height(proj);
+    }
+    g_shot[k].x1 = p->x; g_shot[k].y1 = p->y; g_shot[k].flown = PROJ_TRAVELLED(proj); g_shot[k].flight = PROJ_FLIGHT(proj);
+    g_shot[k].h1 = proj_height(proj); g_shot[k].at = now;
+    if (stopped) { g_shot[k].end = stopped; shot_flush(k); }
+}
+
+/* ---------------------------------------------------------------- Sarge under fire (defensive stance hints)
+ * An enemy direct-fire round tested within NEAR_MISS px of Sarge (on foot), or stopped at him, is noted with its
+ * height (as the game tests it), weapon and where it came from (the shooter, else the round's previous point).
+ * bullets_stance_hint() gives modern.c the stance that really helps against it for THREAT_MS. */
+#define NEAR_MISS  24
+#define THREAT_MS  2000
+static struct { DWORD at; int height, weapon, fx, fy, hit; } g_threat;
+static void note_threat(BYTE *proj, const SPoint *p, int hit)
+{
+    int w = PROJ_WEAPON(proj), army = UID_ARMY(*(DWORD *)proj);
+    if (!direct_fire(w) || army <= ARMY_PLAYER || army > 3) return;
+    BYTE *s = SARGE_UNIT;
+    if (!s || *(BYTE **)(s + 0x2d0) || *(short *)(s + 0x1c) <= 0 || ALLIED(ARMY_PLAYER, army)) return;
+    int sx = *(short *)(s + 4), sy = *(short *)(s + 6);
+    if (p) { int dx = p->x - sx, dy = p->y - sy; if (dx * dx + dy * dy > NEAR_MISS * NEAR_MISS) return; }
+    g_threat.at = GetTickCount();
+    g_threat.height = g_true_height != NO_HEIGHT ? g_true_height : proj_height(proj);
+    g_threat.weapon = w; g_threat.hit = hit;
+    BYTE *sh = shooter_of(proj);
+    if (sh) { g_threat.fx = *(short *)(sh + 4); g_threat.fy = *(short *)(sh + 6); }
+    else {                                                 /* vehicle gun, tower: back along the round's last step */
+        int cx = *(short *)(proj + 4), cy = *(short *)(proj + 6), px0 = *(short *)(proj + 0x10), py0 = *(short *)(proj + 0x12);
+        int dx = px0 - cx, dy = py0 - cy; double d = sqrt((double)dx * dx + dy * dy);
+        if (d > 0.5) { g_threat.fx = sx + (int)(dx / d * 200); g_threat.fy = sy + (int)(dy / d * 200); }
+    }
+}
+
+/* low cover (as the barricade rules see it) within maxd px of item `who` on the line toward (tx, ty); *cx, *cy = the
+ * point on it. Pictures at the points (roofs_cells_at), the same objects the bullet would meet. */
+static BYTE *own_cover(BYTE *who, int tx, int ty, int maxd, int *cx, int *cy)
+{
+    int x0 = *(short *)(who + 4), y0 = *(short *)(who + 6), dx = tx - x0, dy = ty - y0;
+    double d = sqrt((double)dx * dx + dy * dy);
+    if (d < 1) return NULL;
+    for (int r = 4; r <= maxd && r < d; r += 4) {
+        int x = x0 + (int)(dx * r / d), y = y0 + (int)(dy * r / d);
+        BYTE *cl[8];
+        int n = roofs_cells_at(x, y, cl, 8);
+        for (int i = 0; i < n; i++) {
+            BYTE *ow = *(BYTE **)(cl[i] + 0x0c);
+            if (!ow || ow == who) continue;
+            int t = UID_RAW_TYPE(*(DWORD *)ow);
+            if (t < 7 || t > 9) continue;
+            switch (OBJ_CATEGORY(ow)) {
+            case FENCE: case WALL: case GATE: case WALL_GATE: case ROCK: case FALLEN_TREE:
+                if (low_cover(ow)) { *cx = x; *cy = y; return ow; }
+            }
+        }
+    }
+    return NULL;
+}
+
+int bullets_stance_hint(char *buf, int n, const char *down, const char *up)
+{
+    BYTE *s = SARGE_UNIT;
+    DWORD now = GetTickCount();
+    static char last[64];
+    buf[0] = 0;
+    if (s && g_threat.at && now - g_threat.at <= THREAT_MS && !*(BYTE **)(s + 0x2d0) && *(short *)(s + 0x1c) > 0) {
+        int pose = HEIGHT_NO_ELEV(s), sx = *(short *)(s + 4), sy = *(short *)(s + 6), e = ground_elev(sx, sy), h = g_threat.height;
+        int cx, cy, mode = g_cfg.height_rules;
+        BYTE *cov = mode != HEIGHTS_ORIGINAL && g_cfg.shoot_over ? own_cover(s, g_threat.fx, g_threat.fy, COVER_RADIUS, &cx, &cy) : NULL;
+        if (cov) {                                             /* off / modded: prone right behind it = cannot be hit */
+            if (pose == PRONE_HEIGHT) lstrcpynA(buf, "PRONE BEHIND COVER: SAFE - CANNOT FIRE", n);
+            else wsprintfA(buf, "PRONE BEHIND COVER: %s", down);
+        } else if (mode == HEIGHTS_OFF) {                      /* damage: prone 50 %, kneeling 75 % */
+            if (pose == STAND_HEIGHT) wsprintfA(buf, "GET DOWN: %s", down);
+            else if (pose == KNEEL_HEIGHT) wsprintfA(buf, "GO PRONE: %s", down);
+        } else if (mode == HEIGHTS_ORIGINAL && e >= 0 && !SINKS(g_threat.weapon) && h <= e + pose) {
+            /* the game's own test (StopsMissile: Sarge is hit while round height <= his height): rounds that keep
+             * their height pass over a lower stance. Rifle / bazooka rounds sink to the height they were aimed at,
+             * so a lower stance does not help against them - no hint. */
+            if (pose == STAND_HEIGHT && h > e + KNEEL_HEIGHT) wsprintfA(buf, "KNEEL: ROUNDS PASS OVER - %s", down);
+            else if (pose != PRONE_HEIGHT && h > e + PRONE_HEIGHT) wsprintfA(buf, "GO PRONE: ROUNDS PASS OVER - %s", down);
+        }
+        if (g_cfg.log >= 2 && lstrcmpA(buf, last))
+            mlog("bullets: stance hint \"%s\" (height_rules %s, pose height %d, ground %d, round height %d, weapon %d, %s, cover %s)",
+                 buf, HEIGHT_RULE_NAMES[mode], pose, e, h, g_threat.weapon, g_threat.hit ? "hit" : "near miss", cov ? "yes" : "no");
+    }
+    lstrcpynA(last, buf, sizeof last);
+    (void)up;
+    return buf[0] != 0;
+}
+
+/* ---------------------------------------------------------------- stance damage (heights off)
+ * ItemDamage 0x431f60 (__fastcall ecx = item, edx = damage; stack: damage type, SPOINT *at, UID from; ret 12) is the
+ * one entry for damage to an item (projectile hits 0x435b44, explosions, crush); it dispatches to SargeDamage 0x447fc0
+ * (type 6) / trooper damage 0x43c5a0 (type 5). Damage types (0x4b4570 by weapon): 6 = bullets (weapons 1, 7, 8, 9, 10,
+ * 21), 3 bazooka, 4 cannon, 0x41 grenade, 0x42 mortar, 0x45 explosion; 7 flame, 0 / 8 others.
+ * Heights off, Sarge and soldiers of every army:  bullets  standing 100 %, kneeling 75 %, prone 50 %;
+ *                                                 blasts   prone 75 %, kneeling / standing 100 %;   others 100 %.
+ * Fractions are carried per victim (a 3-point rifle hit on a prone soldier: 1, 2, 1, 2 ...), so the share is exact on
+ * average; a hit may then do 0. The game's own prone rule (damage - damage / 8, below 8 damage
+ * 1 in 7 absorbed; 0x4480b8 Sarge, 0x43c6c4 troopers) is switched off then: its GetPose call answers "standing"
+ * for prone (bullets_damage_pose). Kept: the unit-mode reduction of troopers, Sarge's random damage spread. */
+ItemDamageWrapFn bullets_item_damage_original;
+#define DMG_BULLETS 6
+static int blast_damage(int type) { return type == 3 || type == 4 || type == 0x41 || type == 0x42 || type == 0x45; }
+#define CARRY_SLOTS 32
+static struct { BYTE *item; int rest; } g_carry[CARRY_SLOTS];      /* hundredths of a point not yet dealt, per victim */
+static int scaled_damage(BYTE *item, int damage, int pct)
+{
+    int k = (int)(((uintptr_t)item >> 4) % CARRY_SLOTS);
+    if (g_carry[k].item != item) { g_carry[k].item = item; g_carry[k].rest = 0; }
+    int v = damage * pct + g_carry[k].rest;
+    g_carry[k].rest = v % 100;
+    return v / 100;
+}
+void __fastcall bullets_item_damage(BYTE *item, int damage, int type, void *at, DWORD from)
+{
+    if (g_cfg.height_rules == HEIGHTS_OFF && item && damage > 0) {
+        int t = UID_RAW_TYPE(*(DWORD *)item);
+        if ((t == 5 || t == 6) && *(short *)(item + 0x1c) > 0) {
+            int pose = HEIGHT_NO_ELEV(item), pct = 100;
+            if (type == DMG_BULLETS) pct = pose == PRONE_HEIGHT ? 50 : pose == KNEEL_HEIGHT ? 75 : 100;
+            else if (blast_damage(type)) pct = pose == PRONE_HEIGHT ? 75 : 100;
+            int d = scaled_damage(item, damage, pct);
+            if (g_cfg.log >= 2) mlog("bullets: stance damage: %s %p pose height %d, damage type 0x%x: %d -> %d (%d%%)",
+                                     t == 6 ? "Sarge" : "soldier", item, pose, type, damage, d, pct);
+            damage = d;
+        }
+    }
+    bullets_item_damage_original(item, damage, type, at, from);
+}
+
+typedef int (__fastcall *PoseFn)(void *avatar);
+#define GET_POSE          ((PoseFn)0x43a140)       /* avatar (Sarge +0x268, trooper +0x26c) -> 0xb kneel 0xc stand 0xd prone */
+int __fastcall bullets_damage_pose(void *avatar)
+{
+    int p = GET_POSE(avatar);
+    return g_cfg.height_rules == HEIGHTS_OFF && p == POSE_PRONE ? POSE_STAND : p;
+}
+
+/* ---------------------------------------------------------------- prone is harder to spot (heights off)
+ * ItemUpdateSeen 0x44a360 (__fastcall ecx = viewer, edx = item looked at) marks an item seen by the viewer's army
+ * (See 0x449a90; newly seen + hostile -> the alert 0x44f080) when CanSeeFromItem 0x44af10 (ecx viewer, edx the item's
+ * tile) says so: the tile within the sight box +-SIGHT_X / SIGHT_Y (170 px) of the viewer, then the line of sight.
+ * The call 0x44a47d (soldiers, vehicles, Sarge of the other armies as viewers; towers use their own tests) goes
+ * through bullets_sight_stub, which passes the item looked at (esi there): a prone soldier or Sarge is noticed only
+ * within PRONE_SIGHT_PCT % of the box. Only who notices whom changes: where the game aims or fires without this
+ * test (weapon range + line of sight 0x43b2e0) stays the game's. */
+#define SIGHT_X           (*(int *)0x4bdf1c)
+#define SIGHT_Y           (*(int *)0x4bdf20)
+#define PRONE_SIGHT_PCT   60
+typedef int (__fastcall *CanSeeFn)(BYTE *viewer, unsigned tile);
+#define CAN_SEE_FROM_ITEM ((CanSeeFn)0x44af10)
+int __cdecl bullets_can_see(BYTE *viewer, unsigned tile, BYTE *target)
+{
+    if (g_cfg.height_rules == HEIGHTS_OFF && viewer && target && MAP_TILES_W) {
+        int t = UID_RAW_TYPE(*(DWORD *)target);
+        if ((t == 5 || t == 6) && *(short *)(target + 0x1c) > 0 && item_prone(target)) {
+            int dx = *(short *)(viewer + 4) - (int)(tile % MAP_TILES_W) * 16, dy = *(short *)(viewer + 6) - (int)(tile / MAP_TILES_W) * 16;
+            int bx = SIGHT_X * PRONE_SIGHT_PCT / 100, by = SIGHT_Y * PRONE_SIGHT_PCT / 100;
+            if (abs(dx) > bx || abs(dy) > by) {
+                static DWORD at;
+                if (g_cfg.log >= 2 && GetTickCount() - at > 1000 && abs(dx) <= SIGHT_X && abs(dy) <= SIGHT_Y) {
+                    at = GetTickCount();
+                    mlog("bullets: prone %s %p not noticed by %p at %d,%d px (prone sight box %d x %d, usual %d x %d)",
+                         t == 6 ? "Sarge" : "soldier", target, viewer, dx, dy, bx, by, SIGHT_X, SIGHT_Y);
+                }
+                return 0;
+            }
+        }
+    }
+    return CAN_SEE_FROM_ITEM(viewer, tile);
+}
+__asm__(".globl _bullets_sight_stub\n"
+        "_bullets_sight_stub:\n"                  /* at 0x44a47d: ecx viewer, edx tile, esi the item looked at */
+        "    push %esi\n"
+        "    push %edx\n"
+        "    push %ecx\n"
+        "    call _bullets_can_see\n"
+        "    add $12, %esp\n"
+        "    ret\n");
+
+/* ---------------------------------------------------------------- shot cues for the reticle (2026-11-20)
+ * User: "gameplay wise it makes it much more difficult without visual queues ... provide an indicator to show height
+ * differences. and queues on how to fix it". What stops Sarge's shot (on foot or in his vehicle) at the world point
+ * (tx, ty), by the active height_rules - the rules bullets.c / the game really apply:
+ *   own cover (all modes, on foot): low cover within AT_COVER px on the line - modded / off with the barricade rules:
+ *       blocked while he is prone (cover_passes 1.); off without them: a wall; original (and modded without them):
+ *       the game's height test, his round (GetItemHeight + 1) against the cover's top (elevation + own height).
+ *   ground, modded: on foot height = GetItemHeight(Sarge) + 1 (pose + elevation + 1, FUN_00447c30), stopped where
+ *       ground >= height; vehicle: height = ground + VEHICLE_FIRE_Z, stopped where ground >= height + CANNON_GROUND
+ *       and the ground there is higher than the ground at the aimed spot (aimed_ground).
+ *   ground, original: on foot as modded; vehicle: height = ground + VEHICLE_FIRE_Z; machine guns stopped at ground
+ *       >= height, tested on their shadow line (ground elevation px south of the tracer), the cannon at >= height +
+ *       CANNON_GROUND; no aimed-spot exemption.
+ *   ground, off: never.
+ *   over (original): weapons whose round keeps its height (vehicle guns 6 / 7 / 8, 21) pass over the unit under the
+ *       pointer when the round is higher than it (StopsMissile 0x435c80: hit while height <= GetItemHeight, troopers
+ *       + 2). Rifle / bazooka rounds sink to the height Sarge aims at (+0x2e8 from FUN_00447e10): no cue for them.
+ * The ground walk: 4 px steps from the shooter; 1 = cliff (the target's ground is at least as high as the stop: go
+ * up), 2 = ridge (higher ground between: move round). Levels: ground / 4. */
+int bullets_level_at(int x, int y) { int e = ground_elev(x, y); return e < 0 ? -1 : e / 4; }
+int bullets_shot_cue(int tx, int ty, int weapon, ShotCue *c)
+{
+    memset(c, 0, sizeof *c);
     BYTE *s = SARGE_UNIT, *v = s ? *(BYTE **)(s + 0x2d0) : NULL;
-    if (!s || !g_cfg.downhill_hits) return 0;
+    if (!s) return 0;
+    int mode = g_cfg.height_rules;
     BYTE *sh = v ? v : s;
-    int x0 = *(short *)(sh + 4), y0 = *(short *)(sh + 6), g0 = ground_elev(x0, y0), z, margin;
+    int x0 = *(short *)(sh + 4), y0 = *(short *)(sh + 6), g0 = ground_elev(x0, y0);
     if (g0 < 0) return 0;
-    int aim = -1;
+    c->levels = mode != HEIGHTS_OFF;
+    if (!v) {                                                           /* his own low cover */
+        int cx, cy;
+        BYTE *cov = own_cover(s, tx, ty, AT_COVER, &cx, &cy);
+        if (cov) {
+            int blocked, raise = POSE_KNEEL;
+            if (mode != HEIGHTS_ORIGINAL && g_cfg.shoot_over) blocked = item_prone(s);
+            else if (mode == HEIGHTS_OFF) { blocked = 1; raise = 0; }
+            else {
+                int top = ground_elev(cx, cy) + OBJ_HEIGHT(cov);
+                blocked = GET_ITEM_HEIGHT(s) + 1 <= top;
+                raise = g0 + KNEEL_HEIGHT + 1 > top ? POSE_KNEEL : g0 + STAND_HEIGHT + 1 > top ? POSE_STAND : 0;
+            }
+            if (blocked) { c->block = 3; c->bx = cx; c->by = cy; c->raise = raise; return 1; }
+        }
+    }
+    if (mode == HEIGHTS_OFF) return 1;
+    int z, margin = 0, aim = -1, south = 0;
     if (v) {
-        z = g0 + VEHICLE_FIRE_Z; margin = CANNON_GROUND;
-        for (int dy = -AIM_TILES; dy <= AIM_TILES; dy++)
-            for (int dx = -AIM_TILES; dx <= AIM_TILES; dx++) { int e = ground_elev(tx + dx * 16, ty + dy * 16); if (e > aim) aim = e; }
-    } else { z = GET_ITEM_HEIGHT(s) + 1; margin = 0; }
+        z = g0 + VEHICLE_FIRE_Z;
+        if (mode == HEIGHTS_MODDED) {
+            margin = CANNON_GROUND;
+            for (int dy = -AIM_TILES; dy <= AIM_TILES; dy++)
+                for (int dx = -AIM_TILES; dx <= AIM_TILES; dx++) { int e = ground_elev(tx + dx * 16, ty + dy * 16); if (e > aim) aim = e; }
+        } else {
+            margin = weapon == CANNON_WEAPON ? CANNON_GROUND : 0;
+            if (weapon == 7 || weapon == 8) south = g0;                   /* the shadow line */
+        }
+    } else z = GET_ITEM_HEIGHT(s) + 1;
     int dx = tx - x0, dy = ty - y0, n = (abs(dx) > abs(dy) ? abs(dx) : abs(dy)) / 4;
     for (int i = 1; i <= n; i++) {
-        int x = x0 + dx * i / n, y = y0 + dy * i / n, e = ground_elev(x, y);
+        int x = x0 + dx * i / n, y = y0 + dy * i / n + south, e = ground_elev(x, y);
         if (e < 0 || e < z + margin || (v && aim >= e)) continue;
-        *bx = x; *by = y;
-        int tg = ground_elev(tx, ty);
-        return tg >= e ? 1 : 2;
+        c->bx = x; c->by = y;
+        c->block = ground_elev(tx, ty) >= e ? 1 : 2;
+        break;
     }
-    return 0;
+    if (mode == HEIGHTS_ORIGINAL) {
+        if (!SINKS(weapon) && direct_fire(weapon)) {
+            BYTE *t = controls_hover_target();
+            if (t) {
+                int tt = UID_RAW_TYPE(*(DWORD *)t), ta = UID_ARMY(*(DWORD *)t);
+                if ((tt == 3 || tt == 5 || tt == 6) && ta != ARMY_PLAYER && *(short *)(t + 0x1c) > 0 && z > GET_ITEM_HEIGHT(t) + (tt == 5 ? 2 : 0))
+                    c->over = 1;
+            }
+        }
+        if (v && (weapon == 7 || weapon == 8) && g0 > 0) { c->mg_low = g0; c->mx = tx; c->my = ty + g0; }
+    }
+    { static int lb = -1, lo = -1, lm = -1; if (g_cfg.log >= 2 && (c->block != lb || c->over != lo || c->mg_low != lm)) { lb = c->block; lo = c->over; lm = c->mg_low;
+        mlog("bullets: reticle cue (height_rules %s, weapon %d): block %d at %d,%d raise %x, over %d, mg_low %d, levels %d (shooter ground %d, aim ground %d)", HEIGHT_RULE_NAMES[mode], weapon, c->block, c->bx, c->by, c->raise, c->over, c->mg_low, c->levels, g0, ground_elev(tx, ty)); } }
+    return 1;
 }

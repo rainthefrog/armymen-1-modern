@@ -59,6 +59,7 @@ static Feature FEATURES[MOD_COUNT] = {
     [MOD_GAMEPAD]      = { "gamepad",       "Gamepad (twin-stick)",                 'M', 1 },
     [MOD_THROW_POINTER]= { "throw_pointer", "Grenades / mortar land at the pointer",'M', 1 },
     [MOD_THROW_HOLD]   = { "throw_hold",    "Throw on release (hold = aim, circle)", 'M', 1 },
+    [MOD_STANCE_HINTS] = { "stance_hints",  "Stance hints while under fire",        'S', 1 },
     [MOD_COLOURBLIND]  = { "colourblind",   "Colour-blind: tan enemies drawn blue", 'M', 0 },
     [MOD_SQUAD_MOUSE]  = { "squad_mouse",   "Ctrl + click squad orders",            'M', 1 },
     [MOD_RADIAL]       = { "radial_menu",   "Radial command menu (hold key)",       'M', 1 },
@@ -969,21 +970,39 @@ static void modern_draw_body(Surf *b)
                     int ok = tr >= 0 ? tr : d <= hi;
                     if (shooter != u && !vehicles_aim_reachable(shooter, rx + CAMERA_X, ry + CAMERA_Y)) ok = 0;   /* halftrack: outside its gun arc */
                     /* height cues (2026-11-20, user: "provide an indicator to show height differences. and queues on
-                     * how to fix it"): the ground the shot stops at (bullets_shot_block) - ticks yellow, an X there,
+                     * how to fix it"): what stops the shot (bullets_shot_cue) - ticks yellow, an X there,
                      * the fix under the reticle; and the pointed ground's level against the shooter's ("UP 2") */
-                    int wx = rx + CAMERA_X, wy = ry + CAMERA_Y, bx, by, blk = 0;
-                    if (type != 2 && type != 3 && type != 5) blk = bullets_shot_block(wx, wy, &bx, &by);
-                    if (blk && (bx - wx) * (bx - wx) + (by - wy) * (by - wy) < 12 * 12) blk = 0;   /* stops at the target itself */
+                    /* height_rules (bullets_shot_cue, the rules the shot follows): modded / original also the levels and
+                     * the ground stop; original also a round passing over the target and the machine gun's low test
+                     * line from a hill; every mode Sarge's own low cover while prone */
+                    int wx = rx + CAMERA_X, wy = ry + CAMERA_Y, blk = 0;
+                    ShotCue cue;
+                    if (type == 2 || type == 3 || type == 5 || !bullets_shot_cue(wx, wy, type, &cue)) memset(&cue, 0, sizeof cue);
+                    blk = cue.block;
+                    if ((blk == 1 || blk == 2) && (cue.bx - wx) * (cue.bx - wx) + (cue.by - wy) * (cue.by - wy) < 12 * 12) blk = 0;   /* stops at the target itself */
                     int l0 = bullets_level_at(*(short *)(shooter + 4), *(short *)(shooter + 6)), l1 = bullets_level_at(wx, wy);
-                    if (l0 >= 0 && l1 >= 0 && l1 != l0) {
+                    if (cue.levels && l0 >= 0 && l1 >= 0 && l1 != l0) {
                         char hs[16]; wsprintfA(hs, l1 > l0 ? "UP %d" : "DOWN %d", l1 > l0 ? l1 - l0 : l0 - l1);
                         text(rx + 13, sy0 - 4, hs, l1 > l0 ? C_YELLOW : C_WHITE, 1);
                     }
+                    const char *hint = NULL; char hb[48];
                     if (blk) {
-                        int xs = bx - CAMERA_X, ys = by - CAMERA_Y - layout_field_shift();
+                        int xs = cue.bx - CAMERA_X, ys = cue.by - CAMERA_Y - layout_field_shift();
                         for (int k = -4; k <= 4; k++) { px(xs + k, ys + k, C_YELLOW); px(xs + k, ys - k, C_YELLOW); px(xs + k + 1, ys + k, C_BLACK); px(xs + k + 1, ys - k, C_BLACK); }
-                        text(rx - 30, sy0 + 28, blk == 1 ? "CLIFF: GO UP" : "RIDGE: MOVE", C_YELLOW, 1);
+                        if (blk == 3) {
+                            char dn[16], upk[16]; controls_stance_keys(dn, upk, sizeof dn);
+                            if (cue.raise == 0xb) wsprintfA(hb, "PRONE: KNEEL TO FIRE - %s", upk);
+                            else if (cue.raise == 0xc) wsprintfA(hb, "STAND TO FIRE - %s", upk);
+                            else lstrcpynA(hb, "COVER BLOCKS: MOVE", sizeof hb);
+                            hint = hb;
+                        } else hint = blk == 1 ? "CLIFF: GO UP" : "RIDGE: MOVE";
+                    } else if (cue.over) { blk = 4; hint = "TOO HIGH: GET LOWER"; }
+                    if (cue.mg_low) {                         /* where the machine gun really tests: mg_low px lower */
+                        int xs = cue.mx - CAMERA_X, ys = cue.my - CAMERA_Y - layout_field_shift();
+                        circle(xs, ys, 3, C_YELLOW, 0);
+                        if (!hint) hint = "MG AIMS LOW FROM HILL";
                     }
+                    if (hint) text(rx - (int)strlen(hint) * 3, sy0 + 28, hint, C_YELLOW, 1);
                     BYTE c = blk ? C_YELLOW : ok ? C_RED : C_GREY;
                     for (int s = -1; s <= 1; s += 2)
                         for (int t = -1; t <= 1; t += 2)
@@ -1035,6 +1054,12 @@ static void modern_draw_body(Surf *b)
             double a = g_dmg_angle + k * 0.06;
             for (int r = 30; r <= 33; r++) px(sgx + (int)lround(cos(a) * r), sgy - 12 + (int)lround(sin(a) * r), C_RED);
         }
+    }
+    if (modern_on(MOD_STANCE_HINTS)) {   /* under fire (2026-11-20, user): the stance that helps, by height_rules (bullets.c) -
+                                          * one line above Sarge while rounds pass near / hit him (2 s after the last) */
+        char dn[16], upk[16], hs[64];
+        controls_stance_keys(dn, upk, sizeof dn);
+        if (bullets_stance_hint(hs, sizeof hs, dn, upk)) text(sgx - (int)strlen(hs) * 3, sgy - 44, hs, C_YELLOW, 1);
     }
     if (modern_on(MOD_PING) && now - g_ping_at < 3000) {
         int sx, sy; to_screen(g_ping_x, g_ping_y, &sx, &sy);
