@@ -1727,18 +1727,30 @@ static void throw_target(int px, int py, int *wx, int *wy)
 /* [debug] fence_route = tx,ty[,delay_ms[,sx,sy]] (cheat_keys; testing break_fences in the container, where right-click
  * taps on a world spot are hard to aim): once, delay_ms (default 4000) into the mission - Sarge first placed at sx,sy
  * (the game's placement 0x448a90, invulnerable) and half a second later - a walk to tx,ty as if right-tapped there
- * (on a vehicle: walk to it and climb in). */
+ * (on a vehicle: walk to it and climb in). Testing squad_sprint (squad.c): walk_ms = time from the placement to the
+ * walk (default 500), run = 1 sprints along the route (as a double-click tap), follow = 1 gives the squads the Follow order
+ * then (squad.c). Format tx,ty,delay,sx,sy,walk_ms,run,follow. */
+static int g_debug_route_run;
 static int debug_fence_route(BYTE *u, int *x, int *y, DWORD now)
 {
-    static int state, tx, ty, delay, sx, sy, n; static DWORD t0;
+    static int state, tx, ty, delay, sx, sy, walk_after, follow, n; static int prepped; static DWORD t0;
     if (state == 3 || !g_cfg.cheat_keys) return 0;
     if (state == 0) {
         char s[64] = "";
         GetPrivateProfileStringA("debug", "fence_route", "", s, sizeof s, mod_ini_path());
-        n = sscanf(s, "%d,%d,%d,%d,%d", &tx, &ty, &delay, &sx, &sy);
+        n = sscanf(s, "%d,%d,%d,%d,%d,%d,%d,%d", &tx, &ty, &delay, &sx, &sy, &walk_after, &g_debug_route_run, &follow);
+        if (n < 6 || walk_after < 0) walk_after = 500;
         if (n < 2) { state = 3; return 0; }
         if (n < 3) delay = 4000;
         state = 1; t0 = now; return 0;
+    }
+    if (state == 2 && n >= 8 && follow && !prepped && now - t0 + 300 >= (DWORD)delay) {
+        /* squad test: in the container the right button read as held from the squad's rendezvous on (Wine) and Sarge
+         * walked toward the pointer: ignore it until a real release, start again from sx,sy (a few frames before the walk) */
+        typedef void (__fastcall *PlaceFn)(BYTE *unit, int x, int y);
+        ((PlaceFn)0x448a90)(u, sx, sy);
+        S.right_blocked = 1; prepped = 1;
+        mlog("controls: [debug] fence_route: Sarge placed again at %d,%d, right button ignored", SARGE_X(u), SARGE_Y(u));
     }
     if (now - t0 < (DWORD)delay) return 0;
     if (state == 1 && n >= 5) {
@@ -1746,10 +1758,11 @@ static int debug_fence_route(BYTE *u, int *x, int *y, DWORD now)
         *(volatile BYTE *)0x69752c = 1;                                  /* invulnerable */
         ((PlaceFn)0x448a90)(u, sx, sy);
         mlog("controls: [debug] fence_route: Sarge placed at %d,%d -> %d,%d", sx, sy, SARGE_X(u), SARGE_Y(u));
-        state = 2; t0 = now; delay = 500; return 0;
+        state = 2; t0 = now; delay = walk_after; return 0;
     }
     state = 3; *x = tx; *y = ty;
-    mlog("controls: [debug] fence_route: walk to %d,%d", tx, ty);
+    mlog("controls: [debug] fence_route: %s to %d,%d", g_debug_route_run ? "sprint" : "walk", tx, ty);
+    if (n >= 8 && follow) squad_debug_follow();
     return 1;
 }
 
@@ -1763,6 +1776,7 @@ static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer,
         S.target_x = dbg_tap ? dbg_x : px + CAMERA_X;
         S.target_y = dbg_tap ? dbg_y : py + CAMERA_Y;
         S.going_since = now;
+        if (dbg_tap) S.route_run = g_debug_route_run;
         /* on a vehicle: walk to it and climb in */
         S.enter = vehicle_at(S.target_x, S.target_y);
         if (S.enter) {
@@ -2819,9 +2833,42 @@ static int path_blocked(int x, int y, int dx, int dy)
     return 0;
 }
 
+/* A squad trooper's sprint step (squad.c decides who): same speed-up as Sarge's; the longer step is checked
+ * pixel by pixel with the NPC rule (controls_blocked_at, the tile test the game's squash uses) and cut back to
+ * the normal walking step the game planned if anything blocks it, or if he already stands on a blocked spot. */
+int controls_sarge_running(void) { return S.running && g_cfg.controls_modern; }
+static void squad_move(BYTE *obj, int flag, int arg, float mul)
+{
+    short speed = OBJ_SPEED(obj), fast = (short)(speed * mul);
+    short ox = OBJ_X(obj), oy = OBJ_Y(obj);
+    OBJ_SPEED(obj) = fast;
+    controls_move_original(obj, flag, arg);
+    if (OBJ_SPEED(obj) == fast) OBJ_SPEED(obj) = speed;     /* unless the game set a new speed meanwhile */
+    int dx = OBJ_X(obj) - ox, dy = OBJ_Y(obj) - oy;
+    if (!dx && !dy) return;
+    int len = abs(dx) > abs(dy) ? abs(dx) : abs(dy), blocked = controls_blocked_at(ox, oy);
+    for (int i = 1; i <= len && !blocked; i++) blocked = controls_blocked_at(ox + dx * i / len, oy + dy * i / len);
+    if (blocked) {
+        int wx = (int)(dx / mul), wy = (int)(dy / mul);
+        OBJ_X(obj) = (short)(ox + wx);
+        OBJ_Y(obj) = (short)(oy + wy);
+        *(short *)(obj + 0xae) = (short)wx;
+        *(short *)(obj + 0xb0) = (short)wy;
+    }
+    if (g_cfg.log >= 2) {
+        static DWORD last;
+        if (GetTickCount() - last > 500) {
+            last = GetTickCount();
+            mlog("squad: trooper anim %p sprint step %d,%d (speed %d -> %d)%s", obj, dx, dy, speed, fast, blocked ? " blocked -> walking step" : "");
+        }
+    }
+}
+
 void __fastcall controls_move(BYTE *obj, int flag, int arg)
 {
     BYTE *u = SARGE;
+    float mul = obj && OBJ_SPEED(obj) > 0 ? squad_sprint_speed(obj) : 0;
+    if (mul > 1.0f) { squad_move(obj, flag, arg, mul); return; }
     if (S.running && u && obj && g_cfg.log >= 3) {
         static int n;
         if (n++ < 40) mlog("controls: move obj %p at %d,%d speed %d flag %d | sarge %d,%d +0x268 %p",

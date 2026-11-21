@@ -81,6 +81,7 @@ void config_load(void)
     g_cfg.vehicle_unstick = GetPrivateProfileIntA("controls", "vehicle_unstick", 1, ini);
     g_cfg.sarge_unstick = GetPrivateProfileIntA("controls", "sarge_unstick", 1, ini);   /* barricades.c (2026-11-20) */
     g_cfg.break_fences = GetPrivateProfileIntA("gameplay", "break_fences", 1, ini);   /* fences.c (2026-11-20) */
+    g_cfg.squad_sprint = GetPrivateProfileIntA("gameplay", "squad_sprint", 1, ini);   /* squad.c (2026-11-20) */
     g_cfg.see_interior = GetPrivateProfileIntA("display", "see_interior", 1, ini);
     g_cfg.menu_text = GetPrivateProfileIntA("display", "menu_text", 1, ini);
     g_cfg.radio_overlay = GetPrivateProfileIntA("display", "radio_overlay", 1, ini);
