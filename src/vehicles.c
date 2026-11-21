@@ -418,7 +418,9 @@ void vehicles_aim_turret(BYTE *v, double wx, double wy, DWORD now, int snap)
     if (dt > 100) dt = 100;
     if (dx * dx + dy * dy < TURRET_MIN_DIST * TURRET_MIN_DIST) return;
     int mx, my;
-    if (vehicles_muzzle(v, &mx, &my)) {                         /* aim along the shot's own line */
+    /* aim along the shot's own line - only while firing (2026-11-20, user: "the turret is jittery again"): the muzzle
+     * moves with the turret's current frame, so aiming from it while turning changed the wanted facing every step */
+    if (snap && vehicles_muzzle(v, &mx, &my)) {
         double ex = wx - mx, ey = wy - my;
         if (ex * ex + ey * ey >= TURRET_MIN_DIST * TURRET_MIN_DIST) { dx = ex; dy = ey; }
     }

@@ -635,6 +635,7 @@ static void walk_around_obstacles(BYTE *u, int vx, int vy, DWORD now)
 #define COMMAND_CLICK       0x441000      /* the command cursor's battlefield click (__fastcall ecx 1 = confirm) */
 #define COMMAND_TOGGLE      0x43f6c0      /* command cursor on / off (__fastcall ecx 0) */
 #define ENTER_DISTANCE      40      /* world pixels: close enough to climb in */
+#define ENTER_MARGIN        20      /* world pixels: or this close to the vehicle's box (mover rect) */
 #define TURRET_STEP         8       /* turret: at most this many direction steps ... */
 #define TURRET_STEP_MS      60      /* ... per this many ms (the original mouse turret speed) */
 #define STEER_DEAD          6       /* hull: no turning within this many steps of the heading (vehicles turn 8 per
@@ -679,7 +680,18 @@ static int try_enter_vehicle(BYTE *u, BYTE *v)
 {
     if (COMMAND_CURSOR || SARGE_VEHICLE(u) || !capture_can_enter(v)) return 0;   /* own: usable, not AI driven */
     int dx = VEH_X(v) - SARGE_X(u), dy = VEH_Y(v) - SARGE_Y(u);
-    if (dx * dx + dy * dy > ENTER_DISTANCE * ENTER_DISTANCE) return 0;
+    /* 2026-11-20 (user: "i can't enter the vehicle now via mouse click"): the walk now ends at the free point on the
+     * near side, just outside the vehicle's outline - for a tank / halftrack that is further than ENTER_DISTANCE from
+     * its centre. Close enough = within ENTER_DISTANCE of the centre OR within ENTER_MARGIN of its box (VEH_MOVER). */
+    int close_enough = dx * dx + dy * dy <= ENTER_DISTANCE * ENTER_DISTANCE;
+    BYTE *m = VEH_MOVER(v);
+    if (!close_enough && m && *(int *)(m + 0x24) > *(int *)(m + 0x1c) && *(int *)(m + 0x28) > *(int *)(m + 0x20)) {
+        int sx = SARGE_X(u), sy = SARGE_Y(u);
+        int ox = sx < *(int *)(m + 0x1c) ? *(int *)(m + 0x1c) - sx : sx > *(int *)(m + 0x24) ? sx - *(int *)(m + 0x24) : 0;
+        int oy = sy < *(int *)(m + 0x20) ? *(int *)(m + 0x20) - sy : sy > *(int *)(m + 0x28) ? sy - *(int *)(m + 0x28) : 0;
+        close_enough = ox <= ENTER_MARGIN && oy <= ENTER_MARGIN;
+    }
+    if (!close_enough) return 0;
     ENTER_VEHICLE(u, v);
     if (g_cfg.log >= 2) mlog("controls: entered vehicle %p (type %d) by right click", v, VEH_TYPE(v));
     return 1;
