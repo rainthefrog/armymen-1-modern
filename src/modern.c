@@ -1234,28 +1234,49 @@ static void alert_mark(int x, int y, int kind)
         text(x - 3, y, "?", c, 1);
     }
 }
-#define EXPO_X     398             /* design: right of the SARGE HEALTH label, above SPRINT (controls.c 396,400) */
-#define EXPO_Y     388
-#define EXPO_SEG_W 5             /* cells share their black border: 5 cells = 21 px */
-#define EXPO_SEGS  5
+/* Exposure EYE (2026-11-21, user: the 5-cell meter right of SARGE HEALTH was taken for the sprint stamina bar - "that
+ * should be changed to something else"): an eye beside Sarge's head, only while enemies see him - yellow = could see
+ * him (not noticed yet), red = noticed and targeting; the number of those enemies next to it. Nothing while unseen. */
+#define EYE_DX   14                /* right of Sarge's position, up from his feet (game px) */
+#define EYE_DY   (-30)
+static void eye_icon(int x, int y, BYTE c)
+{
+    /* an almond 13 x 7 with a 3 x 3 pupil, black outline */
+    static const char *const EYE[9] = {
+        "....#####....",
+        "..##ooooo##..",
+        ".#ooo###ooo#.",
+        "#ooo#ppp#ooo#",
+        "#ooo#ppp#ooo#",
+        "#ooo#ppp#ooo#",
+        ".#ooo###ooo#.",
+        "..##ooooo##..",
+        "....#####....",
+    };
+    for (int r = 0; r < 9; r++) for (int k = 0; k < 13; k++) {
+        char ch = EYE[r][k];
+        if (ch == '.') continue;
+        px(x - 6 + k, y - 4 + r, ch == '#' ? C_BLACK : ch == 'p' ? C_BLACK : c);
+    }
+}
 static void expo_meter(Surf *b)
 {
+    (void)b;
     if (!layout_view_is_gameplay()) return;
-    int targ, could, x = EXPO_X, y = EXPO_Y;
+    BYTE *s = *(BYTE **)0x697520;
+    if (!s) return;
+    int targ, could;
     aware_exposure(&targ, &could);
-    layout_place(&x, &y);
-    if (x < 0 || y < 0 || x + EXPO_SEGS * (EXPO_SEG_W - 1) + 1 > b->w || y + 6 > b->h) return;
-    /* written straight into the HUD (px() leaves the interface alone), like the stamina bar.
-     * Segment i: i < targ -> red (full); then the could-see ones in halves, yellow (lower half = one enemy). */
-    for (int i = 0; i < EXPO_SEGS; i++) {
-        int x0 = x + i * (EXPO_SEG_W - 1), part = i < targ ? 2 : could - 2 * (i - targ);
-        for (int yy = 0; yy < 6; yy++) for (int xx = 0; xx < EXPO_SEG_W; xx++) {
-            int inner = yy > 0 && yy < 5 && xx > 0 && xx < EXPO_SEG_W - 1;
-            BYTE c = inner ? C_DIMYEL_BG : C_BLACK;
-            if (inner && (part >= 2 || (part == 1 && yy >= 3))) c = i < targ ? C_RED : C_YELLOW;
-            b->bits[(size_t)(y + yy) * b->pitch + x0 + xx] = c;
-        }
-    }
+    int n = targ + could;
+    if (n <= 0) return;
+    int sx, sy;
+    to_screen(*(short *)(s + 4), *(short *)(s + 6), &sx, &sy);
+    int x = sx + EYE_DX, y = sy + EYE_DY;
+    if (x < 8 || y < 8 || y >= g_hud_top - 6) return;
+    BYTE c = targ > 0 ? C_RED : C_YELLOW;
+    eye_icon(x, y, c);
+    char t[8]; wsprintfA(t, "%d", n);
+    text(x + 8, y - 4, t, c, 1);
 }
 static void alerts_draw(Surf *b)
 {
