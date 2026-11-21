@@ -1259,14 +1259,13 @@ static void eye_icon(int x, int y, BYTE c)
         px(x - 6 + k, y - 4 + r, ch == '#' ? C_BLACK : ch == 'p' ? C_BLACK : c);
     }
 }
-static void expo_meter(Surf *b)
+/* targ / could: enemies ON SCREEN (2026-11-21, user: "only have the EYE show if there are enemies on screen") */
+static void expo_meter(Surf *b, int targ, int could)
 {
     (void)b;
     if (!layout_view_is_gameplay()) return;
     BYTE *s = *(BYTE **)0x697520;
     if (!s) return;
-    int targ, could;
-    aware_exposure(&targ, &could);
     int n = targ + could;
     if (n <= 0) return;
     int sx, sy;
@@ -1282,7 +1281,7 @@ static void alerts_draw(Surf *b)
 {
     BYTE *s = *(BYTE **)0x697520;
     if (!g_cfg.enemy_awareness || !s || !g_loaded) return;
-    expo_meter(b);
+    int on_targ = 0, on_could = 0;                  /* the eye: enemies on screen that see / target Sarge */
     DWORD me = *(DWORD *)s, veh = *(BYTE **)(s + 0x2d0) ? **(DWORD **)(s + 0x2d0) : 0, now = GetTickCount();
     static int seen[ALERT_MAX];
     memset(seen, 0, sizeof seen);
@@ -1319,6 +1318,8 @@ static void alerts_draw(Surf *b)
                 int sx, sy;
                 to_screen(cx, top, &sx, &sy);
                 if (sx < 6 || sy < 30 || sx >= b->w - 6 || sy >= g_hud_top) continue;
+                {   float lv; int fl = aware_info(t, &lv);          /* on screen: counts for the eye */
+                    if (fl >= 0 && (fl & AW_TARGETING)) on_targ++; else if (fl >= 0 && (fl & AW_SEES)) on_could++; }
                 if (g_al[k].kind && now - g_al[k].at <= ALERT_SHOW_MS) {
                     if ((now - g_al[k].at) <= ALERT_SHOW_MS * 2 / 3 || !((now / 120) & 1)) alert_mark(sx, sy - 24, g_al[k].kind);   /* fading: blink */
                 } else if (g_al[k].on) {   /* still targeting Sarge: a steady red wedge pointing down, outlined */
@@ -1339,6 +1340,7 @@ static void alerts_draw(Surf *b)
         }
     }
     for (int j = 0; j < ALERT_MAX; j++) if (g_al[j].t && !seen[j]) g_al[j].t = NULL;   /* dead / gone / new mission */
+    expo_meter(b, on_targ, on_could);
 }
 
 void modern_draw(Surf *b) { PROF_BEGIN(t); modern_draw_body(b); { Surf *keep = g_b; g_b = b; hud_rows_reset(); { Guard gd; if (GUARD_TRY(gd, "enemy alerts (modern.c)")) { alerts_draw(b); guard_leave(&gd); } } g_b = keep; } PROF_END(t, PR_OVERLAY); }   /* timed (trace) */
