@@ -514,3 +514,23 @@ int capture_driver_seat(int *wx, int *wy, int *facing)
     *wx = *(short *)(v + 4); *wy = *(short *)(v + 6); *facing = *(short *)(v + 8) & 255;
     return 1;
 }
+
+/* ---- VehicleFind rewrite (2026-11-21 CRASH, user log build 05:38:04: EXCEPTION 0xc0000005 at 0x4188f5, ecx 0x31,
+ * edx 0 - a stale captured UID 04c30032 looked up ~9 s after the captured jeep was destroyed with Sarge inside; slot
+ * 49 was NULL, not the blank stand-in: the game's own clean-up of the wreck emptied the slot it was in at death).
+ * FUN_004188c0 VehicleFind, __fastcall ecx = UID, returns the VEHICLE* or NULL; callers: ItemFind 0x427b80 and others.
+ * Original: army = (uid >> 26 & 7) - 1; if the army is in play (0x4f91b0 + army * 0x19e8 = legion +0x1990) the slot
+ * legion +0x54 + (index - 1) * 4 is read and its UID compared - WITHOUT checking the slot for NULL.
+ * Kept: the same lookup and result. Changed: an empty / unreadable slot, an index outside 1..50 or an army outside
+ * 0..3 return NULL (= "no such vehicle", which every caller handles) instead of crashing. Redirected with hook_jmp. */
+#define VEHICLE_SLOTS 50
+BYTE *__fastcall capture_vehicle_find(DWORD uid)
+{
+    int army = (int)((uid >> 26) & 7) - 1, idx = (int)(uid & 0xffff) - 1;
+    if (army < 0 || army >= ARMIES || idx < 0 || idx >= VEHICLE_SLOTS || !LEGION_STATUS(army)) return NULL;
+    BYTE *leg = ARMY_RECORD(army);
+    if (!leg) return NULL;
+    BYTE *v = LEG_VEH(leg, idx);
+    if (!v || IsBadReadPtr(v, 4) || UID(v) != uid) return NULL;
+    return v;
+}

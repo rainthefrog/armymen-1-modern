@@ -308,6 +308,8 @@ void patches_apply(void)
     hook_call("gameplay: crush damage of a changing object (0x40cff3)", 0x40cff3, 0x431f60, (void *)crush_stub);
     /* Sarge drives empty enemy vehicles (capture.c, [gameplay] drive_enemy_vehicles; inactive while off); the SargeOutVehicle
      * wrap also does [gameplay] vehicle_bailout (Sarge leaves a destroyed vehicle alive, capture.c bail_out) */
+    static const BYTE vfind_o[] = { 0x56, 0x8b,0xf1, 0xc1,0xf9,0x1a };          /* VehicleFind 0x4188c0: push esi; mov esi,ecx; sar ecx,1Ah */
+    hook_jmp("capture: VehicleFind (FUN_004188c0) -> capture.c (NULL-safe)", 0x4188c0, vfind_o, sizeof vfind_o, (void *)capture_vehicle_find);
     static const BYTE vkey_o[] = { 0x83,0xec,0x14, 0x53, 0x55, 0x56, 0x57 };       /* FUN_00418910: sub esp,14h; push ebx/ebp/esi/edi */
     hook_jmp("capture: Enter Vehicle key (FUN_00418910) -> capture.c", 0x418910, vkey_o, sizeof vkey_o, (void *)capture_enter_key);
     static const BYTE sin_o[] = { 0x56, 0x8b,0xf1, 0x57, 0x8b,0xfa };              /* SargeInVehicle 0x448ae0 */

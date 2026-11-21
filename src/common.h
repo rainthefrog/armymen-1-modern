@@ -753,6 +753,7 @@ void __cdecl capture_enter_key(void);                             /* rewrite of 
 void capture_frame(void);                                         /* once per gameplay frame (gameplay.c) */
 int capture_allowed(void);                                        /* option on and a one-player game */
 int capture_can_enter(BYTE *vehicle);                             /* Sarge may climb in (own: the game's rule) */
+BYTE *__fastcall capture_vehicle_find(DWORD uid);                  /* capture.c: VehicleFind 0x4188c0 rewrite (NULL-safe) */
 int capture_hover_ok(BYTE *vehicle);                              /* another army's vehicle: enter pointer near Sarge */
 const char *capture_hover_note(int wx, int wy, int *vx, int *vy);   /* capture.c: why an enemy vehicle cannot be taken */
 BYTE *capture_vehicle(void);

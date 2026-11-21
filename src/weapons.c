@@ -17,8 +17,8 @@
  *     slot's weapon; g_store: the weapons not in a slot).
  *   - A weapon type that is already carried is not taken twice: its ammo is ADDED to the carried
  *     one, up to MAX_AMMO (99, the game's own cap in MakeWeapon); the emptied pickup is removed by
- *     the game's drop routine (an item dropped with no ammo is destroyed). Not for mines and
- *     explosives: their placed charges are kept in an array sized when the weapon was made.
+ *     the game's drop routine (an item dropped with no ammo is destroyed). Mines and explosives: only up to
+ *     their own max (their placed charges are kept in an array sized when the weapon was made).
  *   - mouse wheel (modern controls): steps through the boxes holding a weapon in screen order.
  *   - left click on a box: use that weapon; right click: drop it (not the rifle).
  *   - after a drop, another carried weapon of that kind moves into the slot (it keeps its box).
@@ -200,8 +200,23 @@ void __fastcall weapons_touch(BYTE *unit, void *item, int arg)
     if (dup >= 0) {                              /* the same weapon again: take its ammo */
         BYTE *rec = ITEM_WEAPON(item);
         Weapon d = box_weapon(u, dup);
-        if (type == TYPE_MINE || type == TYPE_EXPLOSIVE || W_AMMO(rec) <= 0 || W_AMMO(d.type) <= 0
-            || W_AMMO(d.type) >= MAX_AMMO) return;
+        /* mines / explosives (2026-11-21, user: "mines are not picking up extra from ammo box on the ground"): their
+         * placed charges are kept in an array sized to the weapon's own max (nMaxAmmo when it was made), so they are
+         * topped up only TO that max - the rest stays in the pack on the ground (its ammo lowered) */
+        if (type == TYPE_MINE || type == TYPE_EXPLOSIVE) {
+            int have = W_AMMO(d.type), cap = W_MAX_AMMO(d.type), got = W_AMMO(rec);
+            if (have < 0 || have >= cap || got <= 0) return;
+            int take = cap - have < got ? cap - have : got;
+            if (take < got) {
+                W_AMMO(rec) = (short)(got - take); W_AMMO(d.type) = (short)(have + take);
+                if (g_cfg.log >= 1) mlog("weapons: type %d topped up %d -> %d (max %d), %d left in the pack", type, have, have + take, cap, got - take);
+                remember(u);
+                return;
+            }
+            merge_ammo(u, item, arg, dup);               /* all of it fits: the emptied pack is removed */
+            return;
+        }
+        if (W_AMMO(rec) <= 0 || W_AMMO(d.type) <= 0 || W_AMMO(d.type) >= MAX_AMMO) return;
         merge_ammo(u, item, arg, dup);
         return;
     }
