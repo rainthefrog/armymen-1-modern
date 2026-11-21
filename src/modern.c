@@ -228,10 +228,11 @@ static int under_sprite(int x, int y)
     }
     return 0;
 }
+static int g_px_over_ui;      /* modern_text (tooltips over the HUD): draw on interface pixels too */
 static void px(int x, int y, BYTE c)
 {
     Surf *b = g_b;
-    if (!b || x < 0 || y < 0 || x >= g_cfg.width || y >= g_cfg.height || x >= b->w || y >= b->h || on_interface(x, y)) return;
+    if (!b || x < 0 || y < 0 || x >= g_cfg.width || y >= g_cfg.height || x >= b->w || y >= b->h || (!g_px_over_ui && on_interface(x, y))) return;
     /* route line (g_route): above the ground, behind every object, faint where one covers it (user).
      * Upscaled battlefield on: the GPU does that (hdworld_under_run - 30 % under objects); otherwise
      * one pixel in three where the original sprite covers it (8-bit picture, no blending). */
@@ -1488,4 +1489,6 @@ static void alerts_draw(Surf *b)
 void modern_draw(Surf *b) { PROF_BEGIN(t); modern_draw_body(b); { Surf *keep = g_b; g_b = b; hud_rows_reset(); { Guard gd; if (GUARD_TRY(gd, "enemy alerts (modern.c)")) { alerts_draw(b); guard_leave(&gd); } } g_b = keep; } PROF_END(t, PR_OVERLAY); }   /* timed (trace) */
 
 /* minimap.c tooltip (2026-11-20: the game's cached message font drew nothing there on Windows - empty box) */
-int modern_text(Surf *b, int x, int y, const char *s, BYTE c) { Surf *keep = g_b; g_b = b; hud_rows_reset(); int r = text(x, y, s, c, 1); g_b = keep; return r; }
+/* 2026-11-21 (user: "still not showing the map info"): the minimap tip's box lies over the HUD (air support box) and px()
+ * skipped every interface pixel - the box was drawn, its text not. Tooltip text draws over the interface. */
+int modern_text(Surf *b, int x, int y, const char *s, BYTE c) { Surf *keep = g_b; g_b = b; hud_rows_reset(); g_px_over_ui = 1; int r = text(x, y, s, c, 1); g_px_over_ui = 0; g_b = keep; return r; }
