@@ -1044,8 +1044,10 @@ static int is_target_object(BYTE *it)
     if (own == 0) return 0;                                                             /* our own */
     if (*(short *)(it + 0x1e) <= 0) return 0;                                           /* indestructible */
     switch (OBJ_CATEGORY(it)) {
+    /* plain BUILDINGS with no owner are not targets (2026-11-21, user: "these building are showing the fire cursor -
+     * they should not be": town houses in Desert 3); enemy-owned ones are (above); right click still force-fires */
     case CAT_EXPLOSIVES: case CAT_GUN_TURRET: case CAT_AA_GUN: case CAT_BASE: case CAT_AUX_BASE:
-    case CAT_BUILDING: case CAT_PILL_BOX: case CAT_POWER_PLANT: case CAT_GATE: case CAT_WALL_GATE:
+    case CAT_PILL_BOX: case CAT_POWER_PLANT: case CAT_GATE: case CAT_WALL_GATE:
     case CAT_RADAR: case CAT_MISC:
         return 1;
     case CAT_BUSH: case CAT_TREE: case CAT_BIG_TREE: {
@@ -1427,7 +1429,11 @@ static int hover_at(BYTE *u, BYTE *veh, int wx, int wy, BYTE **thing)
         int nc = roofs_cells_at(wx, wy, cl, 8);
         for (int i = 0; i < nc && !enemy; i++) {
             BYTE *ow = *(BYTE **)(cl[i] + 0x0c);
-            if (ow && (is_target_object(ow) || is_enemy_at(ow))) enemy = ow;   /* inside its hitbox (the cell rect): objects, enemy vehicles and soldiers */
+            if (!ow) continue;
+            /* enemy vehicles and soldiers: their hitbox (the cell rect); target OBJECTS (buildings, boards): only where
+             * their picture really has a pixel (2026-11-21, user: "the buildings don't need the extra area around them
+             * to be fire zone" - the cell rect includes the picture's see-through margin) */
+            if (is_enemy_at(ow) || (is_target_object(ow) && ANIM_HIT(cl[i], p))) enemy = ow;
         }
     }
     if (log_next == 2 && g_cfg.log >= 3) { log_next = 3; mlog("controls: enemy under pointer %d,%d: %p", wx, wy, enemy); }

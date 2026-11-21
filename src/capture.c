@@ -201,6 +201,22 @@ static int has_passengers(BYTE *v)
     return 0;
 }
 
+/* A squad has this vehicle assigned (UNIT +0xac) and is alive on the map (mode 3..5) - its crew climbs in when the
+ * AI decides to use it (UnitEnterVehicle 0x41d800). 2026-11-21, user: "sometimes there is a tank that I guess spawns
+ * an enemy in it? I want those to register as full": it looked empty, Sarge took it, then its crew appeared. */
+static int has_crew_assigned(BYTE *v)
+{
+    for (int a = 0; a < ARMIES; a++) {
+        if (!LEGION_STATUS(a)) continue;
+        BYTE *leg = ARMY_RECORD(a);
+        if (!leg) continue;
+        BYTE *u = LEG_UNITS(leg), *end = LEG_UNITS_END(leg);
+        for (int g = 0; u && u < end && g < 256; u += UNIT_STRIDE, g++)
+            if (UNIT_VEHICLE(u) == v && UNIT_MODE(u) >= 2 && UNIT_MODE(u) <= 5) return 1;
+    }
+    return 0;
+}
+
 static BYTE *player_legion(void) { return ARMY_RECORD(PLAYER_ARMY); }
 
 /* 2026-11-20 CRASH FIX (user log, build 21:28:48: EXCEPTION at 0x4188f5 in VehicleFind, uid 04c20032, slot 49 empty):
@@ -236,7 +252,7 @@ int capture_can_enter(BYTE *v)
     if (UID_ARMY(UID(v)) == PLAYER_ARMY) return VEH_NPC(v) == 0;
     if (!capture_allowed() || g_cap.v) return 0;
     if (UID_TYPE(UID(v)) != ITEM_VEHICLE || ITEM_HEALTH(v) <= 0 || VEH_DRIVER(v) || VEH_SPEED(v) != 0) return 0;
-    return !has_passengers(v) && slot_free();
+    return !has_passengers(v) && !has_crew_assigned(v) && slot_free();
 }
 
 /* The one-button mouse's enter pointer over another army's vehicle: only near Sarge (further away it stays a
@@ -496,6 +512,7 @@ const char *capture_hover_note(int wx, int wy, int *vx, int *vy)
             if (ITEM_HEALTH(v) <= 0) return "Wrecked";
             if (VEH_STATE(v) != VEH_DEPLOYED) return NULL;
             if (VEH_DRIVER(v) || has_passengers(v)) return "Occupied";
+            if (has_crew_assigned(v)) return "Occupied - crew nearby";
             if (VEH_NPC(v) && VEH_SPEED(v) != 0) return "Occupied - moving";
             if (VEH_SPEED(v) != 0) return "Moving";
             if (!slot_free()) return "Cannot take";
