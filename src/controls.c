@@ -2621,8 +2621,22 @@ static void cheat_keys(void)
 }
 
 static void throw_track_frame(void);   /* below: measuring throws */
+/* Menu pause (2026-11-21, user: "when pulling up the radial menu or the stance menu, I want the game to pause"): while
+ * the radial (command / stance ring) or the stance picker on Sarge is open, the game clock is paused (clock.c, the same
+ * pause as the Pause key / F10); it resumes when the menu closes - only if this pause was ours (a manual pause stays).
+ * [controls] menu_pause=1 (0 = the game runs on). */
+static void menu_pause_frame(void)
+{
+    static int ours, cfg = -1;
+    if (cfg < 0) cfg = GetPrivateProfileIntA("controls", "menu_pause", 1, mod_ini_path());
+    int want = cfg && g_cfg.controls_modern && layout_view_is_gameplay() && (modern_radial_open() || g_picker);
+    if (want && !ours && !clock_is_paused()) { clock_set_paused(1); ours = 1; }
+    else if (!want && ours) { if (clock_is_paused()) clock_set_paused(0); ours = 0; }
+}
+
 static void controls_dispatch_body(void)
 {
+    menu_pause_frame();
     if (g_cfg.controls_modern) filter_keyboard();
     controls_dispatch_original();
     if (g_cfg.cheat_keys) cheat_keys();
