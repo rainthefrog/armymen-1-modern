@@ -976,7 +976,7 @@ static void modern_draw_body(Surf *b)
                     /* height cues (2026-11-20, user: "provide an indicator to show height differences. and queues on
                      * how to fix it"): what stops the shot (bullets_shot_cue) - ticks yellow, an X there,
                      * the fix under the reticle; and the pointed ground's level against the shooter's ("UP 2") */
-                    /* height_rules (bullets_shot_cue, the rules the shot follows): modded / original also the levels and
+                    /* height_rules (bullets_shot_cue, the rules the shot follows): am2 / original (/ modded) also the levels and
                      * the ground stop; original also a round passing over the target and the machine gun's low test
                      * line from a hill; every mode Sarge's own low cover while prone */
                     int wx = rx + CAMERA_X, wy = ry + CAMERA_Y, blk = 0;

@@ -102,7 +102,7 @@ struct Config {
     int fix_squash;                 /* [gameplay] fix_squash: no squash death for walking onto a blocked tile (gameplay.c) */
     int longer_range;               /* [gameplay] longer_range: direct-fire weapons reach weapon_range_pct % (gameplay.c) */
     int weapon_range_pct;           /* [gameplay] weapon_range_pct (default 120) */
-    int height_rules;               /* [gameplay] height_rules: HEIGHTS_OFF / _MODDED / _ORIGINAL (bullets.c; replaces downhill_hits) */
+    int height_rules;               /* [gameplay] height_rules: HEIGHTS_STANCE / _AM2 / _ORIGINAL (/ _MODDED, ini only) (bullets.c) */
     int drive_enemy_vehicles;       /* [gameplay] drive_enemy_vehicles: Sarge may drive empty enemy vehicles (capture.c) */
     int vehicle_bailout;            /* [gameplay] vehicle_bailout: Sarge leaves a destroyed vehicle alive (capture.c) */
     int vehicle_reverse;            /* [controls] vehicle_reverse: click-to-drive plans with reversing (vehicles.c) */
@@ -645,10 +645,14 @@ void screenbtn_lbuttondown(HWND h, int inside);
 int screenbtn_message(HWND h, UINT msg, WPARAM wp);
 int bullets_fired_within(DWORD uid, DWORD ms);
 int bullets_level_at(int x, int y);                 /* bullets.c: ground level (elevation / 4), -1 off the map */
-/* bullets.c height_rules ([gameplay] height_rules = off | modded | original) */
-enum { HEIGHTS_OFF, HEIGHTS_MODDED, HEIGHTS_ORIGINAL };
-extern const char *const HEIGHT_RULE_NAMES[3];              /* "off", "modded", "original" (ini values) */
+/* bullets.c height_rules ([gameplay] height_rules = stance | am2 | original; modded: ini only; off = stance) */
+enum { HEIGHTS_STANCE, HEIGHTS_MODDED, HEIGHTS_ORIGINAL, HEIGHTS_AM2, HEIGHTS_COUNT };
+extern const char *const HEIGHT_RULE_NAMES[HEIGHTS_COUNT];  /* "stance", "modded", "original", "am2" (ini values) */
+extern const char *const HEIGHT_RULE_TEXT[HEIGHTS_COUNT];   /* F10 panel: name + what it means */
+int height_rules_parse(const char *s);                      /* bullets.c: ini value -> mode ("off" = stance) */
 void height_rules_set(int mode);                            /* bullets.c: set + write the ini */
+void height_rules_next(void);                               /* bullets.c: stance -> am2 -> original -> stance (modded -> stance) */
+int __fastcall bullets_game_double(int damage, int dir, BYTE *item);   /* call 0x435b10 (the game's direction x2, 0x432050) */
 /* the reticle cues for Sarge's shot at world point (tx, ty) with weapon type `weapon`, by the active height_rules
  * (bullets.c, the same rules the shots follow). block: 0 none, 1 CLIFF (go up), 2 RIDGE (move), 3 his own low cover
  * (needs `raise` = 0xb kneel / 0xc stand to fire over it); bx, by = the stop point. levels: show UP n / DOWN n.

@@ -179,12 +179,12 @@ static void item_set(const Item *it, int on)
     else if (it->source == 1 && modern_on(it->index) != (on != 0)) modern_toggle(it->index);
 }
 static char g_vtext[7][16];
-#define HEIGHT_CYCLE 6                 /* cycle 6: [gameplay] height_rules, a 3-stop slider (off / modded / original) */
+#define HEIGHT_CYCLE 6                 /* cycle 6: [gameplay] height_rules, a 3-stop slider (stance / am2 / original) */
 static const char *cycle_text(int which)
 {
     /* 2..5: HUD group sizes (layout.c groups: minimap 3, message box 0, centre 1, air support 2) */
     static const int GROUP[4] = { 3, 0, 1, 2 };
-    if (which == HEIGHT_CYCLE) { lstrcpynA(g_vtext[which], g_cfg.height_rules == HEIGHTS_OFF ? "OFF" : g_cfg.height_rules == HEIGHTS_MODDED ? "MOD" : "ORIG", 16); return g_vtext[which]; }
+    if (which == HEIGHT_CYCLE) { lstrcpynA(g_vtext[which], g_cfg.height_rules == HEIGHTS_AM2 ? "AM2" : g_cfg.height_rules == HEIGHTS_ORIGINAL ? "ORIG" : g_cfg.height_rules == HEIGHTS_MODDED ? "MOD" : "STANCE", 16); return g_vtext[which]; }
     double v = which == 0 ? clock_speed_now() : which == 1 ? zoom_target() : layout_group_scale(GROUP[which - 2]);
     int c = (int)(v * 100 + 0.5);
     wsprintfA(g_vtext[which], "%d.%02dx", c / 100, c % 100);
@@ -200,7 +200,7 @@ static const char *cycle_text(int which)
 static const double SL_SPEED[] = { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 };
 static const double SL_ZOOM[] = { 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0 };
 static const double SL_HUD[] = { 1.0, 1.25, 1.5, 2.0, 2.5 };
-static const double SL_HEIGHTS[] = { HEIGHTS_OFF, HEIGHTS_MODDED, HEIGHTS_ORIGINAL };
+static const double SL_HEIGHTS[] = { HEIGHTS_STANCE, HEIGHTS_AM2, HEIGHTS_ORIGINAL };   /* stops by value (modded: ini only, shown at the nearest) */
 static void cycle(int which);
 static double cycle_value(int which)
 {
@@ -280,7 +280,7 @@ static void cycle(int which)
 {
     if (which == 0) panel_speed_cycle();
     else if (which == 1) panel_zoom_cycle();
-    else if (which == HEIGHT_CYCLE) height_rules_set((g_cfg.height_rules + 1) % 3);
+    else if (which == HEIGHT_CYCLE) height_rules_next();
     else { static const int GROUP[4] = { 3, 0, 1, 2 }; layout_group_cycle(GROUP[which - 2]); }
 }
 
