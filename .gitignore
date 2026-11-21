@@ -3,3 +3,6 @@
 ddraw.dll
 # stray editor / patch leftovers
 *.new
+
+# Wine test output (test/run.sh, test/run-menu.sh)
+test/out/
