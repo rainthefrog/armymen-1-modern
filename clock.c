@@ -122,9 +122,16 @@ void clock_frame_shown(int gameplay)
          * the game's unsigned frame step then wrapped to a 66 ms jump - a hitch every few seconds on any
          * display that is not exactly 60 Hz. Now 10 % of the drift per frame, at most a quarter refresh,
          * never backwards; far behind (a long stall) catches up at once. */
-        int n = (int)(real_dt / g_period + 0.5);
-        if (n < 1) n = 1;
-        double step = n * g_period * g_speed;
+        /* 2026-11-20 (stutter): n was round(time since the last frame / refresh). The display keeps one frame in
+         * hand (present.c: take, then wait for the refresh slot), so a frame that arrives up to ~14 ms late is
+         * still shown at the very next refresh - but 8.4 ms late already rounded to n = 2: the world moved two
+         * refreshes in a frame shown for one, and the next frame (which came "early") one more: a jump on every
+         * slow frame (game work 25-31 ms; the user's spike frames). Now n counts whole refreshes the game clock has
+         * really FALLEN BEHIND after one refresh's step - 2 only when a whole refresh is missing (the display did
+         * skip one); smaller lateness is taken up by the gentle pull below, spread over the next frames. */
+        double one = g_period * g_speed, behind = g_ms - (g_lock_ms + one);
+        int n = behind >= one ? 1 + (int)(behind / one) : 1;
+        double step = n * one;
         double drift = g_ms - (g_lock_ms + step), lim = 0.25 * g_period * g_speed;
         double corr = drift > 250.0 * g_speed ? drift : drift * 0.1;
         if (drift <= 250.0 * g_speed) corr = corr > lim ? lim : corr < -lim ? -lim : corr;

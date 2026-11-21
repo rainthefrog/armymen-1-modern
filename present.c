@@ -269,6 +269,7 @@ static double g_prof_frame[PR_N];                      /* ... of the last finish
 static double g_prof_sum[PR_N]; static int g_prof_sum_n;   /* ... summed over gameplay frames for the 10 s perf line (2026-11-20) */
 static volatile LONGLONG g_refs_ticks;                 /* game thread: QPC ticks in hdworld_note_copy this frame */
 void present_perf_refs(LONGLONG ticks) { g_refs_ticks += ticks; }
+static void pace_report(void);
 static void pf_report(int w, int h)
 {
     static double last;
@@ -292,11 +293,70 @@ static void pf_report(int w, int h)
         g_prof_sum_n = 0;
         mlog("%s", line);
     }
+    pace_report();
 }
 
 /* Display timing, written to the log while the timing trace runs (Ctrl+Shift+T): once a second the
  * number of presents, the time between them, and how many came late (> 1.5 refreshes apart). */
 static double g_refresh_ms = 1000.0 / 60.0;
+
+/* Pacing figures for the 10 s perf line (2026-11-20, stutter hunt; display thread only). The averages of the stage
+ * times say nothing about HOW EVENLY frames reach the screen, so each present is counted by its distance from the
+ * one before, in refreshes: "late" = more than 1.5 (the picture stood for two refreshes or more), "early" = less
+ * than 0.5 (two presents inside one refresh: a burst - the game ran ahead). Also: slot waits that ran into the
+ * 100 ms limit, slot signals found banked (see slot_wait) and, where DXGI gives frame statistics (flip model), how
+ * many presented frames were still waiting to be displayed when the next one was about to be presented. */
+static struct { int n, late, early, timeouts, banked, depth_n, depth_sum, depth_max; double gap_max; } g_pace;
+static void pace_present(void)                 /* just before a Present */
+{
+    static double last, period = 1000.0 / 60.0, period_at;
+    double now = pf_now();
+    if (!layout_view_is_gameplay()) { last = 0; memset(&g_pace, 0, sizeof g_pace); return; }   /* gameplay only, like the perf line */
+    if (!period_at || now - period_at > 2000.0) { period_at = now; period = clock_frame_period(); }
+    if (last && now - last < 1000.0) {        /* (a longer gap is a pause / menu, not pacing) */
+        double gap = now - last;
+        g_pace.n++;
+        if (gap > 1.5 * period) g_pace.late++;
+        if (gap < 0.5 * period) g_pace.early++;
+        if (gap > g_pace.gap_max) g_pace.gap_max = gap;
+    }
+    last = now;
+    if (g_sc && g_cfg.log) {                    /* frames presented and not displayed yet (log only) */
+        DXGI_FRAME_STATISTICS st; UINT done = 0;
+        if (SUCCEEDED(IDXGISwapChain_GetLastPresentCount(g_sc, &done)) && SUCCEEDED(IDXGISwapChain_GetFrameStatistics(g_sc, &st)) && st.PresentCount) {
+            int depth = (int)(done - st.PresentCount);
+            if (depth >= 0 && depth < 64) { g_pace.depth_n++; g_pace.depth_sum += depth; if (depth > g_pace.depth_max) g_pace.depth_max = depth; }
+        }
+    }
+}
+/* Wait for a free present slot (the frame-latency waitable: signalled when the frame presented before has been
+ * taken for display, i.e. once per refresh while we keep up).
+ * 2026-11-20 (user's trace): after every hitch the game then ran 4-5 frames within ~30 ms (display cycles of
+ * 5-10 ms with slot waits of 0): signals had piled up while no frame came, and each let one more frame through
+ * without waiting - a burst of game frames, every one stepping the game clock a whole refresh. A slot that is
+ * free "more than once" is still ONE free slot for us (one frame per refresh), so any further signals that are
+ * already there are taken off at once. Not alertable any more (an APC would have ended the wait early). */
+static void slot_wait(void)
+{
+    double t0 = pf_now();
+    DWORD r = WaitForSingleObject(g_waitable, 100);
+    if (r == WAIT_TIMEOUT) g_pace.timeouts++;
+    else if (r == WAIT_OBJECT_0)
+        for (int k = 0; k < 16 && WaitForSingleObject(g_waitable, 0) == WAIT_OBJECT_0; k++) g_pace.banked++;
+    g_have_slot = 1;
+    g_t_slot = pf_now() - t0;                    /* trace: waiting for a free present slot */
+}
+static void pace_report(void)                  /* with the 10 s perf line (log=1) */
+{
+    if (g_pace.n) {
+        char depth[64] = "n/a";
+        if (g_pace.depth_n) { int a10 = g_pace.depth_sum * 10 / g_pace.depth_n; wsprintfA(depth, "avg %d.%d max %d", a10 / 10, a10 % 10, g_pace.depth_max); }
+        mlog("perf pacing: %d presents, late %d (over 1.5 refreshes apart; longest gap %d ms), early %d (under 0.5 apart), slot timeouts %d, banked slot signals dropped %d, frames queued for display %s",
+             g_pace.n, g_pace.late, (int)(g_pace.gap_max + 0.5), g_pace.early, g_pace.timeouts, g_pace.banked, depth);
+    }
+    memset(&g_pace, 0, sizeof g_pace);
+}
+
 static void timing_note(void)
 {
     static LARGE_INTEGER last, fq, sec;
@@ -555,6 +615,7 @@ static void show(const Frame *f)
         if (!ok) { g_gpu = 0; mlog("gpu: drawing failed - scaling on the CPU from now on"); return; }
         double tp = pf_now();
         g_t_gpu = tp - tg;                         /* trace: submitting the passes / uploads */
+        pace_present();
         HRESULT hr = IDXGISwapChain_Present(g_sc, g_cfg.vsync ? 1 : 0, 0);
         g_t_present = pf_now() - tp;               /* trace: Present (waits on the gpu / screen show up here) */
         if (FAILED(hr)) {
@@ -594,7 +655,6 @@ static DWORD WINAPI display_thread(LPVOID unused)
          * next frame overlaps them. Still one present per refresh: the next take only follows the present. */
         InterlockedExchange(&g_dirty, 0);
         Frame f = { 0 };
-        mask_tick();
         double ts = pf_now();
         present_lock();
         int ok = snapshot(&f);
@@ -602,12 +662,13 @@ static DWORD WINAPI display_thread(LPVOID unused)
         g_t_snap = pf_now() - ts;
         pf_add(PF_SNAP, g_t_snap);
         SetEvent(g_shown);                         /* the game's frame is taken: it may start the next */
-        if (ok && g_waitable && !g_have_slot) {    /* the next refresh slot (the previous frame is on screen) */
-            double tsl = pf_now();
-            WaitForSingleObjectEx(g_waitable, 100, TRUE);
-            g_have_slot = 1;
-            g_t_slot = pf_now() - tsl;               /* trace: waiting for a free present slot */
-        }
+        /* the interface mask's upkeep AFTER the take (2026-11-20; it ran before it, with the game waiting: every
+         * frame, and ~16 ms when the whole band was made - user's trace, first scrolling frame of a mission).
+         * Safe here: this frame holds the mask pointer only when the mask already has this frame's size (hud_mask),
+         * and then mask_tick changes rows in place and never reallocates; a new size is allocated only when this
+         * frame got no mask. Rows it changes now are uploaded with the next frame (dirty rows). */
+        mask_tick();
+        if (ok && g_waitable && !g_have_slot) slot_wait();   /* the next refresh slot (the previous frame is on screen) */
         if (g_quit) break;
         if (ok) {
             double td = pf_now();
@@ -622,6 +683,80 @@ static DWORD WINAPI display_thread(LPVOID unused)
     d3d_release();
     mlog("display thread stopped");
     return 0;
+}
+
+/* [debug] stall_sample_ms = N (default 0 = off; 2026-11-20, stutter hunt): WHERE the game thread is while a
+ * gameplay frame takes longer than N ms. The spike lines time the mod's own stages; a long frame that is in none
+ * of them (the ~100 ms frame about 50 frames into every mission and after every pause, user's logs and Wine
+ * alike) says nothing about where it went. A helper thread looks every 5 ms; once the frame in work is older than
+ * N ms it stops the game thread for a moment, reads its instruction pointer and the code addresses on its stack
+ * (return addresses, roughly the call chain), lets it go on and logs them (up to 4 samples per frame): "exe
+ * 0x00412345" = the game's code (look it up in the binary), "mod+0x1234" = this DLL (i686-w64-mingw32-addr2line /
+ * nm on ddraw.dll), other = Windows. Nothing runs and no thread exists while it is off. */
+static HANDLE g_game_thread;
+static volatile LONG g_stall_seq;               /* counts game frames */
+static volatile LONGLONG g_stall_t0;            /* QPC when the frame in work began (the last take), 0 = none */
+static DWORD WINAPI stall_thread(LPVOID arg)
+{
+    int limit = (int)(intptr_t)arg, shots = 0;
+    LONG seen = -1;
+    LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
+    BYTE *exe = (BYTE *)GetModuleHandleA(NULL), *mod = (BYTE *)g_self;
+    /* code only (BaseOfCode .. + SizeOfCode): text and numbers on the stack often look like addresses inside the image */
+    IMAGE_OPTIONAL_HEADER *eo = exe ? &((IMAGE_NT_HEADERS *)(exe + ((IMAGE_DOS_HEADER *)exe)->e_lfanew))->OptionalHeader : NULL;
+    IMAGE_OPTIONAL_HEADER *mo = mod ? &((IMAGE_NT_HEADERS *)(mod + ((IMAGE_DOS_HEADER *)mod)->e_lfanew))->OptionalHeader : NULL;
+    DWORD exe_lo = eo ? (DWORD)(uintptr_t)exe + eo->BaseOfCode : 0, exe_size = eo ? eo->SizeOfCode : 0;
+    DWORD mod_lo = mo ? (DWORD)(uintptr_t)mod + mo->BaseOfCode : 0, mod_size = mo ? mo->SizeOfCode : 0;
+    while (!g_quit) {
+        Sleep(5);
+        LONG seq = g_stall_seq; LONGLONG t0 = g_stall_t0;
+        if (seq != seen) { seen = seq; shots = 0; }
+        if (!t0 || shots >= 4 || !layout_view_is_gameplay()) continue;
+        LARGE_INTEGER now; QueryPerformanceCounter(&now);
+        int ms = (int)((now.QuadPart - t0) * 1000 / fq.QuadPart);
+        if (ms < limit || ms > 5000) continue;                 /* (seconds long = a pause or a menu, not a stall) */
+        CONTEXT c; c.ContextFlags = CONTEXT_CONTROL;
+        DWORD code[12]; int nc = 0; DWORD eip = 0;
+        if (SuspendThread(g_game_thread) == (DWORD)-1) continue;
+        if (GetThreadContext(g_game_thread, &c)) {             /* (no allocation, no logging while it is stopped) */
+            eip = c.Eip;
+            for (int i = 0; i < 512 && nc < 12; i++) {
+                const DWORD *sp = (const DWORD *)(c.Esp + 4 * i);
+                if (IsBadReadPtr(sp, 4)) break;
+                DWORD v = *sp;
+                if (v - exe_lo < exe_size || v - mod_lo < mod_size) code[nc++] = v;
+            }
+        }
+        ResumeThread(g_game_thread);
+        if (g_stall_seq != seq) continue;                      /* the frame ended meanwhile */
+        shots++;
+        char line[400]; int o = 0;
+        #define STALL_ADDR(v) do { DWORD a_ = (v); if (mod && a_ - (DWORD)(uintptr_t)mod < mod_size) o += wsprintfA(line + o, " mod+0x%lx", a_ - (DWORD)(uintptr_t)mod); \
+            else if (exe && a_ - (DWORD)(uintptr_t)exe < exe_size) o += wsprintfA(line + o, " exe 0x%08lx", a_); else o += wsprintfA(line + o, " other 0x%08lx", a_); } while (0)
+        STALL_ADDR(eip);
+        o += wsprintfA(line + o, " | stack:");
+        for (int i = 0; i < nc && o < 360; i++) STALL_ADDR(code[i]);
+        #undef STALL_ADDR
+        mlog("stall: frame %ld at %d ms, game thread at%s", seq, ms, line);
+    }
+    return 0;
+}
+static void stall_waiting(void) { g_stall_t0 = 0; }      /* game thread: the frame is done, it waits for the display (not work) */
+static void stall_frame(void)                   /* game thread, after that wait: the next frame begins */
+{
+    static int limit = -1;
+    if (limit < 0) {
+        limit = GetPrivateProfileIntA("debug", "stall_sample_ms", 0, mod_ini_path());
+        if (limit > 0 && DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_game_thread, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+            HANDLE t = CreateThread(NULL, 0, stall_thread, (LPVOID)(intptr_t)limit, 0, NULL);
+            if (t) CloseHandle(t);
+            mlog("stall sampler on: game frames over %d ms ([debug] stall_sample_ms)", limit);
+        } else limit = 0;
+    }
+    if (!limit) return;
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    g_stall_t0 = now.QuadPart;
+    InterlockedIncrement(&g_stall_seq);
 }
 
 void present_request(DDraw *dd, int wait)
@@ -652,6 +787,7 @@ void present_request(DDraw *dd, int wait)
         prev = tw;
     }
     t_wait_prev = t_wait; t_wait = 0;          /* t_frame spans the previous frame's wait */
+    if (wait) stall_waiting();
     if (wait && g_cfg.vsync) { double tw = pf_now(); WaitForSingleObject(g_shown, 50); t_wait = pf_now() - tw; pf_add(PF_WAIT, t_wait); }
     else if (wait && g_cfg.fps_limit > 0) {
         /* [display] fps_limit with vsync off (2026-11-17): frames at a fixed rate, e.g. 120 on a 60 Hz monitor
@@ -674,6 +810,7 @@ void present_request(DDraw *dd, int wait)
         t_wait = pf_now() - tw; pf_add(PF_WAIT, t_wait);
     }
     if (wait) {
+        stall_frame();                                   /* [debug] stall_sample_ms: the next frame's work starts here */
         clock_frame_shown(layout_view_is_gameplay());    /* game clock: one refresh per shown frame */
         /* SPIKES are always logged (2026-11-20, user: stutter after the 30 s trace had ended): a gameplay frame
          * longer than [debug] spike_ms (default 40) writes the same trace line, prefixed "spike", at most 4 a

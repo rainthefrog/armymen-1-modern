@@ -311,6 +311,7 @@ void layout_draw_resize_icon(Surf *b);
 void layout_unscale(int *x, int *y);                          /* layout.c: enlarged HUD point -> its 1x point */
 void layout_hud_mask_row(int y, BYTE *row, int w);            /* layout.c: exact interface mask row (zoom) */
 unsigned layout_hud_signature(void);
+unsigned layout_hud_mask_signature(void);                       /* layout.c: changes when any mask row would (modern.c keeps rows between frames) */
 int weapons_ui_rect(RECT *r);                                 /* weapons.c: the spare-weapon column (1x) */
 void controls_block_left(void);                               /* controls.c: this left press is used up */
 void layout_minimap_cycle(void);                                   /* layout.c: minimap 1.5 -> 2 -> 2.5x (animated) */
