@@ -309,7 +309,7 @@ static void note_for_modern(BYTE *item, BYTE *proj)
         short num = *(short *)(item + 0x6a);
         int board = (t >= 7 && t <= 9) && ((num >= 351 && num <= 353) || num == 367 || num == 368);
         if (((t == 3 || t == 5 || t == 6) && UID_ARMY(*(DWORD *)item) != ARMY_PLAYER) || board) modern_note_hit(item);
-    } else if (item == s && UID_ARMY(*(DWORD *)proj) != ARMY_PLAYER) {
+    } else if ((item == s || item == *(BYTE **)(s + 0x2d0)) && UID_ARMY(*(DWORD *)proj) != ARMY_PLAYER) {   /* Sarge or the vehicle he drives (2026-11-20) */
         modern_note_damage(*(short *)(proj + 4), *(short *)(proj + 6));
     }
 }
