@@ -9,8 +9,20 @@ On Proton/Bazzite add `WINEDLLOVERRIDES="ddraw=n,b" %command%` to the Steam laun
 ## Build
 
 ```
-docker run --rm -v "<repo>\tooling:/tooling" -w /tooling/src/ddraw armymen-re:2 make
+docker run --rm -v "<repo>:/mod" -w /mod/src armymen-re:2 make
 ```
+
+The build image: `docker build -t armymen-re:2 docker/` (Debian, mingw-w64 i686, Wine, Ghidra for the decomp).
+
+## Layout
+
+| Folder | What |
+|---|---|
+| `src/` | the mod's C sources, `Makefile`, `armymen-mod.ini` (defaults), `Armymen.exe.manifest` |
+| `scripts/` | `run-wine.sh` (the Wine test runner, inside the container), `deploy-test.ps1` (copy a build to a Windows test folder), `clear-compat-markers.ps1` (user-run, registry) |
+| `docker/` | `Dockerfile` of the build / test image `armymen-re:2` |
+| `docs/` | research notes: menus, targeting, mission targets, UI inventory, menu renderer, modernization plan |
+| `test/` | `run.sh` (Desert 1 in Wine with an ini), `run-menu.sh` (menu screens), test inis; output goes to `test/out/<name>` (ignored by git) |
 
 ## How it works
 
@@ -32,8 +44,8 @@ folder first. So this DLL is two things:
 | `surface.c` | `IDirectDrawSurface`: 8-bit surfaces, the software blitter, and the translation of windowed-mode screen coordinates into game pixels (`screen_to_game`). |
 | `present.c` | Display thread: once per monitor refresh it converts the view to 32-bit colour, scaled to the window (any size; `[display] smoothing` off / light / full), and shows it with Direct3D 11. |
 | `menu.c` | The **Gameplay** menu in the game window's menu bar: one toggle, Modern controls (switches the controls patches and hooks at once, saved to the ini). |
-| `modmenu.c` | **Mod Settings** inside the game's own menus (pause menu, main menu, F10): extra buttons in the game's button lists, screen state 14 taken over, screen built from copies of the game's Audio Options definitions (see `tooling/docs/game-menus.md`). |
-| `menutext.c` | **Menu labels** of the full-screen menus drawn by the mod at window resolution (bigger, antialiased, the game's state colours) instead of into the 640x480 picture; layer drawn by gpu.c `draw_overlay` (menu renderer step 1, `tooling/docs/menu-render-evaluation.md`). |
+| `modmenu.c` | **Mod Settings** inside the game's own menus (pause menu, main menu, F10): extra buttons in the game's button lists, screen state 14 taken over, screen built from copies of the game's Audio Options definitions (see `armymen-1-modern/docs/game-menus.md`). |
+| `menutext.c` | **Menu labels** of the full-screen menus drawn by the mod at window resolution (bigger, antialiased, the game's state colours) instead of into the 640x480 picture; layer drawn by gpu.c `draw_overlay` (menu renderer step 1, `armymen-1-modern/docs/menu-render-evaluation.md`). |
 | `gpu.c` | Scaling on the graphics card (Direct3D 11 shaders compiled at start-up with d3dcompiler_47): square pixels for the game, smooth for videos, blurred fill around pictures that do not fill the window (menus). present.c falls back to CPU scaling if shaders are unavailable. |
 | `gameplay.c` | Game rule changes: health regeneration (delay after the last hit, then slow healing on the game clock); Gameplay menu toggle. |
 | `weapons.c` | Six weapons: a spare per slot (wrap of the pickup `FUN_004495c0`), mouse-wheel weapon change through slots and spares, spare moves up after a drop; the spare-weapon column drawn in a gap of the split HUD panel (layout.c `layout_hud_dx`), clickable. |
@@ -73,7 +85,7 @@ folder first. So this DLL is two things:
    check the real instructions with `objdump -d -M intel --start-address=...` in the Docker image.
 2. Write the C version in the right subsystem file, with the header comment.
 3. Add a `hook_jmp(...)` line in `patches_apply()` with the function's first bytes.
-4. Build, test in Wine (`tooling/scripts/run-wine.sh`, see the repo's CLAUDE.md), check the log.
+4. Build, test in Wine (`armymen-1-modern/scripts/run-wine.sh`, see the repo's CLAUDE.md), check the log.
 
 ## Useful log levels (`[debug] log=`)
 
