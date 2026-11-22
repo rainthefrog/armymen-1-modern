@@ -1284,7 +1284,10 @@ static void modern_draw_body(Surf *b)
                         circle(xs, ys, 3, C_YELLOW, 0);
                         if (!hint) hint = "MG AIMS LOW FROM HILL";
                     }
-                    if (hint) text(rx - (int)strlen(hint) * 3, sy0 + 28, hint, C_YELLOW, 1);
+                    /* 2026-11-21 (user: "I want to see out of range on regular rifle on the cursor"): the grey ticks were
+                     * too subtle - a label under the reticle while the target / pointed spot is beyond the weapon's range */
+                    if (!hint && !blk && !ok) { hint = "OUT OF RANGE"; }
+                    if (hint) text(rx - (int)strlen(hint) * 3, sy0 + 28, hint, hint[0] == 'O' && hint[1] == 'U' ? C_GREY : C_YELLOW, 1);
                     BYTE c = blk ? C_YELLOW : ok ? C_RED : C_GREY;
                     for (int s = -1; s <= 1; s += 2)
                         for (int t = -1; t <= 1; t += 2)
