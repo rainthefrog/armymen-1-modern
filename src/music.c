@@ -24,9 +24,14 @@
  * the six FUN_004107b0 calls above (music module only) get a copy of the stream's record whose FILE* (opened with the exe's own
  * fopen 0x470fc0, so its fseek / fread / ftell work on it), data start, size and format are those of the AM II
  * wav - the game then streams the AM II track from disk exactly as it streams its own. The choice is made when a
- * stream is created (call 0x410df1) and kept for that stream id until it is created again, so switching the
- * option or a new mission never mixes two files in one playing stream; switching takes effect the next time a
- * track starts (next screen / mission). A missing / bad file = the original, logged.
+ * stream SLOT is created (call 0x410df1) and kept for that slot: the other five calls find the record by the
+ * slot's format pointer (slot +0x18 = rec + 0x1c of the record it was made from; the slot is in ESI / EBX there).
+ * FIX 2026-11-22: it used to be kept per stream ID - but the game can keep an older slot of the same id (the
+ * record cache gives every slot of an id the same handle and play's FUN_004121e0 finds the FIRST slot), so after
+ * switching the option mid-mission the old slot (11025 Hz 8-bit buffer, original chunk size and length) was
+ * refilled from the AM II file = loud noise, "looping" every 7.8 s (user log 2026-11-21, DESERT1 + frontyard.wav).
+ * Now a slot always streams the file it was made for; switching takes effect when the game makes a new slot and
+ * plays it (next screen / mission). A missing / bad file = the original, logged.
  * Pack: scripts/am2_music.py (track table, loudness matched to the AM1 music).
  */
 #include "common.h"
@@ -39,6 +44,7 @@
 #define WREC_START      0x14
 #define WREC_BYTES      0x18
 #define WREC_FMT        0x1c
+#define SLOT_FMT        0x18         /* stream slot (0x48 bytes): +0x18 = the format pointer = rec + 0x1c of its create record */
 #define CRT_FOPEN       0x470fc0     /* the exe's own fopen (cdecl: path, mode) */
 #define GAME            (*(BYTE **)0x4b3f70)
 #define GAME_MISSION(g) (*(int *)((g) + 0x74))   /* gpGame->MissionID: campaign 1..28, Boot Camp 50 */
@@ -78,7 +84,6 @@ static int g_nlines;
 static int g_map_state;              /* 0 = not read, 1 = read, -1 = no map.txt */
 static Rec g_recs[MUS_COUNT * MAX_TRACKS];
 static int g_nrecs;
-static Rec *volatile g_cur[MUS_COUNT];   /* the record the stream id plays from now (NULL = the original) */
 
 static int track_index(const char *name)
 {
@@ -193,8 +198,20 @@ static Rec *record_for(int id, int track, const BYTE *real)
 
 enum { SITE_CREATE, SITE_PLAY, SITE_FILL, SITE_REWIND };
 
-/* After FUN_004107b0 at one of the stream calls: *out = the stream's wave record. */
-void __cdecl music_wave_record(BYTE **out, int site)
+/* The record copy a stream slot was created from: slot +0x18 is that record's format pointer (rec + 0x1c, set by
+ * the create and never changed). NULL = the slot was made from the game's own record. */
+static Rec *slot_record(const BYTE *slot)
+{
+    if (!slot || slot == (BYTE *)-1) return NULL;
+    const BYTE *fmt = *(BYTE *const *)(slot + SLOT_FMT);
+    if (!fmt) return NULL;
+    for (int i = 0, n = g_nrecs; i < n; i++) if (g_recs[i].rec + WREC_FMT == fmt) return &g_recs[i];
+    return NULL;
+}
+
+/* After FUN_004107b0 at one of the stream calls: *out = the stream's wave record; slot = the stream slot the
+ * caller works on (NULL at the create, which is making the slot). */
+void __cdecl music_wave_record(BYTE **out, int site, BYTE *slot)
 {
     BYTE *r = *out;
     if (!r || r == (BYTE *)-1) return;
@@ -205,17 +222,23 @@ void __cdecl music_wave_record(BYTE **out, int site)
         int m = mission_now();
         Track *t = g_cfg.am2_music ? choose(id, m) : NULL;
         Rec *n = t ? record_for(id, (int)(t - g_tracks), r) : NULL;
-        g_cur[i] = n;
         if (n) mlog("music: stream %d %s (mission %d) -> Army Men II am2_music\\%s", id, NAMES[i], m, t->name);
         else mlog("music: stream %d %s (mission %d) -> original%s", id, NAMES[i], m, g_cfg.am2_music ? " (no AM II track)" : "");
+        if (n) *out = n->rec;
+        return;
     }
-    Rec *c = g_cur[i];
+    /* play / fill / refill / rewind: the record THIS SLOT was made from, never the stream id's latest choice. The
+     * game can keep an older slot of the same id (same cached record handle; play's FUN_004121e0 finds the first
+     * one), and that slot's buffer format, chunk size, data start and size belong to the record it was made from:
+     * feeding it another record streamed 16-bit stereo AM II data into an 11025 Hz 8-bit buffer (noise). */
+    Rec *c = slot_record(slot);
     if (site == SITE_REWIND) mlog("music: stream %d %s loops (%s)", id, NAMES[i], c ? g_tracks[c->track].name : "original");
     if (c) *out = c->rec;
 }
 
-/* One stub per kind of call: ECX = handle (passed on), EDX = BYTE** out, [esp+4] = index out; ret 4. */
-#define MUSIC_STUB(name, site)                                                   \
+/* One stub per call site: ECX = handle (passed on), EDX = BYTE** out, [esp+4] = index out; ret 4. SLOT = the
+ * register holding the stream slot at that call (callee-saved, so unchanged by FUN_004107b0). */
+#define MUSIC_STUB(name, site, slot)                                             \
     __asm__(".globl _" #name "\n"                                                \
             "_" #name ":\n"                                                      \
             "    push %edx\n"                                                    \
@@ -224,13 +247,15 @@ void __cdecl music_wave_record(BYTE **out, int site)
             "    call *%eax\n"                                                   \
             "    pop %edx\n"                                                     \
             "    push %eax\n"                                                    \
+            "    push " slot "\n"                                                \
             "    push $" #site "\n"                                              \
             "    push %edx\n"                                                    \
             "    call _music_wave_record\n"                                      \
-            "    add $8, %esp\n"                                                 \
+            "    add $12, %esp\n"                                                \
             "    pop %eax\n"                                                     \
             "    ret $4\n")
-MUSIC_STUB(music_stub_create, 0);
-MUSIC_STUB(music_stub_play, 1);
-MUSIC_STUB(music_stub_fill, 2);
-MUSIC_STUB(music_stub_rewind, 3);
+MUSIC_STUB(music_stub_create, 0, "$0");      /* 0x410df1 FUN_00410d50: the slot is being made */
+MUSIC_STUB(music_stub_play, 1, "%esi");      /* 0x4112aa FUN_00411250: ESI = FUN_004121e0(handle) */
+MUSIC_STUB(music_stub_fill, 2, "%ebx");      /* 0x411e4f FUN_00411df0: EBX = slot (ECX at entry) */
+MUSIC_STUB(music_stub_refill, 2, "%esi");    /* 0x411ff9 FUN_00411f90: ESI = slot (ECX at entry) */
+MUSIC_STUB(music_stub_rewind, 3, "%esi");    /* 0x411175 FUN_00411120 / 0x411043 FUN_00410ff0: ESI = slot */
