@@ -87,9 +87,11 @@ static int is_low_owner(const BYTE *owner)
 
 #define CELL_BYTES  0x30                 /* flags +0, owner +0x0c, world rect +0x1c..+0x2c */
 #define OWNER_BYTES 0xa0                 /* item fields the mod reads (uid +0, category +0x68, vehicle hull +0x9c) */
+static void cells_run_check(void);
 /* each battlefield pass: a figure whose cell is gone, inactive or reused is dropped before anything reads it */
 void roofs_new_frame(void)
 {
+    cells_run_check();
     for (int i = 0; i < MAX_FIGS; i++) {
         Fig *f = &g_figs[i];
         if (!f->cell) continue;
@@ -126,6 +128,23 @@ static void remember_cell(BYTE *cell)
 
 void roofs_forget_cells(void) { memset(g_cells, 0, sizeof g_cells); g_cells_n = 0; }
 
+/* A new mission RUN (gameplay_run: new scenario / MissionID, loading -> play, clock back) drops every remembered cell
+ * and figure slot: they belong to the previous map. (2026-11-22 crash, mission 5 won -> mission 6: the route line's
+ * "under the sprites" test (modern.c under_sprite) handed a cell of the mission-5 map to ObjectIntersectPoint
+ * 0x42faf0; its sprite record (+4) had been freed and reused - mask pointer / width garbage - and the mask read at
+ * 0x42fad9 faulted. The registry was never cleared, and IsBadReadPtr cannot tell a freed block of the game heap
+ * (our savestate arena keeps freed memory readable) from a live one.) */
+static unsigned g_cells_run;
+static void cells_run_check(void)
+{
+    unsigned r = gameplay_run(NULL, NULL);
+    if (r == g_cells_run) return;
+    if (g_cells_run && g_cfg.log >= 1) mlog("roofs: mission run %u - %d remembered cells of the last run forgotten", r, g_cells_n);
+    g_cells_run = r;
+    roofs_forget_cells();
+    memset(g_figs, 0, sizeof g_figs);
+}
+
 /* A remembered cell that can still be used: its memory is readable, it is active, and its owner (if any) is
  * readable too. The game frees cells (an object destroyed, a soldier gone) without telling us; a stale entry is
  * dropped here. (2026-11-19: the health bars on targets walk the list every frame and read a freed cell -
@@ -146,6 +165,7 @@ static BYTE *live_cell(int k)
 /* Up to max active cells whose world rectangle holds (wx, wy); returns how many. */
 int roofs_cells_at(int wx, int wy, BYTE **out, int max)
 {
+    cells_run_check();
     int n = 0;
     for (int k = 0; k < CELLS && n < max; k++) {
         BYTE *c = live_cell(k);
@@ -496,9 +516,48 @@ void roofs_debug_near(int wx, int wy)
 /* All remembered active cells (controls.c self-test). */
 int roofs_cells_list(BYTE **out, int max)
 {
+    cells_run_check();
     int n = 0;
     for (int k = 0; k < CELLS && n < max; k++) { BYTE *c = live_cell(k); if (c) out[n++] = c; }
     return n;
+}
+
+/* ---------------------------------------------------------------- the game's sprite-mask test on a remembered cell
+ * ObjectIntersectPoint 0x42faf0 (__fastcall ecx cell, edx SPOINT* world point; 0 = see-through / outside) reads the
+ * cell's sprite record (+4): with a mask (record +4) it tests the point against the cell's world rect (+0x1c) and
+ * reads mask byte (y - top) * stride + (x - left) / 8, stride = ((width at record +0x20) + 31) / 8 & ~3 (FUN_0042fa60);
+ * without one it reads the picture (record +0) by the record's flags (+0x3a). roofs_cell_hit_ok checks that all of
+ * it is readable (once per cell and batch of tests - IsBadReadPtr is slow); roofs_cell_hit runs the call inside a
+ * guard, so a cell freed between the check and the call costs a "GUARDED" log line instead of the game.
+ * Callers: controls.c (hover / fire zone on target objects, log=3 self-test), modern.c (route line under sprites). */
+#define OBJECT_INTERSECT_POINT ((int (__fastcall *)(BYTE *, short *))0x42faf0)
+#define SPRITE_BYTES 0x40                /* sprite record fields read: picture +0, mask +4, width +0x20, flags +0x3a */
+int roofs_cell_hit_ok(BYTE *c)
+{
+    if (!c || IsBadReadPtr(c, CELL_BYTES) || !(*(DWORD *)c & 1)) return 0;
+    const int *w = CELL_WRECT(c);
+    int rw = w[2] - w[0], rh = w[3] - w[1];
+    if (rw <= 0 || rh <= 0 || rw > 4096 || rh > 4096) return 0;
+    BYTE *sp = *(BYTE **)(c + 4);
+    if (!sp) return 1;                                  /* the game answers 0 itself */
+    if (IsBadReadPtr(sp, SPRITE_BYTES)) return 0;
+    BYTE *mask = *(BYTE **)(sp + 4);
+    if (mask) {
+        int width = *(int *)(sp + 0x20);
+        if (width <= 0 || width > 4096) return 0;
+        int stride = ((width + 31) >> 3) & ~3;
+        return !IsBadReadPtr(mask, (UINT_PTR)stride * (rh - 1) + ((rw + 7) >> 3));
+    }
+    BYTE *pic = *(BYTE **)sp;
+    return pic && !IsBadReadPtr(pic, 16);
+}
+int roofs_cell_hit(BYTE *c, int wx, int wy)
+{
+    short p[2] = { (short)wx, (short)wy };
+    volatile int hit = 0;
+    Guard g;
+    if (GUARD_TRY(g, "sprite-mask test of a remembered cell (roofs.c)")) { hit = OBJECT_INTERSECT_POINT(c, p); guard_leave(&g); }
+    return hit;
 }
 
 void __fastcall roofs_draw_cell(BYTE *cell, void *clip) { PROF_BEGIN(t); roofs_draw_cell_body(cell, clip); PROF_END(t, PR_CELLS); }   /* timed (trace) */

@@ -362,6 +362,8 @@ extern DrawCellFn roofs_draw_cell_original;
 void __fastcall roofs_draw_cell(BYTE *cell, void *clip);           /* FUN_0042f120 wrap (roofs.c) */
 int roofs_cells_at(int wx, int wy, BYTE **out, int max);           /* roofs.c: drawn world sprites at a point */
 void roofs_forget_cells(void);
+int roofs_cell_hit_ok(BYTE *cell);                  /* roofs.c: the cell + its sprite record are readable for 0x42faf0 */
+int roofs_cell_hit(BYTE *cell, int wx, int wy);     /* roofs.c: the game's sprite-mask test 0x42faf0, guarded */
 void roofs_debug_near(int wx, int wy);
 int roofs_cells_list(BYTE **out, int max);
 void roofs_new_frame(void);                                        /* roofs.c: before the battlefield */
