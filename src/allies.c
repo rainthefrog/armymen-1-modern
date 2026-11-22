@@ -41,8 +41,8 @@
  *        short of him and, within HEAL_REACH, uses ONE kit on him: + the kit's percentage of HIS max (as the game
  *        heals Sarge), capped; the game's health pickup sound (FUN_00420ff0 ecx 0x1394, edx 100, as 0x4493d1);
  *      - left click on Sarge himself: one kit on Sarge (when hurt; at full health the click is the stance click);
- *      - the HUD shows the carried kits as a red cross + count in the rifle box (weapons.c, allies_kits).
- *    Kits belong to one Sarge in one mission (forgotten on a new mission, like the weapon boxes).
+ *      - the HUD shows the carried kits as a small medkit + "xN" right of the VEHICLE HEALTH pips (weapons.c, allies_kits).
+ *    Kits carry over to the next part of the same scenario and are restored on a restart (see "Carried kits" below).
  * ============================================================================================ */
 #include "common.h"
 #include <math.h>
@@ -107,12 +107,6 @@ static int in_heal_range(BYTE *t)
 #define HIT_SLACK          4          /* px round the soldier's figure that still count as "on him" */
 #define REGEN_SLOTS        256
 #define MAX_PCT            1000
-
-static int mission_id(void)
-{
-    BYTE *g = GAME;
-    return g && !IsBadReadPtr(g, 0x80) ? (*(int *)(g + 0x74) << 16) ^ *(int *)(g + 0x70) : -1;
-}
 
 /* ---------------------------------------------------------------- 1. more health */
 
@@ -222,7 +216,16 @@ static void regen_one(BYTE *t, int cx, int cy, int top, int veh)
 
 /* ---------------------------------------------------------------- 3. medkits */
 
-static struct { BYTE *sarge; int mission, n; short pct[MEDKIT_MAX]; } K;
+/* Carried kits across missions (2026-11-21, user: "medkits need to carry over between missions in the same area to
+ * match the other level persistence"): like Sarge's weapons, which the game carries between the parts of a scenario
+ * in the army file (FUN_0041a3e0 writes it when a part is won, FUN_0041a970 reads it when a part with index > 0
+ * starts). Kept in memory per mission RUN (gameplay_run: any (re)start):
+ *   - the next MissionID of the SAME scenario (the last part was won): the kits carried at the end of the last run;
+ *   - the SAME scenario and mission again (Play Again, a restart, entered again from the menus after a loss): the
+ *     kits that mission started with (the game restores the weapons the same way);
+ *   - anything else (a new scenario, Boot Camp, the first start): none.
+ * The percentages of the kits go with them. */
+static struct { unsigned run; int scen, mission, n, start_n; short pct[MEDKIT_MAX], start_pct[MEDKIT_MAX]; } K = { 0, -1, -1, 0, 0, { 0 }, { 0 } };
 static int g_heal;                     /* the medkit is selected */
 static BYTE *g_heal_weapon;            /* Sarge's weapon when it was selected (another one = deselected) */
 static struct { BYTE *t; DWORD at, idle_since; } H;   /* walking to a soldier to heal him */
@@ -230,11 +233,18 @@ static struct { BYTE *t; DWORD at, idle_since; } H;   /* walking to a soldier to
 static int kits_valid(void)
 {
     BYTE *u = SARGE;
-    int m = mission_id();
-    if (!u || u != K.sarge || m != K.mission) {
-        if (K.n) mlog("allies: %d carried medkit(s) forgotten (new Sarge / mission)", K.n);
-        K.sarge = u; K.mission = m; K.n = 0; g_heal = 0; H.t = NULL;
-        return 0;
+    int s, m;
+    unsigned r = gameplay_run(&s, &m);
+    if (!u) return 0;
+    if (r != K.run) {
+        const char *how;
+        if (K.run && s == K.scen && s >= 0 && m == K.mission + 1) how = "carried over from the last part";        /* K.n, pct as they are */
+        else if (K.run && s == K.scen && s >= 0 && m == K.mission) { K.n = K.start_n; memcpy(K.pct, K.start_pct, sizeof K.pct); how = "restored to the mission start"; }
+        else { K.n = 0; how = "new scenario"; }
+        mlog("allies: mission run %u (scenario %d mission %d): %d medkit(s) - %s", r, s, m, K.n, how);
+        K.run = r; K.scen = s; K.mission = m;
+        K.start_n = K.n; memcpy(K.start_pct, K.pct, sizeof K.pct);
+        g_heal = 0; H.t = NULL;
     }
     return 1;
 }
@@ -408,9 +418,9 @@ int allies_heal_info(HealInfo *hi)
 
 void allies_frame(void)
 {
-    static int mission = -2;
-    int m = mission_id();
-    if (m != mission) { mission = m; memset(g_reg, 0, sizeof g_reg); g_reg_ms = 0; }
+    static unsigned run;
+    unsigned r = gameplay_run(NULL, NULL);
+    if (r != run) { run = r; memset(g_reg, 0, sizeof g_reg); g_reg_ms = 0; }   /* troopers of the last run: forgotten */
     DWORD now = clock_game_ms();
     g_reg_dt = g_reg_ms ? (int)(now - g_reg_ms) : 0;
     g_reg_ms = now;
