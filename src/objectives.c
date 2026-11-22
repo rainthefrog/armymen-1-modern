@@ -661,3 +661,6 @@ int objectives_item_ground(const char *name, int *x, int *y, int *raw, BYTE **it
     else if (r == 2 && st > 0) *y += *(int *)(it + 0x70) == 2 ? 30 : 24;
     return st;
 }
+
+/* savestate.c: pads reached are part of the mission state */
+void objectives_savestate(void) { SAVESTATE(g_pad_done); SAVESTATE(g_pad_mission); }

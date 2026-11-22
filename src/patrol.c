@@ -292,3 +292,6 @@ void patrol_frame(void)
         }
     }
 }
+
+/* savestate.c: the patrols are part of the mission state */
+void patrol_savestate(void) { SAVESTATE(g_p); SAVESTATE(g_issuing); SAVESTATE(g_last_clock); SAVESTATE(g_key); SAVESTATE(g_scripted_done); SAVESTATE(g_mission_t0); }

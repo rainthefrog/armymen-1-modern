@@ -573,3 +573,6 @@ int vehicles_aim_reachable(BYTE *v, int wx, int wy)
     if (vehicles_muzzle(v, &mx, &my)) { dx = wx - mx; dy = wy - my; }
     return fabs(wrap_dirf(facing_of(dx, dy) - V_HULL(v))) <= 0x20 + 0.5;
 }
+
+/* savestate.c: the turret / unstick state is keyed by vehicle address - saved with the vehicles */
+void vehicles_savestate(void) { SAVESTATE(T); SAVESTATE(U); }

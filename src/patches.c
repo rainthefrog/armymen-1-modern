@@ -172,6 +172,7 @@ int hook_jmp(const char *name, uintptr_t va, const BYTE *orig, size_t n, void *t
 void patches_apply(void)
 {
     if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) { mlog("exe not at 0x400000; no patches"); return; }
+    savestate_install();                                 /* savestate.c: FIRST - the exe CRT heap -> our arena before its first malloc */
 
     /* FUN_00403880: read the game's own palette instead of GetSystemPaletteEntries(), which
      * only gives the right colours on a real 8-bit desktop. */

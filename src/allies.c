@@ -435,3 +435,6 @@ void allies_frame(void)
     }
 }
 
+
+/* savestate.c: medkits, regeneration and a heal walk are part of the mission state */
+void allies_savestate(void) { SAVESTATE(K); SAVESTATE(g_reg); SAVESTATE(g_reg_ms); SAVESTATE(g_reg_dt); SAVESTATE(g_heal); SAVESTATE(g_heal_weapon); SAVESTATE(H); }

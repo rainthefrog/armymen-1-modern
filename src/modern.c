@@ -1516,9 +1516,22 @@ static void alerts_draw(Surf *b)
     expo_meter(b, on_targ, on_could);
 }
 
-void modern_draw(Surf *b) { PROF_BEGIN(t); modern_draw_body(b); { Surf *keep = g_b; g_b = b; hud_rows_reset(); { Guard gd; if (GUARD_TRY(gd, "enemy alerts (modern.c)")) { alerts_draw(b); guard_leave(&gd); } } g_b = keep; } PROF_END(t, PR_OVERLAY); }   /* timed (trace) */
+/* savestate.c: quicksave / quickload confirmation (2.5 s), centred near the top like the stats box, drawn last */
+static void savestate_draw(Surf *b)
+{
+    const char *m = savestate_banner();
+    if (!m || !b || !b->bits || !layout_view_is_gameplay()) return;
+    colours();
+    int w = (int)strlen(m) * 6, x = g_cfg.width / 2 - w / 2, y = 40;
+    box(x - 6, y - 5, x + w + 5, y + 12, C_BLACK);
+    text(x, y, m, strncmp(m, "CANNOT", 6) ? C_YELLOW : C_RED, 0);
+}
+void modern_draw(Surf *b) { PROF_BEGIN(t); modern_draw_body(b); { Surf *keep = g_b; g_b = b; hud_rows_reset(); { Guard gd; if (GUARD_TRY(gd, "enemy alerts (modern.c)")) { alerts_draw(b); guard_leave(&gd); } } savestate_draw(b); g_b = keep; } PROF_END(t, PR_OVERLAY); }   /* timed (trace) */
 
 /* minimap.c tooltip (2026-11-20: the game's cached message font drew nothing there on Windows - empty box) */
 /* 2026-11-21 (user: "still not showing the map info"): the minimap tip's box lies over the HUD (air support box) and px()
  * skipped every interface pixel - the box was drawn, its text not. Tooltip text draws over the interface. */
 int modern_text(Surf *b, int x, int y, const char *s, BYTE c) { Surf *keep = g_b; g_b = b; hud_rows_reset(); g_px_over_ui = 1; int r = text(x, y, s, c, 1); g_px_over_ui = 0; g_b = keep; return r; }
+
+/* savestate.c: the mission stats and the enemy alert marks go back with a load */
+void modern_savestate(void) { SAVESTATE(g_shots); SAVESTATE(g_hits); SAVESTATE(g_mission_ms); SAVESTATE(g_mission); SAVESTATE(g_al); }

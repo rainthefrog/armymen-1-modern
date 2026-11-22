@@ -106,6 +106,7 @@ static Row g_rows[] = {
     { "Squad: health regeneration", &g_cfg.ally_regen, "gameplay", "ally_regen" },        /* allies.c (2026-11-21) */
     { "Squad: medkits heal them", &g_cfg.ally_heal, "gameplay", "ally_heal" },
     { "Squad: health bars",       &g_cfg.ally_health_bars, "hud", "ally_health_bars" },
+    { "Quicksave keys",           &g_cfg.quicksave, "savestate", "enabled" },             /* savestate.c (2026-11-21); the heap part needs a restart */
 };
 #define ROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 #define SPEED_ROW ROWS                 /* game speed */

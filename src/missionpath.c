@@ -1500,3 +1500,6 @@ void missionpath_frame(void)
     if (g_phase == 1) leg_step();
     if (g_phase == 2) { progress(); escort_frame(); }
 }
+
+/* savestate.c: the waypoint the shown leg leads to (re-checked every frame, only moves on) */
+void missionpath_savestate(void) { SAVESTATE(g_cur); }

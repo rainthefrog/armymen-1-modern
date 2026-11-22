@@ -462,6 +462,28 @@ static const void *const vt_surf[] = {
 
 /* ---------------------------------------------------------------- lifetime */
 
+unsigned surf_count_made, surf_count_gone;   /* savestate.c: surfaces made / destroyed (log) */
+
+/* Every surface alive (savestate.c, 2026-11-21): a quickload puts the game back to a moment when it held other
+ * surfaces than now. While a quicksave exists (surf_keep_released), a surface the game releases is not destroyed but
+ * kept as a ZOMBIE (ref 0, memory and pixels kept): a load brings back the reference counts of that moment
+ * (surf_restore_refs), so a surface the snapshot still uses is alive again; zombies no slot needs any more are
+ * destroyed (surf_purge). The primary surface and its back buffer are never kept. */
+static Surf **g_all; static int g_nall, g_allcap;
+static int g_keep_released;
+static void all_add(Surf *s)
+{
+    if (g_nall == g_allcap) {
+        int cap = g_allcap ? g_allcap * 2 : 256;
+        Surf **n = realloc(g_all, sizeof *n * cap);
+        if (!n) return;
+        g_all = n; g_allcap = cap;
+    }
+    g_all[g_nall++] = s;
+}
+static void all_remove(Surf *s) { for (int i = 0; i < g_nall; i++) if (g_all[i] == s) { g_all[i] = g_all[--g_nall]; return; } }
+static void surf_destroy(Surf *s);
+
 static Surf *surf_alloc(DDraw *dd, int w, int h, DWORD caps)
 {
     Surf *s = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *s);
@@ -478,8 +500,10 @@ static Surf *surf_alloc(DDraw *dd, int w, int h, DWORD caps)
     void *bits = NULL;
     s->dib = CreateDIBSection(NULL, (BITMAPINFO *)&bi, DIB_RGB_COLORS, &bits, NULL, 0);
     if (!s->dib) { HeapFree(GetProcessHeap(), 0, s); return NULL; }
+    all_add(s);
     s->vtbl = vt_surf;
     s->ref = 1;
+    surf_count_made++;
     s->dd = dd;
     s->caps = caps;
     s->w = w; s->h = h;
@@ -491,9 +515,19 @@ static Surf *surf_alloc(DDraw *dd, int w, int h, DWORD caps)
 
 ULONG surf_release(Surf *s)
 {
+    if (s->ref <= 0) return 0;                       /* a zombie (savestate) released again by a stale caller */
     ULONG r = --s->ref;
     if (r) return r;
-    present_lock();                                  /* the display thread may be reading it (hdsprites.c) */
+    if (g_keep_released && !s->is_primary && !(s->caps & (DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER))) return 0;   /* zombie */
+    surf_destroy(s);
+    return 0;
+}
+
+static void surf_destroy(Surf *s)
+{
+    surf_count_gone++;
+    all_remove(s);
+    present_lock();                                 /* the display thread may be reading it (hdsprites.c) */
     hdsprites_forget(s);
     present_unlock();
     if (s->back) surf_release(s->back);
@@ -510,7 +544,47 @@ ULONG surf_release(Surf *s)
         present_unlock();
     }
     HeapFree(GetProcessHeap(), 0, s);
-    return 0;
+}
+
+/* savestate.c: the surfaces alive now with their reference counts */
+int surf_snapshot(SurfRef *out, int max)
+{
+    int n = 0;
+    for (int i = 0; i < g_nall && n < max; i++) if (g_all[i]->ref > 0) { out[n].s = g_all[i]; out[n].ref = g_all[i]->ref; n++; }
+    return n;
+}
+/* savestate.c, on a load: the reference counts of the save (zombies come back); returns how many came back */
+int surf_restore_refs(const SurfRef *list, int n)
+{
+    int back = 0;
+    for (int k = 0; k < n; k++)
+        for (int i = 0; i < g_nall; i++)
+            if (g_all[i] == list[k].s) { if (g_all[i]->ref <= 0) back++; g_all[i]->ref = list[k].ref; break; }
+    return back;
+}
+void surf_keep_released(int on) { g_keep_released = on; }
+/* destroy the zombies no slot needs (needed(s) = 0); returns how many */
+int surf_purge(int (*needed)(Surf *s))
+{
+    int n = 0;
+    for (int i = g_nall - 1; i >= 0; i--) {
+        if (i >= g_nall) continue;
+        Surf *s = g_all[i];
+        if (s->ref <= 0 && !needed(s)) { surf_destroy(s); n++; }
+    }
+    return n;
+}
+/* surfaces alive (ref > 0) that are not in the list: made after that save (log) */
+int surf_count_not_in(const SurfRef *list, int n)
+{
+    int c = 0;
+    for (int i = 0; i < g_nall; i++) {
+        if (g_all[i]->ref <= 0) continue;
+        int in = 0;
+        for (int k = 0; k < n && !in; k++) in = list[k].s == g_all[i];
+        if (!in) c++;
+    }
+    return c;
 }
 
 HRESULT surf_create(DDraw *dd, DDSURFACEDESC *desc, Surf **out)

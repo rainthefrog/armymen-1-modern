@@ -2563,14 +2563,19 @@ typedef int (__fastcall *TileFn)(int tile);
 /* Ctrl+B: Sarge next to the nearest of the player's usable, empty vehicles (testing). */
 static void teleport_to_vehicle(BYTE *u)
 {
-    BYTE *army = ARMY_RECORD(0), *best = NULL;
+    BYTE *best = NULL;
     long best_d = 0x7fffffff;
-    int n = army ? *(signed char *)(army + 0x50) : 0;
-    for (int k = 0; k < n; k++) {
-        BYTE *v = *(BYTE **)(army + 0x54 + 4 * k);
-        if (!v || !VEH_USABLE(v) || VEH_DRIVER(v)) continue;
-        long dx = VEH_X(v) - SARGE_X(u), dy = VEH_Y(v) - SARGE_Y(u), d = dx * dx + dy * dy;
-        if (d > 0 && d < best_d) { best_d = d; best = v; }
+    /* the player's own empty ones first; none (2026-11-21, savestate test in mission 6): next to any army's vehicle */
+    for (int pass = 0; pass < 2 && !best; pass++)   /* pass 1: any army, crewed too (only next to it) */
+    for (int a = 0; a < (pass ? 4 : 1); a++) {
+        BYTE *army = ARMY_RECORD(a);
+        int n = army ? *(signed char *)(army + 0x50) : 0;
+        for (int k = 0; k < n; k++) {
+            BYTE *v = *(BYTE **)(army + 0x54 + 4 * k);
+            if (!v || !VEH_USABLE(v) || (VEH_DRIVER(v) && !pass)) continue;
+            long dx = VEH_X(v) - SARGE_X(u), dy = VEH_Y(v) - SARGE_Y(u), d = dx * dx + dy * dy;
+            if (d > 0 && d < best_d) { best_d = d; best = v; }
+        }
     }
     if (!best) { mlog("cheat: no usable vehicle"); return; }
     static const int off[][2] = { { 0, 40 }, { 40, 0 }, { -40, 0 }, { 0, -40 }, { 0, 56 }, { 56, 0 }, { -56, 0 }, { 0, -56 } };
@@ -3930,3 +3935,6 @@ void controls_bindings_changed(void)
     if (g_cfg.controls_modern && S.active) controls_game_keys(1);
     bindings_reset_state();
 }
+
+/* savestate.c: stamina / sprint toggle go back with a load (held inputs are dropped: controls_reset) */
+void controls_savestate(void) { SAVESTATE(g_stamina); SAVESTATE(g_exhausted); SAVESTATE(g_sprint_latched); }

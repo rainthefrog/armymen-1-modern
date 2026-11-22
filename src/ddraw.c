@@ -506,6 +506,7 @@ static LRESULT CALLBACK wndproc_hook(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     if (modern_message(h, msg, wp, lp)) return 0;                      /* modern.c: any key / click skips a video */
     if (zoom_message(msg, wp)) return 0;                               /* zoom.c: Ctrl+wheel, Ctrl+PgUp/PgDn */
     if (msg == WM_MOUSEWHEEL && controls_wheel(GET_WHEEL_DELTA_WPARAM(wp))) return 0;   /* controls.c: weapons */
+    if (savestate_message(h, msg, wp, lp)) return 0;                   /* savestate.c: quicksave / quickload keys */
     if (overlay_message(h, msg, wp, lp)) return 0;                     /* panel.c: F9, F10, clicks on mod boxes */
     if (orders_message(h, msg, wp, lp)) return 0;                      /* orders.c: Esc cancels picking a command target */
     if (allies_message(h, msg, wp, lp)) return 0;                      /* allies.c: Esc puts the medkit away (no pause menu) */

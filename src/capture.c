@@ -580,3 +580,6 @@ void __fastcall capture_army_save(void *file)
     capture_army_save_original(file);
     if (swap) { UID(v) = g_cap.uid_now; if (s) SARGE_VEHICLE(s) = v; }
 }
+
+/* savestate.c: the captured vehicle (its legion slot, colours) is part of the mission state */
+void capture_savestate(void) { SAVESTATE(g_cap); SAVESTATE(g_slot_blank); SAVESTATE(g_watch); }

@@ -1135,3 +1135,6 @@ int bullets_shot_cue(int tx, int ty, int weapon, ShotCue *c)
         mlog("bullets: reticle cue (height_rules %s, weapon %d): block %d at %d,%d raise %x, over %d, mg_low %d, levels %d (shooter ground %d, aim ground %d)", HEIGHT_RULE_NAMES[mode], weapon, c->block, c->bx, c->by, c->raise, c->over, c->mg_low, c->levels, g0, ground_elev(tx, ty)); } }
     return 1;
 }
+
+/* savestate.c: the per-projectile tables are keyed by projectile address - saved with the projectiles */
+void bullets_savestate(void) { SAVESTATE(g_fired); SAVESTATE(g_kneel); SAVESTATE(g_kneel_flip); SAVESTATE(g_graze); SAVESTATE(g_am2); SAVESTATE(g_shot); SAVESTATE(g_rear_at); SAVESTATE(g_threat); SAVESTATE(g_carry); }

@@ -145,6 +145,19 @@ void clock_frame_shown(int gameplay)
 
 static int g_trace_frames;
 static LARGE_INTEGER g_trace_end;
+static DWORD g_last_t; static int g_have_t;  /* the last value handed to the game (never backwards) */
+
+/* savestate.c (2026-11-21), after a quickload: the game clock is put back to the value it had at the save (the
+ * restored game state holds time stamps of then). The only place where it goes backwards on purpose. */
+void clock_restore(DWORD tick)
+{
+    EnterCriticalSection(&g_cs);
+    advance();
+    g_ms = (double)(DWORD)(tick - g_base);
+    g_lock_ms = g_ms;
+    g_last_t = tick; g_have_t = 1;
+    LeaveCriticalSection(&g_cs);
+}
 int clock_tracing(void)
 {
     if (!g_trace_end.QuadPart) return 0;
@@ -170,9 +183,8 @@ static DWORD WINAPI game_GetTickCount(void)
     DWORD t = g_base + (DWORD)(unsigned long long)ms;
     /* never backwards (locked -> real time, speed changes): the game's frame step is unsigned and a smaller
      * value than last time wraps into a 66 ms step */
-    static DWORD last_t; static int have_t;
-    if (have_t && (LONG)(t - last_t) < 0) t = last_t;
-    last_t = t; have_t = 1;
+    if (g_have_t && (LONG)(t - g_last_t) < 0) t = g_last_t;
+    g_last_t = t; g_have_t = 1;
     LeaveCriticalSection(&g_cs);
     return t;
 }

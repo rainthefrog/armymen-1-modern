@@ -973,3 +973,6 @@ int mines_transfer(BYTE *to, BYTE *from, int n)
     return moved;
 }
 
+
+/* savestate.c: mine walks and the sweeper's reveal flags are part of the mission state */
+void mines_savestate(void) { SAVESTATE(F); SAVESTATE(D); SAVESTATE(g_safe); SAVESTATE(g_was_hidden); SAVESTATE(g_safe_for); }
