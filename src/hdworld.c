@@ -32,7 +32,7 @@
 #define MAP_NAME      ((const char *)0x4e2f38)
 
 typedef struct { uint16_t e, sx, sy; BYTE expect, fl; } Ref;          /* e = entry + 1 */
-enum { FL_SHADOW = 1, FL_RECOLOUR = 2 };                                /* army in bits 2..3 */
+enum { FL_SHADOW = 1, FL_RECOLOUR = 2, FL_AIR = 16 };                   /* army in bits 2..3; FL_AIR: drawn by the air layer */
 
 #pragma pack(push, 1)
 typedef struct { uint32_t key; uint16_t w, h; BYTE kind, terrain, flags, pad; uint32_t blob; } Entry;
@@ -57,6 +57,15 @@ static volatile int g_cell_low;
 void hdworld_cell_low(int low) { g_cell_low = low; }
 static volatile int g_cell_top;
 void hdworld_cell_top(int top) { g_cell_top = top; }
+/* Air layer (2026-11-21, user: "layering issues with the helicopter too"): the game draws its 4th layer list
+ * (0x4e35a4: the helicopter, planes, shells / grenades in flight) AFTER the map is in the back buffer
+ * (FUN_0042d610 -> FUN_0042e460 -> FUN_0042ea80), so in the original nothing on the ground is ever over it.
+ * roofs.c says while such a cell is drawn; its pixels get FL_AIR in their reference, and gpu.c ps_resolve
+ * gives them the top painter depth (no ground image's upscaled edge in front, no ground shadow on them).
+ * Per pixel, not per image (the same frames may be drawn on the ground). The moving helicopter OBJECTS of the
+ * extraction missions (roofs.c aircraft_cell) are drawn with this flag too. */
+static volatile int g_cell_air;
+void hdworld_cell_air(int air) { g_cell_air = air; }
 /* Painter depth = the game's own sort key (2026-11-19, user: Sarge in front of a building drawn partly under
  * its edge). The game sorts by ANIM world_pos.y (game binary compare, ties by order), and wrect.top =
  * world_pos.y - hotspot.y - world_z, so the key inside the image is hotspot.y + world_z = pos.y - wrect.top
@@ -565,7 +574,7 @@ static void note_sprite(int x, int y, const BYTE *data, int x0, int y0, int x1, 
             UnionRect(&g_obox[g_oi], &g_obox[g_oi], &bb);
         }
     }
-    BYTE fl = (BYTE)((e >= 0 && (g_e[e].flags & 1) ? FL_RECOLOUR : 0) | army_of(remap) << 2);
+    BYTE fl = (BYTE)((e >= 0 && (g_e[e].flags & 1) ? FL_RECOLOUR : 0) | army_of(remap) << 2 | (g_cell_air ? FL_AIR : 0));
     for (int sy = y0; sy < y1; sy++) {
         int dy = y + sy - y0;
         if (dy < 0 || dy >= s->h) continue;
@@ -582,7 +591,7 @@ static void note_sprite(int x, int y, const BYTE *data, int x0, int y0, int x1, 
                 int dx = x + sx - x0;
                 if (dx < 0 || dx >= s->w) continue;
                 Ref *q = &row[dx];
-                if (ov) { BYTE *o = &ov[(size_t)dy * s->w + dx]; if (*o == 0 || *o == 2) *o = 1; }   /* drawn on the screen */
+                if (ov) { BYTE *o = &ov[(size_t)dy * s->w + dx]; if (*o == 0 || *o == 2 || (*o == 3 && g_cell_air)) *o = 1; }   /* drawn on the screen (an air sprite also over a ghost figure: it is in front) */
 
                 if (shadow) { if (q->e) { q->fl |= FL_SHADOW; q->expect = pix[dx]; } continue; }
                 if (e < 0) { q->e = 0; continue; }

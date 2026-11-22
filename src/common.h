@@ -101,6 +101,7 @@ struct Config {
     int radio_overlay;              /* [display] radio_overlay: radio messages over the battlefield, text redrawn (radio.c) */
     int see_interior;               /* [display] see_interior: Sarge in a building -> its floor shown open (roofs.c, gpu.c) */
     int fronts_order;               /* [display] fronts_order: figures in front of a building front drawn over it (roofs.c) */
+    int air_layer;                  /* [display] air_layer: the game's air layer (helicopter, planes, shells) above the ground in every mod path (roofs.c) */
     int fix_squash;                 /* [gameplay] fix_squash: no squash death for walking onto a blocked tile (gameplay.c) */
     int longer_range;               /* [gameplay] longer_range: direct-fire weapons reach weapon_range_pct % (gameplay.c) */
     int weapon_range_pct;           /* [gameplay] weapon_range_pct (default 120) */
@@ -367,6 +368,10 @@ void roofs_draw_ghost(Surf *b);                                     /* roofs.c: 
 void __fastcall roofs_layer_0(void *rect, void *list);            /* roofs.c: FUN_0042e950 per map layer (FUN_0042e3e0) */
 void __fastcall roofs_layer_1(void *rect, void *list);
 void __fastcall roofs_layer_2(void *rect, void *list);
+void __fastcall roofs_air_cell(BYTE *cell, void *clip);             /* roofs.c: FUN_0042f120 per air-layer cell (call 0x42ebab) */
+void roofs_air_pass(void);                                           /* roofs.c: call 0x42d6bf (FUN_0042e460, air layer): ghost redraw first */
+int roofs_aircraft_focus(int *x, int *y, DWORD ms);                 /* roofs.c: a moving map object (helicopter) moved within ms: its middle */
+void hdworld_cell_air(int air);   /* roofs.c: the cell being drawn is in the air layer (hdworld.c FL_AIR) */
 int hdart_prepare(uint32_t *pix, int w, int h, int menu);         /* hdart.c: HD menu backgrounds */
 const uint32_t *hdart_picture(int *w, int *h, int *serial);
 int hdart_active(void);                                             /* hdart.c: menu shows an HD background */

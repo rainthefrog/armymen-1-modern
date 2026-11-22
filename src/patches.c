@@ -316,6 +316,8 @@ void patches_apply(void)
     hook_call("roofs: map region layer 0 (0x42e41f)", 0x42e41f, 0x42e950, (void *)roofs_layer_0);
     hook_call("roofs: map region layer 1 (0x42e435)", 0x42e435, 0x42e950, (void *)roofs_layer_1);
     hook_call("roofs: map region layer 2 (0x42e44b)", 0x42e44b, 0x42e950, (void *)roofs_layer_2);
+    hook_call("roofs: air layer cell (0x42ebab)", 0x42ebab, 0x42f120, (void *)roofs_air_cell);
+    hook_call("roofs: air layer pass (0x42d6bf): ghost redraw before it", 0x42d6bf, 0x42e460, (void *)roofs_air_pass);
     static const BYTE blit_o[] = { 0x55, 0x8b,0xec, 0x83,0xec,0x0c, 0x53, 0x56, 0x57 };   /* FUN_004040c0 / 4041b0 / 4042a0 */
     static const BYTE shad_o[] = { 0x55, 0x8b,0xec, 0x83,0xec,0x14, 0x53, 0x56, 0x57 };   /* FUN_00404390 */
     hdworld_wrle_original = (Blit5Fn)hook_wrap("hdworld: sprite WRLE (FUN_004041b0)", 0x4041b0, blit_o, sizeof blit_o, (void *)hdworld_wrle);

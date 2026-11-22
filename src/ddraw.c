@@ -98,6 +98,7 @@ void config_load(void)
     g_cfg.am2_music = GetPrivateProfileIntA("audio", "am2_music", 0, ini);     /* music.c (2026-11-21) */
     g_cfg.see_interior = GetPrivateProfileIntA("display", "see_interior", 1, ini);
     g_cfg.fronts_order = GetPrivateProfileIntA("display", "fronts_order", 1, ini);
+    g_cfg.air_layer = GetPrivateProfileIntA("display", "air_layer", 1, ini);
     g_cfg.menu_text = GetPrivateProfileIntA("display", "menu_text", 1, ini);
     g_cfg.radio_overlay = GetPrivateProfileIntA("display", "radio_overlay", 1, ini);
     g_cfg.weapon_range_pct = GetPrivateProfileIntA("gameplay", "weapon_range_pct", 120, ini);
