@@ -875,6 +875,7 @@ int mines_free_charges(BYTE *weapon);       /* weapons.c: real free charges of a
 float mines_sweeper_walk_mul(BYTE *sarge, int speed);   /* controls.c controls_move: speed factor for Sarge walking with the sweeper selected (1 = none) */
 void __fastcall mines_step(BYTE *mine, DWORD *who);    /* mines.c: FUN_004398d0 rewrite (something moved onto a laid mine) */
 int mines_transfer(BYTE *to, BYTE *from, int n);   /* weapons.c: move free charges of a pack into used-up slots */
+int mines_set_charges(BYTE *w, const short *objs, int n);   /* weapons.c: carry-over - the charge array recorded at the win */
 BYTE *weapons_carried(int type, void **item); /* weapons.c: record of a carried weapon of this type (any slot / box) */
 int weapons_room_for_special(void);         /* weapons.c: a special weapon picked up now would be taken */
 void __fastcall mines_lay(BYTE *weapon, int army, DWORD point);   /* call 0x445f44 -> MineLay 0x446600 */
@@ -908,6 +909,7 @@ const char *savestate_banner(void);         /* modern.c: the confirmation text, 
 void savestate_region(const char *name, void *p, size_t n);      /* mod state saved with a quicksave, put back on a load */
 #define SAVESTATE(v) savestate_region(#v, &(v), sizeof(v))
 void weapons_savestate(void); void allies_savestate(void); void aware_savestate(void); void capture_savestate(void);
+void weapons_army_saved(void); void weapons_debug_dump(const char *why); void weapons_debug_pickup(int charges_only); void weapons_debug_die(void);
 void patrol_savestate(void); void mines_savestate(void); void bullets_savestate(void); void objectives_savestate(void);
 void vehicles_savestate(void); void modern_savestate(void); void fences_savestate(void); void missionpath_savestate(void);
 void controls_savestate(void);

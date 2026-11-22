@@ -615,6 +615,7 @@ void __fastcall capture_army_save(void *file)
         if (s) SARGE_VEHICLE(s) = NULL;
         mlog("capture: army file written while Sarge drives vehicle %p - saved as its army's (uid %08lx), Sarge on foot", v, g_cap.uid);
     }
+    weapons_army_saved();                         /* weapons.c: Sarge's weapons recorded for the next part (carry-over) */
     capture_army_save_original(file);
     if (swap) { UID(v) = g_cap.uid_now; if (s) SARGE_VEHICLE(s) = v; }
 }
