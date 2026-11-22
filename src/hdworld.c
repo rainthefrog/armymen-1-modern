@@ -32,7 +32,7 @@
 #define MAP_NAME      ((const char *)0x4e2f38)
 
 typedef struct { uint16_t e, sx, sy; BYTE expect, fl; } Ref;          /* e = entry + 1 */
-enum { FL_SHADOW = 1, FL_RECOLOUR = 2 };                                /* army in bits 2..3 */
+enum { FL_SHADOW = 1, FL_RECOLOUR = 2, FL_OVER = 16 };                  /* army in bits 2..3; FL_OVER: drawn in the pass over all figures (roofs.c layer 2) */
 
 #pragma pack(push, 1)
 typedef struct { uint32_t key; uint16_t w, h; BYTE kind, terrain, flags, pad; uint32_t blob; } Entry;
@@ -53,6 +53,11 @@ static volatile LONG g_ent_dirty = 1;      /* an image became resident: the GPU 
  * sort BEHIND standing figures in the GPU painter depth (user: Sarge over rocks, behind trees) */
 #define EF_LOW 0x80                         /* Entry.flags: drawn as a low object (pak flags use 1, 2) */
 #define EF_TOP 0x40                         /* Entry.flags: a vehicle turret - above the hull at the same row */
+/* roofs.c: the cell is drawn in the map pass that lies over every figure of the region (a building's roof part,
+ * layer 2), or a figure drawn again over it - its pixels get FL_OVER: their painter depth ranks above every pixel
+ * drawn in the figures' pass, as on the screen (gpu.c ps_resolve) */
+static volatile int g_cell_over;
+void hdworld_cell_over(int over) { g_cell_over = over; }
 static volatile int g_cell_low;
 void hdworld_cell_low(int low) { g_cell_low = low; }
 static volatile int g_cell_top;
@@ -565,7 +570,7 @@ static void note_sprite(int x, int y, const BYTE *data, int x0, int y0, int x1, 
             UnionRect(&g_obox[g_oi], &g_obox[g_oi], &bb);
         }
     }
-    BYTE fl = (BYTE)((e >= 0 && (g_e[e].flags & 1) ? FL_RECOLOUR : 0) | army_of(remap) << 2);
+    BYTE fl = (BYTE)((e >= 0 && (g_e[e].flags & 1) ? FL_RECOLOUR : 0) | army_of(remap) << 2 | (g_cell_over ? FL_OVER : 0));
     for (int sy = y0; sy < y1; sy++) {
         int dy = y + sy - y0;
         if (dy < 0 || dy >= s->h) continue;
