@@ -300,7 +300,7 @@ int objectives_target(int *wx, int *wy)
 
 /* The target sector(s) on the battlefield (2026-11-19, user: "the area is highlighted on the map - can we
  * faintly highlight the area in the game"): their rectangles in game-picture pixels of the current frame
- * (world - camera, rows moved up at the map bottom like everything else). present.c takes them with the
+ * (world - camera). present.c takes them with the
  * frame; gpu.c tints them (ps_world on the upscaled battlefield, ps_scale otherwise). [hud] target_area. */
 #define CAMERA_X             (*(short *)0x4e2de8)
 #define CAMERA_Y             (*(short *)0x4e2dea)
@@ -405,7 +405,7 @@ static void zones_now(TargetZones *z)
     if (!g_cfg.target_area || !layout_view_is_gameplay()) return;
     const int *b = BOUNDRECT;
     if (b[2] <= b[0] || b[3] <= b[1]) return;
-    int cx = CAMERA_X, cy = CAMERA_Y + layout_field_shift(), n = 0;
+    int cx = CAMERA_X, cy = CAMERA_Y, n = 0;
     for (int i = 0; i < g_sectors && i < 2; i++) {
         z->r[n].left   = b[0] + g_sec_c[i] * (b[2] - b[0]) / 6 - cx;
         z->r[n].right  = b[0] + (g_sec_c[i] + 1) * (b[2] - b[0]) / 6 - cx;
@@ -451,7 +451,7 @@ static void zones_now(TargetZones *z)
 static void zones_note(void)
 {
     zones_now(&g_zones);
-    roofs_interior_note(&g_zones, CAMERA_X, CAMERA_Y + layout_field_shift());   /* Sarge inside a building (roofs.c) */
+    roofs_interior_note(&g_zones, CAMERA_X, CAMERA_Y);   /* Sarge inside a building (roofs.c) */
 }
 void objectives_zones(TargetZones *out) { *out = g_zones; }
 

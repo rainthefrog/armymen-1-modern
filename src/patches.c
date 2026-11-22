@@ -327,7 +327,7 @@ void patches_apply(void)
     controls_camera_original = (VoidFnPtr)hook_wrap("controls: camera (FUN_0040dcd0) -> controls.c (smooth camera)",
                                                     0x40dcd0, cam_o, sizeof cam_o, (void *)controls_camera);
     static const BYTE field_o[] = { 0x83,0xec,0x10, 0x53, 0x56, 0x57 };       /* FUN_0042d610: sub esp,10h; push ebx/esi/edi */
-    layout_draw_battlefield_original = (VoidFnPtr)hook_wrap("layout: draw battlefield (FUN_0042d610) -> layout.c (map bottom)",
+    layout_draw_battlefield_original = (VoidFnPtr)hook_wrap("layout: draw battlefield (FUN_0042d610) -> layout.c (ghost, map-edge fog)",
                                                             0x42d610, field_o, sizeof field_o, (void *)layout_draw_battlefield);
     controls_move_original = (MoveFn)hook_wrap("controls: object movement (FUN_00414ad0) -> controls.c (run)",
                                                0x414ad0, move_o, sizeof move_o, (void *)controls_move);

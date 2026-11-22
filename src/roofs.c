@@ -828,7 +828,7 @@ static int floor_now(Floor *fl)
          * cells x 21 object-list walks). */
         static BYTE cm[IN_N][IN_N];                              /* 0 unknown, 1 floor, 2 not */
         memset(cm, 0, sizeof cm);
-        int sl = *(int *)0x4e2fd4, st = *(int *)0x4e2fd8 + layout_field_shift();   /* back buffer origin in the world */
+        int sl = *(int *)0x4e2fd4, st = *(int *)0x4e2fd8;   /* back buffer origin in the world */
         /* 2026-11-20 (user: "the shader is still messing up - lets go back to the circle around sarge"): the flood
          * only within CIRCLE_CELLS of Sarge (gpu.c fades the circle's edge, tsg) */
         #define IN_CIRCLE(x, y) (((x) - c0x) * ((x) - c0x) + ((y) - c0y) * ((y) - c0y) <= (CIRCLE_CELLS + 1) * (CIRCLE_CELLS + 1))

@@ -27,7 +27,6 @@
 #include <math.h>
 
 #define BACK_BUFFER_SURF (*(void **)0x4e2e4c)    /* the surface the game draws each frame into */
-static int g_field_shift;                       /* battlefield rows moved up this frame */
 
 /* ---------------------------------------------------------------- anchors */
 
@@ -793,32 +792,22 @@ void layout_pointer_to_game(int x, int y, int *gx, int *gy)
         *gy = uy - dy;
         return;
     }
-    *gy = y + g_field_shift;                               /* the battlefield (moved up at the map's bottom) */
+    *gy = y;                                               /* the battlefield */
 }
 
 /* ---------------------------------------------------------------- battlefield at the map's bottom
- * On wide screens the battlefield runs under the HUD panel (layout_patch_limits). The camera stops
- * at the bottom of the map, so the last rows of the map would stay hidden under the panel. When the
- * camera wants to go further (controls_field_shift_target), the finished battlefield picture is
- * moved UP by that many rows (at most the panel's 94) and the rows below it are black: there is no
- * map there. Pointer positions on the battlefield get the same offset (layout_pointer_to_game,
- * controls.c pointer_on_battlefield), so aiming and walking still land where the pointer is.
+ * On wide screens the battlefield runs under the HUD panel (layout_patch_limits). The original
+ * camera stops where boundrect's bottom is the bottom of the VIEW, so on a wide screen the last
+ * rows of the map would stay hidden under the panel. The camera may therefore go up to the panel's
+ * 94 rows further down (controls_map_bottom_room, controls.c): the game draws the real map rows
+ * there (the_map is 256 tiles, boundrect only the 14-tile inset; FullPixelRect - the Omniscient
+ * camera - shows them too). They are seen only through the HUD's gaps; fog.c keeps them clear.
+ * Until 2026-11-21 the finished picture was moved UP instead and the rows below filled black
+ * (user: "view is being drawn outside the edge of the map" - a black strip between the HUD pieces);
+ * now there is no picture shift and one mapping (pointer = battlefield pixel + camera).
  * Wrap of FUN_0042d610 (draw the battlefield: terrain copy + every world sprite); the HUD, pop-ups
  * and minimap are drawn after it (FUN_00424ab0). */
 VoidFnPtr layout_draw_battlefield_original;
-
-int layout_field_shift(void) { return g_field_shift; }
-
-static BYTE black_index(void)
-{
-    Pal *p = g_dd ? g_dd->pal : NULL;
-    int best = 0, best_v = 1 << 30;
-    for (int i = 0; p && i < 256; i++) {
-        int v = p->e[i].peRed + p->e[i].peGreen + p->e[i].peBlue;
-        if (v < best_v) { best_v = v; best = i; }
-    }
-    return (BYTE)best;
-}
 
 static void layout_draw_battlefield_body(void)
 {
@@ -826,21 +815,8 @@ static void layout_draw_battlefield_body(void)
     hdsprites_new_frame();                          /* a new game picture: the old picture notes are gone */
     layout_draw_battlefield_original();
     roofs_draw_ghost((Surf *)BACK_BUFFER_SURF);         /* Sarge seen through what covers him (roofs.c) */
-    g_field_shift = layout_active() ? controls_field_shift_target() : 0;
     Surf *b = (Surf *)BACK_BUFFER_SURF;
-    if (!b || !b->bits) { g_field_shift = 0; return; }
-    if (!g_field_shift) { fog_draw(b, 0); return; }
-    int rows = b->h, shift = g_field_shift;
-    for (int y = 0; y < rows - shift; y++)
-        memcpy(b->bits + (size_t)y * b->pitch, b->bits + (size_t)(y + shift) * b->pitch, b->w);
-    BYTE black = black_index();
-    for (int y = rows - shift; y < rows; y++) memset(b->bits + (size_t)y * b->pitch, black, b->w);
-    hdworld_shift_rows(b, shift);
-    fog_draw(b, shift);
-    if (g_cfg.log >= 3) {
-        static DWORD logged;
-        if (GetTickCount() - logged > 500) { logged = GetTickCount(); mlog("layout: battlefield moved up %d rows (map bottom)", shift); }
-    }
+    if (b && b->bits) fog_draw(b);
 }
 
 /* ---------------------------------------------------------------- limits */

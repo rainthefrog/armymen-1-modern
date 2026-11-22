@@ -163,7 +163,7 @@ static int pointer_on_battlefield(int *x, int *y)
     view_client_to_game(&p);
     if (ui_at_steady(p.x, p.y)) return 0;                   /* HUD panel, spare weapons, the mod's boxes */
     *x = p.x;
-    *y = p.y + layout_field_shift();                        /* battlefield moved up at the map's bottom */
+    *y = p.y;
     return 1;
 }
 
@@ -3370,17 +3370,24 @@ int controls_shown_subpx(float *x, float *y)
     return g_shown_subpx_on;
 }
 
-static double g_cam_want_y;                    /* modern camera: wanted centre y (unclamped) */
-static unsigned g_cam_want_frame;              /* ... and the frame it was set in */
-
 static double clampd(double v, double lo, double hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-/* Camera centre kept so the view stays inside [lo, hi) (boundrect), as the original does; a view
- * wider than that range is centred on it (fog.c covers what lies outside). */
-static double clamp_centre(double c, int lo, int hi, int view)
+/* Rows the camera may show past boundrect.bottom: on screens wider than 640 the battlefield runs under the HUD panel
+ * (layout.c), so the view may go the panel's HUD_COVER_H rows further down - the whole boundrect then shows above the
+ * panel, as in the original, and the window's bottom rows (seen through the HUD's gaps) are the map's own border
+ * rows (the_map is 256 x 256 tiles, boundrect the 14-tile inset: 224 px of map below it). Replaces the picture shift
+ * with its black strip (2026-11-21). */
+int controls_map_bottom_room(void)
+{
+    return g_cfg.width > LAYOUT_DESIGN_W && layout_active() && MAP_H > 0 ? HUD_COVER_H : 0;
+}
+
+/* Camera centre kept so the view stays inside [lo, hi) (boundrect), as the original does, plus room rows below hi
+ * (controls_map_bottom_room for y); a view wider than that range is centred on it (fog.c covers what lies outside). */
+static double clamp_centre(double c, int lo, int hi, int view, int room)
 {
     if (hi - lo <= view) return (lo + hi) / 2.0;
-    return clampd(c, lo + view / 2.0, hi - view / 2.0 - 1);
+    return clampd(c, lo + view / 2.0, hi - view / 2.0 - 1 + room);
 }
 
 /* ---- throw camera: dwell, and the aimed world point held while the camera moves (2026-11-21)
@@ -3423,7 +3430,7 @@ static struct {
     DWORD rest_since;
     int ease; DWORD ease_at;   /* the throw camera ended: easing back, pointer still held */
     double ax, ay, kx, ky;     /* this frame: client = a + k x game */
-    double ex, ey; int fs;     /* this frame: Sarge (smooth) and the picture shift the pointer is placed for */
+    double ex, ey;             /* this frame: Sarge (smooth) */
     int frames;                /* frames since the hold started (log) */
     double relx, rely;         /* the camera minus Sarge as last shown (the hold never goes past it) */
     double px, py;             /* this frame: where the pointer may go (picture game px) */
@@ -3450,14 +3457,14 @@ static int lob_free(double x, double y)
 }
 
 /* Before the camera is set: the player's motion, the dwell, and where the pointer must go for the held aim with the
- * camera this frame will have (centre ccx, ccy; picture shift fs). Where it cannot go (past LOB_POINTER_MARGIN from the
+ * camera this frame will have (centre ccx, ccy). Where it cannot go (past LOB_POINTER_MARGIN from the
  * battlefield edge - it is never pulled IN from where it is - or onto the interface: HUD groups at any minimap /
  * centre scale, spare weapons, the mod's boxes), the CAMERA is held back by the difference instead (fx / fy), so the
  * aim never moves; only at the map's edge (edge_x / edge_y: holding the spring there does nothing) can the aim give way,
  * and there the camera only moves with Sarge. Returns 1 when fx / fy were changed (the caller recomputes the view).
  * lob = grenade / set-up mortar ready (the camera condition); ex, ey = Sarge's smooth position the camera follows;
  * settle = how far the spring still is from its goal. */
-static int lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double ccx, double ccy, int fs,
+static int lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double ccx, double ccy,
                              double *fx, double *fy, double *fvx, double *fvy, double settle, int edge_x, int edge_y)
 {
     DWORD now = GetTickCount();
@@ -3492,7 +3499,7 @@ static int lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double ccx,
         if (ok && now - L.rest_since >= (DWORD)lob_dwell_ms()) {
             g_lob_armed = 1; L.ease = 0;
             if (g_cfg.log >= 1) mlog("lob: throw camera on (pointer rested %lu ms) at world %d,%d", now - L.rest_since,
-                                     (int)floor(gx + 0.5) + CAMERA_X, (int)floor(gy + 0.5) + layout_field_shift() + CAMERA_Y);
+                                     (int)floor(gx + 0.5) + CAMERA_X, (int)floor(gy + 0.5) + CAMERA_Y);
         }
     }
     if (L.ease && (settle < 1.0 || now - L.ease_at > LOB_EASE_MAX_MS || SARGE_VEHICLE(u))) {
@@ -3502,16 +3509,16 @@ static int lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double ccx,
 
     int hold = (g_lob_armed || L.ease) && ok && !SARGE_VEHICLE(u) && GetTickCount() - g_pad_aim_at > 1500;
     if (!hold) { L.on = 0; return 0; }
-    /* the aim, from what is on screen now (last frame's camera and picture shift) */
+    /* the aim, from what is on screen now (last frame's camera) */
     if (!L.on) {
         L.on = 1; L.frames = 0;
-        L.wx = gx + CAMERA_X - ex; L.wy = gy + layout_field_shift() + CAMERA_Y - ey;
-        L.relx = CAMERA_X - ex; L.rely = CAMERA_Y + layout_field_shift() - ey;
+        L.wx = gx + CAMERA_X - ex; L.wy = gy + CAMERA_Y - ey;
+        L.relx = CAMERA_X - ex; L.rely = CAMERA_Y - ey;
     } else { L.wx += du; L.wy += dv; }
-    L.ax = ax; L.ay = ay; L.kx = kx; L.ky = ky; L.ex = ex; L.ey = ey; L.fs = fs;
+    L.ax = ax; L.ay = ay; L.kx = kx; L.ky = ky; L.ex = ex; L.ey = ey;
     /* where the pointer must be with this frame's camera (CAMERA = rounded centre - half the view: controls_camera_original) */
     double cam_x = floor(ccx + 0.5) - VIEW_W / 2, cam_y = floor(ccy + 0.5) - VIEW_H / 2;
-    double tx = L.wx + ex - cam_x, ty = L.wy + ey - cam_y - fs;
+    double tx = L.wx + ex - cam_x, ty = L.wy + ey - cam_y;
     double m = LOB_POINTER_MARGIN;
     double px = clampd(tx, gx < m ? gx : m, gx > VIEW_W - 1 - m ? gx : VIEW_W - 1 - m);
     double py = clampd(ty, gy < m ? gy : m, gy > VIEW_H - 1 - m ? gy : VIEW_H - 1 - m);
@@ -3525,7 +3532,7 @@ static int lob_pointer_frame(BYTE *u, int lob, double ex, double ey, double ccx,
      * Sarge) this frame, so the hold can never push it further than where it was (a bigger hold fed back and swung
      * the camera hundreds of px each frame in Wine); anything beyond (map edge) lets the aim give way */
     double ox = px - tx, oy = py - ty;
-    double mx = (cam_x - ex) - L.relx, my = (cam_y + fs - ey) - L.rely;   /* this frame's camera move */
+    double mx = (cam_x - ex) - L.relx, my = (cam_y - ey) - L.rely;   /* this frame's camera move */
     double hx = !edge_x && ox * mx > 0 ? (fabs(ox) < fabs(mx) ? ox : mx) : 0;
     double hy = !edge_y && oy * my > 0 ? (fabs(oy) < fabs(my) ? oy : my) : 0;
     if (hx != 0) { *fx -= hx; *fvx = 0; }
@@ -3545,13 +3552,13 @@ static void lob_pointer_place(void)
     if (!L.on) return;
     HWND h = g_dd ? g_dd->hwnd : NULL;
     if (!h) return;
-    double px = L.wx + L.ex - CAMERA_X, py = L.wy + L.ey - CAMERA_Y - L.fs;
+    double px = L.wx + L.ex - CAMERA_X, py = L.wy + L.ey - CAMERA_Y;
     if (fabs(px - L.px) > 0.75 || fabs(py - L.py) > 0.75) {
         /* the view came out other than planned (the map clamp took the hold): the pointer stays where it may go */
         if (g_cfg.log >= 1) mlog("lob: aim gave way %.1f,%.1f (view clamped)", L.px - px, L.py - py);
         L.wx += L.px - px; L.wy += L.py - py; px = L.px; py = L.py;
     }
-    L.relx = CAMERA_X - L.ex; L.rely = CAMERA_Y + L.fs - L.ey;
+    L.relx = CAMERA_X - L.ex; L.rely = CAMERA_Y - L.ey;
     POINT t = { (LONG)floor(L.ax + L.kx * px + 0.5), (LONG)floor(L.ay + L.ky * py + 0.5) };
     POINT c = L.last;
     if (t.x != c.x || t.y != c.y) {
@@ -3563,14 +3570,14 @@ static void lob_pointer_place(void)
         L.set[L.iset = (L.iset + 1) & 7] = c; L.set[L.iset = (L.iset + 1) & 7] = t; if (L.nset < 8) L.nset += 2;
     }
     POINT gp = t; view_client_to_game(&gp);              /* what the game reads there: the reticle and a click use it */
-    S.cursor_x = gp.x; S.cursor_y = gp.y + L.fs; S.have_cursor = 1;
+    S.cursor_x = gp.x; S.cursor_y = gp.y; S.have_cursor = 1;
     if (g_cfg.log >= 2) {
         /* every frame: the held aim and what reading the pointer back gives (set -> read round trip) */
         POINT r; int rx = -99999, ry = -99999;
-        if (GetCursorPos(&r) && ScreenToClient(h, &r)) { view_client_to_game(&r); rx = r.x + CAMERA_X; ry = r.y + L.fs + CAMERA_Y; }
-        mlog("lob: f%d aim %.1f,%.1f pointer %ld,%ld game %ld,%ld read-back world %d,%d (off %d,%d) camera %d,%d fs %d",
+        if (GetCursorPos(&r) && ScreenToClient(h, &r)) { view_client_to_game(&r); rx = r.x + CAMERA_X; ry = r.y + CAMERA_Y; }
+        mlog("lob: f%d aim %.1f,%.1f pointer %ld,%ld game %ld,%ld read-back world %d,%d (off %d,%d) camera %d,%d",
              L.frames++, L.wx + L.ex, L.wy + L.ey, t.x, t.y, gp.x, gp.y, rx, ry, rx - (int)floor(L.wx + L.ex + 0.5),
-             ry - (int)floor(L.wy + L.ey + 0.5), CAMERA_X, CAMERA_Y, L.fs);
+             ry - (int)floor(L.wy + L.ey + 0.5), CAMERA_X, CAMERA_Y);
     }
 }
 
@@ -3667,13 +3674,6 @@ static int pick_edge(int *dx, int *dy)
     return *dx || *dy;
 }
 
-/* camera centre c kept so the view (with the picture shift room at the map bottom) stays on the map */
-static double pick_clamp(double c, int lo, int hi, int view, double room)
-{
-    if (hi - lo <= view) return (lo + hi) / 2.0;
-    return clampd(c, lo + view / 2.0, hi - view / 2.0 - 1 + room);
-}
-
 static int pick_camera(int pick, int fhave, double dt, double *fx, double *fy, double gx, double gy)
 {
     DWORD now = GetTickCount();
@@ -3713,8 +3713,8 @@ static int pick_camera(int pick, int fhave, double dt, double *fx, double *fy, d
             P.cx += ex * v; P.cy += ey * v;
         }
     } else P.band = 0;
-    P.cx = pick_clamp(P.cx, BOUND_L, MAP_W, VIEW_W, 0);
-    P.cy = pick_clamp(P.cy + off, BOUND_T, MAP_H, VIEW_H, wide ? HUD_COVER_H : 0) - off;
+    P.cx = clamp_centre(P.cx, BOUND_L, MAP_W, VIEW_W, 0);
+    P.cy = clamp_centre(P.cy + off, BOUND_T, MAP_H, VIEW_H, controls_map_bottom_room()) - off;
     *fx = P.cx; *fy = P.cy;
     if (g_cfg.log >= 2 && now - P.log_at >= 100) {                /* testing: the world point under the pointer */
         int px, py;
@@ -3723,6 +3723,22 @@ static int pick_camera(int pick, int fhave, double dt, double *fx, double *fy, d
             mlog("pick camera: centre %.1f,%.1f edge %d,%d pointer %d,%d world %d,%d", P.cx, P.cy, ex, ey, px, py, px + CAMERA_X, py + CAMERA_Y);
     }
     return 0;
+}
+
+/* Classic camera (controls_modern = 0) on a wide screen: the game's own clamp (FUN_0040e100 / 0x40e2d0 / 0x40e400:
+ * centre y <= boundrect.bottom - view/2 - 1) stops where Sarge at the map's bottom is under the HUD panel. When the
+ * centre sits on that limit, it goes down by as much as Sarge (or his vehicle) as the middle of the area above the
+ * panel wants, at most controls_map_bottom_room - the same view the old picture shift gave, but with the real map
+ * rows below instead of black. Runs just before FUN_0040dcd0 turns the centre into the view. */
+static void classic_bottom_room(BYTE *u)
+{
+    int room = controls_map_bottom_room();
+    if (!room || !u || MENU_CURSOR_SHOWN || !layout_view_is_gameplay() || VIEW_H <= 0) return;
+    int lim = MAP_H - VIEW_H / 2 - 1;
+    if (CAM_CENTRE_Y < lim) return;
+    BYTE *v = (BYTE *)(intptr_t)SARGE_VEHICLE(u);
+    double want = (v ? VEH_Y(v) : SARGE_Y(u)) + HUD_COVER_H / 2.0;
+    CAM_CENTRE_Y = (short)floor(clampd(want, lim, lim + room) + 0.5);
 }
 
 static void controls_camera_body(void)
@@ -3744,6 +3760,7 @@ static void controls_camera_body(void)
         VIEW_W <= 0 || VIEW_H <= 0) {
         have = 0; fhave = 0;
         g_subpx_on = 0;
+        classic_bottom_room(u);
         PX_GAME(controls_camera_original());
         return;
     }
@@ -3830,24 +3847,19 @@ static void controls_camera_body(void)
      * of the part above the panel, not of the whole picture */
     if (g_cfg.width > LAYOUT_DESIGN_W) cy += HUD_COVER_H / 2;
     double tx = cx, ty = cy;                   /* for the log line below */
-    /* keep the view on the map, as the original does; the eased point itself stays unclamped, so
-     * how far the camera WANTS to go past the bottom is known (controls_field_shift_target) */
-    g_cam_want_y = cy;
-    g_cam_want_frame = view_frame_count();
-    double ccx = clamp_centre(cx, BOUND_L, MAP_W, VIEW_W), ccy = clamp_centre(cy, BOUND_T, MAP_H, VIEW_H);
+    /* keep the view on the map, as the original does - on wide screens with the HUD panel's rows of room below
+     * boundrect (controls_map_bottom_room), so at the map's bottom Sarge still stands above the panel and the
+     * window's bottom shows the map's border rows instead of black */
+    int room = controls_map_bottom_room();
+    double ccx = clamp_centre(cx, BOUND_L, MAP_W, VIEW_W, 0), ccy = clamp_centre(cy, BOUND_T, MAP_H, VIEW_H, room);
     {   /* throw camera: the pointer follows the camera so the aim stays; where it cannot, the camera stays back
-         * (lob_pointer_frame) and the view is worked out again. The picture shift at the map bottom is the one the
-         * draw will take from this wanted centre (controls_field_shift_target). */
+         * (lob_pointer_frame) and the view is worked out again */
         int wide = g_cfg.width > LAYOUT_DESIGN_W;
-        double room = wide ? HUD_COVER_H : 0;                /* the picture shift can still take the camera this far */
-        int fs = layout_active() && wide && MAP_H > 0 ? (int)(clampd(cy - (MAP_H - VIEW_H / 2.0 - 1), 0, HUD_COVER_H) + 0.5) : 0;
-        if (lob_pointer_frame(u, lob, ex, ey, ccx, ccy, fs, &fx, &fy, &fvx, &fvy,
+        if (lob_pointer_frame(u, lob, ex, ey, ccx, ccy, &fx, &fy, &fvx, &fvy,
                               fabs(gx - fx) + fabs(gy - fy) + (fabs(fvx) + fabs(fvy)) * 100,
-                              fabs(ccx - cx) > 0.5, cy < ccy - 0.5 || cy - ccy > room + 0.5)) {
+                              fabs(ccx - cx) > 0.5, fabs(ccy - cy) > 0.5)) {
             cx = fx; cy = fy + (wide ? HUD_COVER_H / 2 : 0);
-            g_cam_want_y = cy;
-            ccx = clamp_centre(cx, BOUND_L, MAP_W, VIEW_W); ccy = clamp_centre(cy, BOUND_T, MAP_H, VIEW_H);
-            L.fs = layout_active() && wide && MAP_H > 0 ? (int)(clampd(cy - (MAP_H - VIEW_H / 2.0 - 1), 0, HUD_COVER_H) + 0.5) : 0;
+            ccx = clamp_centre(cx, BOUND_L, MAP_W, VIEW_W, 0); ccy = clamp_centre(cy, BOUND_T, MAP_H, VIEW_H, room);
         }
     }
     CAM_CENTRE_X = (short)floor(ccx + 0.5);
@@ -3876,20 +3888,6 @@ static void controls_camera_body(void)
                  px, py, px + CAMERA_X, py + CAMERA_Y, ccx, ccy, tlx, tly, SARGE_X(u), SARGE_Y(u));
         }
     }
-}
-
-/* How many rows the battlefield picture should move UP so the bottom of the map is not hidden
- * under the HUD panel (layout.c layout_draw_battlefield): how far the wanted camera centre lies
- * past the lowest centre the map allows, at most HUD_COVER_H. Wanted centre = the modern camera's
- * point, or (classic controls) Sarge as the middle of the area above the panel. */
-int controls_field_shift_target(void)
-{
-    BYTE *u = SARGE;
-    if (g_cfg.width <= LAYOUT_DESIGN_W || VIEW_H <= 0 || MAP_H <= 0 || !u) return 0;
-    BYTE *v = (BYTE *)(intptr_t)SARGE_VEHICLE(u);          /* driving: the vehicle (the original camera follows it) */
-    double want = !v && g_cam_want_frame == view_frame_count() ? g_cam_want_y : (v ? VEH_Y(v) : SARGE_Y(u)) + HUD_COVER_H / 2.0;
-    double over = want - (MAP_H - VIEW_H / 2.0 - 1);
-    return (int)(clampd(over, 0, HUD_COVER_H) + 0.5);
 }
 
 /* ---------------------------------------------------------------- sprint indicator

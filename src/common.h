@@ -260,10 +260,9 @@ void layout_patch_limits(void);
 int layout_resolve_preset(const char *name);
 typedef void (__cdecl *VoidFnPtr)(void);
 int layout_view_is_gameplay(void);
-int layout_field_shift(void);              /* layout.c: battlefield rows moved up at the map bottom */
 extern VoidFnPtr layout_draw_battlefield_original;
 void __cdecl layout_draw_battlefield(void); /* FUN_0042d610 wrap */
-int controls_field_shift_target(void);     /* controls.c: rows the camera wants past the map bottom */
+int controls_map_bottom_room(void);        /* controls.c: rows the camera may show past boundrect.bottom (wide screens) */
 /* controls.c */
 extern VoidFnPtr controls_dispatch_original;
 void __cdecl controls_dispatch(void);
@@ -317,7 +316,7 @@ int __fastcall bullets_hit_object(BYTE *obj, int height);          /* FUN_0040e6
 typedef int (__fastcall *StopsFn)(BYTE *item, BYTE *proj, int height, int distance);
 extern StopsFn bullets_stops_original;
 int __fastcall bullets_stops(BYTE *item, BYTE *proj, int height, int distance);   /* FUN_00435c80 wrap */
-void fog_draw(Surf *b, int shift);                                  /* fog.c: after the battlefield is drawn */
+void fog_draw(Surf *b);                                             /* fog.c: after the battlefield is drawn */
 void hud_finish_frame(Surf *s);                                    /* hud.c: finished frame (weapons, sprint, objectives, corners) */
 void layout_scale_corners(Surf *b);                                /* layout.c: enlarge the HUD corner zones */
 int layout_hud_corner_scale(void);                                 /* layout.c: corner scale in quarters */
@@ -436,7 +435,6 @@ int vehicles_muzzle(BYTE *v, int *x, int *y);       /* vehicles.c: where Vehicle
 int vehicles_aim_reachable(BYTE *v, int wx, int wy); /* vehicles.c: 0 = the gun cannot point there (halftrack arc) */
 void __fastcall vehicles_update(BYTE *v);           /* call 0x419c52 -> VehicleUpdate 0x4176f0 */
 void __fastcall vehicles_turret_lock(BYTE *v, int spin);   /* call 0x417ce8 -> VehicleLockTurret 0x417eb0 */
-void hdworld_shift_rows(Surf *b, int n);
 void hdworld_restore_field(Surf *b, int y, int x0, int x1);   /* hdworld.c: battlefield bytes back from the map (layout.c) */
 void hdworld_forget(Surf *s);                          /* surface.c: before freeing its references */
 void hdworld_frame_shown(Surf *b);
