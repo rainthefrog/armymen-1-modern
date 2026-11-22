@@ -359,6 +359,8 @@ void patches_apply(void)
      * fread of the sound data (filled from <game>\am2_sounds instead of sounds.asd) */
     hook_call("audio: sfx create, wave record (call 0x40f42d) -> audio.c", 0x40f42d, 0x4107b0, (void *)audio_find_wave_stub);
     hook_call("audio: sfx create, data fread (call 0x40f515) -> audio.c", 0x40f515, 0x470e00, (void *)audio_fread);
+    static const BYTE svol_o[] = { 0x85,0xc9, 0x75,0x06, 0xb8,0x64,0x00,0x00,0x00 };   /* FUN_004031e0: test ecx,ecx; jne; mov eax,64h */
+    hook_jmp("audio: sound volume by distance (FUN_004031e0) -> audio.c (stale-safe)", 0x4031e0, svol_o, sizeof svol_o, (void *)audio_source_volume);
     /* music.c (2026-11-21, [audio] am2_music; original music while off): the wave record lookups FUN_004107b0 of
      * the music stream code (create, play, fill / refill, rewind for the loop) - an Army Men II track's record
      * (its own FILE*, data start, size, format) is handed over, so the game streams it from disk */

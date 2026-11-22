@@ -813,6 +813,7 @@ int aware_unit_noticed(BYTE *unit);                                    /* aware.
 float squad_sprint_speed(BYTE *anim);                                 /* squad.c (controls.c controls_move): speed factor of this ANIM, 0 = none */
 void audio_find_wave_stub(void);                                      /* audio.c: call 0x40f42d (FUN_004107b0) - Army Men II sound swap */
 size_t __cdecl audio_fread(void *buf, size_t size, size_t count, void *file);   /* audio.c: call 0x40f515 (the effect data read) */
+int __fastcall audio_source_volume(BYTE *src);                           /* audio.c: FUN_004031e0 rewrite (stale-safe) */
 void music_stub_create(void), music_stub_play(void), music_stub_fill(void), music_stub_rewind(void);   /* music.c: FUN_004107b0 calls of the stream code */
 int controls_sarge_running(void);                                     /* controls.c: Sarge sprints (modern controls) */
 void squad_debug_follow(void);                                        /* squad.c: testing aid, every player unit follows Sarge */

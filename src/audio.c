@@ -206,3 +206,25 @@ size_t __cdecl audio_fread(void *buf, size_t size, size_t count, void *file)
     if (c < n) memset((BYTE *)buf + c, s->fmt.bits == 8 ? 0x80 : 0, n - c);
     return count;
 }
+
+/* ---- sound volume by distance (FUN_004031e0), NULL / stale-safe rewrite (2026-11-21) ----
+ * Caller: FUN_00403030 (play sound: ECX = sound id, EDX = game) -> FUN_004031e0 (ECX = game; fastcall,
+ * returns 0..100 %). Original: NULL -> 100 (full volume), else FUN_00403190(&source->x) = 100 - distance to Sarge /
+ * the camera * 100 / 1500. Crash on the user's PC (2026-11-21, mission 8, right after mortar throws): source = 2
+ * (garbage), 0x4324a0 read address 6. Kept: NULL = 100, a valid source as before. Changed: an unreadable source is
+ * silent (0 % - FUN_00403030 then plays nothing) and logged with the game function that asked for the sound. */
+#define SND_DISTANCE_VOL 0x403190    /* FUN_00403190: ECX = short[2] world position -> 0..100 */
+typedef int (__fastcall *DistVolFn)(const short *pos);
+int __fastcall audio_source_volume(BYTE *src)
+{
+    if (!src) return 100;
+    if ((uintptr_t)src < 0x10000 || IsBadReadPtr(src, 8)) {
+        static int n;
+        /* FUN_00403030 pushes ebx/ebp/esi/edi before calling us: its caller's return address is 5 dwords up */
+        DWORD *sp = (DWORD *)__builtin_frame_address(0) + 1;
+        if (n++ < 20) mlog("audio: sound source %p unreadable - sound skipped (asked by %08lx, play sound returns to %08lx)",
+                           src, IsBadReadPtr(sp, 24) ? 0 : sp[5], IsBadReadPtr(sp, 4) ? 0 : sp[0]);
+        return 0;
+    }
+    return ((DistVolFn)SND_DISTANCE_VOL)((const short *)(src + 4));
+}
