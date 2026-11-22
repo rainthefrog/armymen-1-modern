@@ -89,6 +89,7 @@ void gameplay_frame(void)
     squad_frame();                               /* squad.c: troopers following Sarge sprint with him */
     patrol_frame();                              /* patrol.c: enemy marches patrol between post and goal */
     allies_frame();                              /* allies.c: the player's soldiers regenerate, medkit state */
+    drops_frame();                               /* drops.c: enemy soldiers drop their weapon where they die */
     vehicle_regen();
     static BYTE *who;
     static int last_hp, since_hurt_ms;

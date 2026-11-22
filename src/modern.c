@@ -60,6 +60,7 @@ static Feature FEATURES[MOD_COUNT] = {
     [MOD_THROW_POINTER]= { "throw_pointer", "Grenades / mortar land at the pointer",'M', 1 },
     [MOD_THROW_HOLD]   = { "throw_hold",    "Throw on release (hold = aim, circle)", 'M', 1 },
     [MOD_STANCE_HINTS] = { "stance_hints",  "Stance hints while under fire",        'S', 1 },
+    [MOD_ENEMY_LABELS] = { "enemy_labels",  "Enemy soldier kind on hover",          'S', 1 },
     [MOD_COLOURBLIND]  = { "colourblind",   "Colour-blind: tan enemies drawn blue", 'M', 0 },
     [MOD_SQUAD_MOUSE]  = { "squad_mouse",   "Ctrl + click squad orders",            'M', 1 },
     [MOD_RADIAL]       = { "radial_menu",   "Radial command menu (hold key)",       'M', 1 },
@@ -1167,6 +1168,18 @@ static void modern_draw_body(Surf *b)
             else if (hi.state == HEAL_NO_WAY) text(mx + 14, my + 6, "TOO FAR", C_GREY, 1);
             else { wsprintfA(s, "MEDKIT x%d: CLICK A SOLDIER", hi.kits); text(mx + 14, my + 6, s, C_WHITE, 1); }
             text(mx + 14, my + 16, "RIGHT CLICK: CANCEL", C_GREY, 1);   /* 2026-11-21 user: "med kits don't cancel" (also H, Esc, a weapon) */
+        }
+    }
+    {   /* the enemy soldier under the fire pointer: his kind (drops.c, 2026-11-21, user: "mouseover on enemies should tell
+         * me rifleman, flameman, mortarman, etc."), from the game's data (his weapon), centred above his sprite; black
+         * outline so it reads on every terrain; [modern] enemy_labels */
+        const char *kind; int kx, ky;
+        if (modern_on(MOD_ENEMY_LABELS) && drops_hover_label(&kind, &kx, &ky)) {
+            int x, y; to_screen(kx, ky, &x, &y);
+            x -= (int)strlen(kind) * 3; y -= 22;                     /* above the health bar / awareness mark over his head */
+            for (int oy = -1; oy <= 1; oy++)
+                for (int ox = -1; ox <= 1; ox++) if (ox || oy) text(x + ox, y + oy, kind, C_BLACK, 0);
+            text(x, y, kind, C_WHITE, 0);
         }
     }
     {   /* the minesweeper carried (mines.c, 2026-11-21): from the game's data (Sarge, the mine objects, the plate =
