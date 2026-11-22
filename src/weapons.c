@@ -79,11 +79,18 @@ static int valid(BYTE *u)
 {
     /* 2026-11-20 crash (user log: EXCEPTION in 0x4492b0 called from here at a mission start): the new mission's
      * Sarge can sit at the SAME address - the boxes of the last mission (freed items) were kept. Also forgotten
-     * on a new mission / scenario number now. */
-    static int mission = -1;
-    BYTE *g = *(BYTE **)0x4b3f70;
-    int m = g && !IsBadReadPtr(g, 0x80) ? (*(int *)(g + 0x74) << 16) ^ *(int *)(g + 0x70) : -1;
-    if (!u || u != g_owner || SARGE_HEALTH(u) <= 0 || m != mission) { forget(); g_owner = u; mission = m; return 0; }
+     * on a new mission / scenario number now.
+     * 2026-11-21 crash (user: 0x43fdc6, the HUD weapon icon read Sarge's current weapon type as "ens/"): mission 7 lost
+     * with Sarge alive and entered again from the menus - same Sarge (the static legion record), same mission number,
+     * so the boxes of the lost run were kept and a freed weapon record went back into a slot. Now keyed on the mission
+     * RUN (gameplay_run: any (re)start, incl. Play Again and the same mission again). */
+    static unsigned run;
+    unsigned r = gameplay_run(NULL, NULL);
+    if (!u || u != g_owner || SARGE_HEALTH(u) <= 0 || r != run) {
+        if (r != run && (g_store[1].type || g_store[2].type || g_store[3].type || g_store[4].type || g_store[5].type))
+            mlog("weapons: boxes of the last mission run forgotten (run %u)", r);
+        forget(); g_owner = u; run = r; return 0;
+    }
     return 1;
 }
 

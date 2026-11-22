@@ -840,6 +840,7 @@ int weapons_room_for_special(void);         /* weapons.c: a special weapon picke
 void __fastcall mines_lay(BYTE *weapon, int army, DWORD point);   /* call 0x445f44 -> MineLay 0x446600 */
 /* allies.c (2026-11-21): the player's soldiers - regeneration, more health, medkits used on them (AM2 style) */
 void allies_frame(void);                    /* gameplay.c gameplay_frame: regeneration, mission change */
+unsigned gameplay_run(int *scenario, int *mission);   /* gameplay.c: changes on every mission (re)start (also Play Again / same mission again) */
 void __fastcall allies_trooper_join(BYTE *trooper, BYTE *unit);   /* call 0x43b4e5 -> FUN_0043b5f0 (trooper joins his unit) */
 int __fastcall allies_pickup_test(BYTE *item, BYTE *sarge);       /* call 0x439855 -> FUN_00439700 (may Sarge pick this up) */
 int allies_kits(void);                      /* medkits carried (weapons.c HUD badge) */

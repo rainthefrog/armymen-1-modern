@@ -391,6 +391,7 @@ DDraw *g_dd;
 void dd_present(DDraw *dd, int frame_end)
 {
     missionpath_screen_note();                      /* missionpath.c: restart vs fresh entry (menus seen) */
+    gameplay_run(NULL, NULL);                       /* gameplay.c: notes every mission (re)start (also seen during loading) */
     if (!dd->primary || !dd->hwnd) return;
     if (dd->coop & DDSCL_FULLSCREEN) make_fullscreen_window(dd);
     present_request(dd, frame_end);

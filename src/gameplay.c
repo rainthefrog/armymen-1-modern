@@ -259,3 +259,35 @@ __asm__(".globl _crush_stub\n"
         "    mov $0x431f60, %eax\n"                      /* ItemDamage */
         "    jmp *%eax\n"
         "1:  ret $12\n");
+
+/* ---------------------------------------------------------------- mission runs (2026-11-21)
+ * A number that changes whenever a mission is (re)started: a new scenario / MissionID (gpGame +0x70 / +0x74), the game
+ * state (thiscall 0x423d00) going from loading (4) to play (5) - polled every frame from dd_present, so a short load is seen -, or the
+ * game clock (gpGame +0x44, game ms from the mission start) going backwards - Play Again, a restart, or the same
+ * mission entered again from the menus all keep the scenario / mission numbers AND Sarge's address (he is the static
+ * record in the legion, 0x4f7944), so neither tells a new run. Per-mission mod state that holds game pointers
+ * (weapons.c boxes) or must be restored on a restart (allies.c medkits) keys on it.
+ * Crash 2026-11-21 (user: 0x43fdc6 in the HUD weapon-icon widget, FUN_00440210 -> FUN_0043fd40, the icon frame =
+ * Sarge's current weapon TYPE (FUN_004402b0: widget +0x4c data +8 = FUN_00448d70) read as "ens/"): mission 7 lost (Sarge
+ * alive), entered again from the menus - weapons.c kept its boxes (same Sarge, same mission number) and swapped a
+ * weapon record of the previous run, freed and reused for text, into Sarge's slot. */
+static unsigned g_run = 1;
+#define GP_GAME_STATE ((int (__fastcall *)(void *, int))0x423d00)   /* thiscall: the game's state (4 loading, 5 play) */
+unsigned gameplay_run(int *scenario, int *mission)
+{
+    static int last_s = -999, last_m = -999, last_t = -1, last_gs = -1;
+    BYTE *g = *(BYTE **)0x4b3f70;
+    if (!g || IsBadReadPtr(g, 0x80)) { if (scenario) *scenario = -1; if (mission) *mission = -1; return g_run; }
+    int s = *(int *)(g + 0x70), m = *(int *)(g + 0x74), t = *(int *)(g + 0x44), gs = GP_GAME_STATE(g, 0);
+    /* Wine 2026-11-21: Play Again goes game state 5 -> 4 -> 5 with the clock NOT reset; a won part goes on to the next
+     * MissionID without leaving state 5 */
+    int reload = last_gs == 4 && gs == 5;
+    if (s != last_s || m != last_m || reload || (last_t >= 0 && t + 500 < last_t)) {
+        if (last_s != -999) { g_run++; mlog("gameplay: mission run %u (scenario %d mission %d%s, game clock %d, was %d / %d at %d)", g_run, s, m, reload ? ", reloaded" : "", t, last_s, last_m, last_t); }
+        last_s = s; last_m = m;
+    }
+    last_t = t; last_gs = gs;
+    if (scenario) *scenario = s;
+    if (mission) *mission = m;
+    return g_run;
+}
