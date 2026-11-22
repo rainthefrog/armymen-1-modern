@@ -41,7 +41,8 @@
  *        short of him and, within HEAL_REACH, uses ONE kit on him: + the kit's percentage of HIS max (as the game
  *        heals Sarge), capped; the game's health pickup sound (FUN_00420ff0 ecx 0x1394, edx 100, as 0x4493d1);
  *      - left click on Sarge himself: one kit on Sarge (when hurt; at full health the click is the stance click);
- *      - the HUD shows the carried kits as a small medkit + "xN" right of the VEHICLE HEALTH pips (weapons.c, allies_kits).
+ *      - the HUD shows the carried kits as a box of the weapon column (2026-11-22, weapons.c "the medkit box"): the game's
+ *        medkit icon with the count where weapons show ammo; the wheel, a click on the box and H select it there.
  *    Kits carry over to the next part of the same scenario and are restored on a restart (see "Carried kits" below).
  *
  * 4. The medical tent heals them too ([gameplay] tent_heals_allies = 1; 2026-11-22, user: "healing tent should also
@@ -294,12 +295,65 @@ int allies_take_esc(int down)
     return g_esc_eaten;
 }
 
+/* weapons.c: the medkit box chosen (wheel stop, click on the box); 1 = the medkit is selected now */
+int allies_select_heal(int on, const char *why)
+{
+    if (!on) return !allies_cancel(why);
+    if (!usable(SARGE) || allies_kits() <= 0) return 0;
+    set_mode(1, why);
+    return 1;
+}
+
 void allies_toggle_heal(void)
 {
     BYTE *u = SARGE;
     if (!usable(u)) return;
     if (!g_heal && allies_kits() <= 0) { mlog("allies: heal key - no medkits carried"); return; }
     set_mode(!g_heal, "heal key");
+}
+
+/* Test aids ([debug] cheat_keys, controls.c): Ctrl+L = one medkit more (up to MEDKIT_MAX, 50 %); Ctrl+Shift+L = the
+ * player's soldier nearest Sarge loses half his health and the mouse pointer is put on him (the Wine rig then clicks
+ * him: present_game_to_screen maps battlefield frame pixels to the desktop like the rig's g:x,y steps). */
+static BYTE *g_dbg_t; static int g_dbg_d;
+static void dbg_nearest(BYTE *t, int cx, int cy, int top, int veh)
+{
+    (void)top; (void)veh;
+    BYTE *u = SARGE;
+    int d = (cx - SARGE_X(u)) * (cx - SARGE_X(u)) + (cy - SARGE_Y(u)) * (cy - SARGE_Y(u));
+    int fx = cx - *(short *)0x4e2de8, fy = cy - *(short *)0x4e2dea;
+    if (fx < 60 || fy < 40 || fx > 960 || fy > 380 || d < 28 * 28) d += 1 << 26;   /* (also: one standing on Sarge - a click there is his) */   /* behind the HUD / off screen: only if nobody else (g_dbg_d & 0x3ffffff = distance squared) */
+    if (!g_dbg_t || d < g_dbg_d) { g_dbg_t = t; g_dbg_d = d; }
+}
+void allies_debug_kit(int hurt)
+{
+    BYTE *u = SARGE;
+    if (!u) return;
+    if (!hurt) {
+        kits_valid();
+        if (K.n < MEDKIT_MAX) K.pct[K.n++] = KIT_PCT_FALLBACK;
+        mlog("cheat: medkit added - %d carried", K.n);
+        return;
+    }
+    g_dbg_t = NULL;
+    allies_each(dbg_nearest);
+    if (!g_dbg_t) { mlog("cheat: no soldier of the player on the map"); return; }
+    BYTE *t = g_dbg_t;
+    if ((g_dbg_d & 0x3ffffff) > 100 * 100 || g_dbg_d >> 26) {                    /* out of heal range: Sarge to 50 px left of him (SargeTeleport 0x448a90) */
+        ((void (__fastcall *)(BYTE *, int, int))0x448a90)(u, SARGE_X(t) - 50, SARGE_Y(t));
+        mlog("cheat: Sarge placed beside him -> %d,%d", SARGE_X(u), SARGE_Y(u));
+    }
+    int cx = SARGE_X(t), cy = SARGE_Y(t) - 10;   /* his body (position = feet) */
+    BYTE *av = TROOPER_AVATAR(t), *an = av ? AVATAR_ANIM(av) : NULL;
+    if (an) { const int *r = ANIM_RECT(an); cx = (r[0] + r[2]) / 2; cy = (r[1] + r[3]) / 2; }
+    BYTE *under = soldier_at(cx, cy);             /* figures overlap: the one a click there picks is the one hurt */
+    if (under) t = under;
+    int was = HEALTH(t), to = MAX_HEALTH(t) / 2 > 0 ? MAX_HEALTH(t) / 2 : 1;
+    if (to < was) set_health(t, to);
+    int fx = cx - *(short *)0x4e2de8, fy = cy - *(short *)0x4e2dea;   /* CAMERA_X / CAMERA_Y (controls.c): frame pixels */
+    int sx = fx, sy = fy, moved = present_game_to_screen(&sx, &sy) && SetCursorPos(sx, sy);
+    mlog("cheat: trooper %p at %d,%d (frame %d,%d, %d px from Sarge) health %d -> %d / %d%s", t, SARGE_X(t), SARGE_Y(t), fx, fy,
+         (int)sqrt((double)(g_dbg_d & 0x3ffffff)), was, HEALTH(t), MAX_HEALTH(t), moved ? ", pointer on him" : "");
 }
 
 static int __fastcall allies_pickup_test_px(BYTE *item, BYTE *sarge) {

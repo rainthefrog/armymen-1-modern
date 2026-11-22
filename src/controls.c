@@ -2733,6 +2733,9 @@ static void cheat_keys(void)
     static int w_was; int wk = fg && ctrl && key_down('W');
     if (wk && !w_was && u && !SARGE_VEHICLE(u)) weapons_debug_pickup(key_down(VK_SHIFT));   /* Shift: a mine / explosive pack */
     w_was = wk;
+    static int j_was; int jk = fg && ctrl && key_down('L');   /* Ctrl+L: a medkit; Ctrl+Shift+L: hurt the nearest soldier (allies.c) */
+    if (jk && !j_was && u && layout_view_is_gameplay()) allies_debug_kit(key_down(VK_SHIFT));
+    j_was = jk;
     static int v2_was; int v2 = fg && ctrl && key_down('V');   /* Ctrl+V: mission won now (the game's Triumph cheat 0x46b850) */
     if (v2 && !v2_was && u && layout_view_is_gameplay()) { weapons_debug_dump("before Triumph"); mlog("cheat: Triumph (mission won)"); ((VoidFnPtr)0x46b850)(); }
     v2_was = v2;

@@ -47,6 +47,8 @@ static const char *tip_at(int sx, int sy)
     if (objectives_box(&r) && PtInRect(&r, p))
         return g_cfg.controls_modern ? "Briefing  [J]" : "Briefing  [O]";
     if (layout_resize_icon_at(sx, sy) >= 0) return "Resize";
+    if (weapons_kit_at(sx, sy))                    /* weapons.c: the medkit box (in a weapon box or the column header) */
+        return "Medkits  [H]";
     if (weapons_ui_at(sx, sy))
         return "Spare weapon";
     if (!layout_on_hud_panel(sx, sy)) return NULL;
