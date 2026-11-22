@@ -17,8 +17,9 @@
  *     slot's weapon; g_store: the weapons not in a slot).
  *   - A weapon type that is already carried is not taken twice: its ammo is ADDED to the carried
  *     one, up to MAX_AMMO (99, the game's own cap in MakeWeapon); the emptied pickup is removed by
- *     the game's drop routine (an item dropped with no ammo is destroyed). Mines and explosives: only up to
- *     their own max (their placed charges are kept in an array sized when the weapon was made).
+ *     the game's drop routine (an item dropped with no ammo is destroyed); what does not fit stays in the pack.
+ *     Every weapon, mines and explosives too, up to 99 (2026-11-21): their charge objects move with the ammo and
+ *     their charge array grows (mines.c mines_transfer). An empty carried weapon takes ammo too.
  *   - mouse wheel (modern controls): steps through the boxes holding a weapon in screen order.
  *   - left click on a box: use that weapon; right click: drop it (not the rifle).
  *   - after a drop, another carried weapon of that kind moves into the slot (it keeps its box).
@@ -187,7 +188,8 @@ static void merge_ammo(BYTE *u, void *item, int arg, int dup_box)
     int total = W_AMMO(dup.type) + W_AMMO(rec);
     if (total > MAX_AMMO) total = MAX_AMMO;
     W_AMMO(dup.type) = (short)total;
-    if (W_MAX_AMMO(dup.type) < total) W_MAX_AMMO(dup.type) = (short)total;
+    int charges = *(int *)dup.type == TYPE_MINE || *(int *)dup.type == TYPE_EXPLOSIVE;   /* nMaxAmmo = their array length */
+    if (!charges && W_MAX_AMMO(dup.type) < total) W_MAX_AMMO(dup.type) = (short)total;
     W_AMMO(rec) = 0;
     DROP_SLOT(u, c, *(DWORD *)(u + 4));          /* empty: the game destroys it */
     SLOT_TYPE(u, c) = held.type; SLOT_ITEM(u, c) = held.item;
@@ -209,29 +211,36 @@ void __fastcall weapons_touch(BYTE *unit, void *item, int arg)
     if (dup >= 0) {                              /* the same weapon again: take its ammo */
         BYTE *rec = ITEM_WEAPON(item);
         Weapon d = box_weapon(u, dup);
-        /* mines / explosives (2026-11-21, user: "mines are not picking up extra from ammo box on the ground"): their
-         * placed charges are kept in an array sized to the weapon's own max (nMaxAmmo when it was made), so they are
-         * topped up only TO that max - the rest stays in the pack on the ground (its ammo lowered) */
-        if (type == TYPE_EXPLOSIVE) return;              /* charge list not checked for explosives: refused as the original */
-        if (type == TYPE_MINE) {
-            /* the pack's real charges move into the carried weapon's used-up slots (mines_transfer swaps the object
-             * numbers), so ammo always matches charges in the bag (2026-11-21: the first version raised only the ammo -
-             * "more ammo than free charges"); up to the weapon's own max; the rest stays in the pack */
-            int have = W_AMMO(d.type), cap = W_MAX_AMMO(d.type), got = W_AMMO(rec);
+        /* Every weapon stacks up to MAX_AMMO (2026-11-21, user: "mines are not stacking fully ... same for all weapons ...
+         * 99 is the cap"); the rest stays in the pack on the ground (its ammo lowered). An EMPTY carried weapon takes ammo
+         * too; unlimited ones (ammo < 0) take nothing (the pickup stays, as the original "fully loaded").
+         * Mines / explosives: their charges are objects kept in an array (WEAPON +0x1c, nMaxAmmo long): the pack's real
+         * charges move into the carried weapon (mines_transfer: into used-up slots, else the array is grown with the
+         * game's allocator), so ammo always matches charges in the bag - not limited by the weapon's own nMaxAmmo any more. */
+        if (type == TYPE_MINE || type == TYPE_EXPLOSIVE) {
+            int have = W_AMMO(d.type), cap = MAX_AMMO, got = W_AMMO(rec);
             if (have < 0 || have >= cap || got <= 0) return;
             int want = cap - have < got ? cap - have : got;
             int take = mines_transfer(d.type, rec, want);
             if (take <= 0) return;
             if (take < got) {
                 W_AMMO(rec) = (short)(got - take); W_AMMO(d.type) = (short)(have + take);
-                if (g_cfg.log >= 1) mlog("weapons: mines topped up %d -> %d (max %d), %d left in the pack", have, have + take, cap, got - take);
+                if (g_cfg.log >= 1) mlog("weapons: type %d topped up %d -> %d (cap %d), %d left in the pack", type, have, have + take, cap, got - take);
                 remember(u);
                 return;
             }
             merge_ammo(u, item, arg, dup);               /* all of it moved: the emptied pack is removed */
             return;
         }
-        if (W_AMMO(rec) <= 0 || W_AMMO(d.type) <= 0 || W_AMMO(d.type) >= MAX_AMMO) return;
+        int have = W_AMMO(d.type), got = W_AMMO(rec);
+        if (got <= 0 || have < 0 || have >= MAX_AMMO) return;
+        if (have + got > MAX_AMMO) {                     /* only part fits: the rest stays in the pack */
+            W_AMMO(rec) = (short)(have + got - MAX_AMMO); W_AMMO(d.type) = MAX_AMMO;
+            if (W_MAX_AMMO(d.type) < MAX_AMMO) W_MAX_AMMO(d.type) = MAX_AMMO;
+            if (g_cfg.log >= 1) mlog("weapons: type %d topped up %d -> %d (cap), %d left in the pack", type, have, MAX_AMMO, have + got - MAX_AMMO);
+            remember(u);
+            return;
+        }
         merge_ammo(u, item, arg, dup);
         return;
     }

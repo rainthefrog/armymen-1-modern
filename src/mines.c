@@ -31,8 +31,8 @@
  *     turns to the spot and lays it with the game's own routine - the fire press / release below, so the game's
  *     aiming / laying animation, sound, ammo count, charge array and the empty weapon drop are all its own. Only
  *     the spot changes: the wrap of the call 0x445f44 hands MineLay the clicked point instead of the muzzle
- *     point (MineLay snaps it to the tile itself). A click outside the ring is the normal click (walk); a hold
- *     inside it walks as before; keyboard / right-button fire lays at the muzzle as the original;
+ *     point (MineLay snaps it to the tile itself). A click beyond the ring walks there and lays it (round 3,
+ *     below; a tile that is not placeable: the normal walk); a hold walks as before; keyboard / right-button fire lays at the muzzle as the original;
  *   - why not walk Sarge to the spot and lay at his feet: the game never lays at the feet but at the hand point
  *     of the animation frame (in front of him, direction-dependent), so walking there would still miss the
  *     clicked tile; and MineLay itself only takes a point - nothing in it depends on where Sarge stands - so
@@ -98,6 +98,8 @@
 #define W_MAX(w)         (*(short *)((w) + 0x0e))
 #define W_CHARGES(w)     (*(short **)((w) + 0x1c))    /* mines / explosives: object numbers of the charges */
 #define TYPE_MINE        11
+#define TYPE_EXPLOSIVE   12
+#define STACK_MAX        99                            /* ammo cap of every weapon: the game's MakeWeapon cap = the HUD's two digits */
 
 /* the map's objects (OBJECTSTRUCT, 0xd0 bytes each) */
 #define OBJECTS          (*(BYTE **)0x4e30ec)
@@ -204,8 +206,38 @@ static int spot_state(BYTE *u, BYTE *w, int wx, int wy, int *tx, int *ty)
     return MINE_OK;
 }
 
+/* Round 3 (2026-11-21, user: "I want to left click and put anywhere ... and I want to be able to pick them back up"):
+ *   - a tap BEYOND the ring on a placeable tile walks Sarge there along the normal click route and lays the mine on that
+ *     tile once he is within LAY_ARRIVE of it (F below; MINE_FAR in the preview = "WALK + LAY"). Cancelled by another
+ *     tap, fire, a weapon change, or the walk ending short. A tap beyond the ring on a tile that is not placeable is the
+ *     normal walk, as before;
+ *   - a tap on one of Sarge's OWN laid mines (his mine weapon's charge, or a charge of his emptied pack) walks there and
+ *     picks it up - any time on foot, whatever weapon is selected (easiest: no weapon change needed), no sweeper needed:
+ *     the sweeper's collect path without its disarm effects, and never destroyed (full / no free box: it stays). */
+#define LAY_ARRIVE       40      /* walk + lay: lay once Sarge is this close to the tile (well inside MINE_REACH) */
+#define LAY_WALK_TIMEOUT_MS 20000
+#define LAY_IDLE_MS      600     /* not walking and not there yet this long: given up */
+static struct { int active, x, y; BYTE *weapon; DWORD at, idle_since; } F;
+
+/* a tile beyond the ring: placeable once Sarge is there? (the reach and "no way" tests wait until he is) */
+static int far_state(BYTE *w, int tx, int ty)
+{
+    if (W_AMMO(w) <= 0 || free_charges(w, NULL) <= 0) return MINE_EMPTY;
+    if (tx <= 0 || ty <= 0 || controls_sarge_blocked_at(tx, ty)) return MINE_BLOCKED;
+    if (mine_near(tx, ty)) return MINE_CLOSE;
+    return MINE_FAR;
+}
+
+static void start_lay(BYTE *u, BYTE *w, int tx, int ty, int wx, int wy, DWORD now)
+{
+    R.phase = 1; R.frames = 0; R.x = tx; R.y = ty; R.at = now; R.sarge = u; R.weapon = w;
+    mlog("mines: lay at tile %d,%d (pointer %d,%d, Sarge %d,%d, %d px away), %d mines", tx, ty, wx, wy, SARGE_X(u), SARGE_Y(u),
+         (int)sqrt((double)(wx - SARGE_X(u)) * (wx - SARGE_X(u)) + (double)(wy - SARGE_Y(u)) * (wy - SARGE_Y(u))), W_AMMO(w));
+}
+
 static int sweeper_active(BYTE *u);                /* minesweeper (below) */
 static BYTE *mine_at(int wx, int wy);
+static BYTE *own_hover(BYTE *u, int wx, int wy, int *ok);
 
 static int active_for(BYTE *u)
 {
@@ -223,8 +255,12 @@ int mines_preview(MinePreview *p)
     p->busy = R.phase != 0;
     p->state = MINE_OUT;
     int wx, wy;
-    if (controls_pointer_world(&wx, &wy)) p->state = spot_state(u, w, wx, wy, &p->x, &p->y);
-    if (p->state != MINE_OUT && sweeper_active(u) && mine_at(wx, wy)) p->state = MINE_OUT;   /* on a mine: the sweeper's disarm pointer */
+    if (!controls_pointer_world(&wx, &wy)) return 1;
+    p->state = spot_state(u, w, wx, wy, &p->x, &p->y);
+    if (p->state == MINE_OUT && far_state(w, p->x, p->y) == MINE_FAR) p->state = MINE_FAR;   /* a tap walks there + lays */
+    int ok;
+    if (p->state != MINE_OUT && ((sweeper_active(u) && mine_at(wx, wy)) || own_hover(u, wx, wy, &ok)))
+        p->state = MINE_OUT;                                            /* on a mine: the disarm / pick-up pointer */
     return 1;
 }
 
@@ -277,7 +313,7 @@ static struct {                 /* this frame (mines_frame) */
     int carried, selected, count, nearest, plate_x, plate_y;
     DWORD beep_at, new_beep_at;
 } SW;
-static struct { int obj; DWORD at, idle_since; } D = { -1 };   /* a disarm walk in progress */
+static struct { int obj, pickup; DWORD at, idle_since; } D = { -1 };   /* a walk to a mine in progress: disarm (sweeper) or pick up (own) */
 
 static int laid_mine(BYTE *o)
 {
@@ -379,14 +415,35 @@ static BYTE *dead_pack(void)
     return NULL;
 }
 
+/* The mine pack (pickup item) whose charge array holds object o, or NULL. A LAID mine's +0x20 is cleared by
+ * FUN_00446530, so its owner is found by its object number in the arrays the mod can reach: Sarge's carried mine weapon
+ * (also a pickup item) and every mine pack of the map (an enemy unit's own weapon record is not reachable). */
+static BYTE *pack_holding(BYTE *o)
+{
+    for (int i = 0; i < OBJECT_COUNT; i++) {
+        BYTE *p = object(i), *rec = OBJ_OWNER(p);
+        if (OBJ_CATEGORY(p) != CAT_PICKUP || !rec || IsBadReadPtr(rec, 0x20) || W_TYPE(rec) != TYPE_MINE) continue;
+        if (charge_slot(rec, o) >= 0) return p;
+    }
+    return NULL;
+}
+static BYTE *owner_weapon(BYTE *o)
+{
+    BYTE *w = weapons_carried(TYPE_MINE, NULL);
+    if (w && charge_slot(w, o) >= 0) return w;
+    BYTE *p = pack_holding(o);
+    if (p) return OBJ_OWNER(p);
+    BYTE *rec = OBJ_OWNER(o);                          /* a charge still in a bag keeps its owner */
+    return rec && !IsBadReadPtr(rec, 0x20) && W_TYPE(rec) == TYPE_MINE ? rec : NULL;
+}
+
 /* what a disarm of mine o would do */
 static int sweep_plan(BYTE *o)
 {
     BYTE *w = weapons_carried(TYPE_MINE, NULL);
     if (w) {
-        if (W_AMMO(w) < 0 || W_AMMO(w) >= W_MAX(w)) return SWEEP_FULL;
-        if (charge_slot(w, o) >= 0 || spare_slot(w, free_charges(w, NULL) > W_AMMO(w)) >= 0) return SWEEP_COLLECT;
-        return SWEEP_FULL;
+        if (W_AMMO(w) < 0 || W_AMMO(w) >= STACK_MAX) return SWEEP_FULL;   /* 99; the array grows (put_in) */
+        return SWEEP_COLLECT;
     }
     if (!dead_pack()) return SWEEP_NO_PACK;
     if (!weapons_room_for_special()) return SWEEP_NO_ROOM;
@@ -404,43 +461,123 @@ static void bag_mine(BYTE *o)
     if (cell) MINE_CELLS(cell);
 }
 
-/* Put mine o into weapon w: its own slot, or swapped into slot k (the used-up object goes to o's old owner). */
+/* Growing charge arrays (2026-11-21, user: "mines are not stacking fully - no limits on those ... 99 is the cap"): a mine
+ * or explosive weapon's charges are WEAPON +0x1c, short[nMaxAmmo] (+0xe) made by MakeWeapon 0x446190 with the exe's own
+ * allocator (0x4708e0, cdecl size) and freed by FUN_00446350 with the exe's free (0x470870, cdecl ptr). The only
+ * readers of the array are MineLay 0x446600 / the explosive placement 0x4463e0 (both loop nMaxAmmo entries and read the
+ * object of each, so every entry must stay a real object number) and FUN_00446350 (free). To take more charges than
+ * the weapon was made with, the array is made one entry longer with the game's allocator, the old one freed with the
+ * game's free and nMaxAmmo raised; a charge that leaves an array without a used-up object to swap back is removed from
+ * it (the entries after it move up, nMaxAmmo - 1). Ammo itself stops at STACK_MAX. */
+typedef void *(__cdecl *GameAllocFn)(int size);
+typedef void (__cdecl *GameFreeFn)(void *p);
+#define GAME_ALLOC       ((GameAllocFn)0x4708e0)
+#define GAME_FREE        ((GameFreeFn)0x470870)
+static int append_charge(BYTE *w, int obj)            /* the new slot, or -1 */
+{
+    int n = W_MAX(w);
+    short *old = W_CHARGES(w);
+    if (n < 0 || n >= 0x7ff0 || (old && n > 0 && IsBadReadPtr(old, (UINT_PTR)n * 2))) return -1;
+    short *grown = (short *)GAME_ALLOC((n + 1) * 2);
+    if (!grown) return -1;
+    if (old && n > 0) memcpy(grown, old, (size_t)n * 2);
+    grown[n] = (short)obj;
+    W_CHARGES(w) = grown; W_MAX(w) = (short)(n + 1);
+    if (old) GAME_FREE(old);
+    return n;
+}
+static void remove_charge(BYTE *w, int j)
+{
+    short *c = W_CHARGES(w);
+    int n = W_MAX(w);
+    if (!c || j < 0 || j >= n) return;
+    memmove(c + j, c + j + 1, (size_t)(n - j - 1) * 2);
+    W_MAX(w) = (short)(n - 1);
+}
+
+/* Put mine o into weapon w: its own slot; else a used-up slot (the used-up object goes to o's old owner in o's place);
+ * else a new slot at the end of a grown array (o leaves its old owner's array). */
 static int put_in(BYTE *w, BYTE *o, int *slot, int bag_too)
 {
     int k = charge_slot(w, o);
     if (k < 0) {
-        k = spare_slot(w, bag_too);
-        if (k < 0) return 0;
-        short *c = W_CHARGES(w);
-        BYTE *spent = object(c[k]), *old = OBJ_OWNER(o);
+        BYTE *old = owner_weapon(o);
         int j = old && old != w && !IsBadReadPtr(old, 0x20) && W_TYPE(old) == TYPE_MINE ? charge_slot(old, o) : -1;
-        if (j >= 0) { W_CHARGES(old)[j] = (short)obj_index(spent); OBJ_OWNER(spent) = old; }
-        c[k] = (short)obj_index(o);
+        k = spare_slot(w, bag_too);
+        if (k >= 0) {
+            short *c = W_CHARGES(w);
+            BYTE *spent = object(c[k]);
+            if (j >= 0) { W_CHARGES(old)[j] = (short)obj_index(spent); OBJ_OWNER(spent) = old; }
+            c[k] = (short)obj_index(o);
+        } else {
+            k = append_charge(w, obj_index(o));
+            if (k < 0) return 0;
+            if (j >= 0) remove_charge(old, j);
+        }
         OBJ_OWNER(o) = w;
     }
     *slot = k;
     return 1;
 }
 
-/* Disarm mine o (Sarge is next to it): the game's disarm effects, then collected - or destroyed as the original. */
-static void sweep_take(BYTE *u, BYTE *o)
+
+/* One of Sarge's OWN laid mines: a charge of his carried mine weapon, or of his emptied (dropped, used) mine pack. */
+static int own_mine(BYTE *u, BYTE *o)
+{
+    BYTE *w = weapons_carried(TYPE_MINE, NULL);
+    if (w && charge_slot(w, o) >= 0) return 1;
+    BYTE *p = pack_holding(o);
+    return p && (OBJ_FLAGS(p) & OF_USED) && OBJ_ARMY(o) == UID_ARMY(u);
+}
+
+/* Can an own mine be picked up now (never destroyed when not): room in the carried mine weapon, or his emptied pack
+ * revived into a free box. */
+static int pickup_ok(BYTE *o)
+{
+    BYTE *w = weapons_carried(TYPE_MINE, NULL);
+    if (w) return W_AMMO(w) >= 0 && W_AMMO(w) < STACK_MAX;
+    return pack_holding(o) != NULL && weapons_room_for_special();
+}
+
+/* The own mine under the pointer, without the sweeper (with it, the sweeper's disarm pointer covers own mines). */
+static BYTE *own_hover(BYTE *u, int wx, int wy, int *ok)
+{
+    if (!enabled() || !u || SARGE_VEHICLE(u) || !objects_ok() || !layout_view_is_gameplay() || MENU_CURSOR_SHOWN || sweeper_active(u)) return NULL;
+    BYTE *o = mine_at(wx, wy);
+    if (!o || !own_mine(u, o)) return NULL;
+    *ok = pickup_ok(o);
+    return o;
+}
+
+/* Sarge is next to mine o. pickup = 0: the sweeper's disarm - the game's disarm effects, then collected, or destroyed as
+ * the original when it cannot be. pickup = 1: his own mine picked up (no sweeper) - a click sound, collected, and left
+ * where it is when it cannot be. */
+static void take_mine(BYTE *u, BYTE *o, int pickup)
 {
     if (!laid_mine(o)) return;
     int x = OBJ_X(o), y = OBJ_Y(o), army = OBJ_ARMY(o), plan = sweep_plan(o), k = -1;
-    DISARM_EFFECT(o);
-    DISARM_MARK(x, y, 0);
     BYTE *w = weapons_carried(TYPE_MINE, NULL), *pack = NULL;
+    const char *who = pickup ? "mines" : "sweeper";
+    if (pickup) {
+        if (!w) { pack = pack_holding(o); plan = pack && weapons_room_for_special() ? SWEEP_COLLECT : SWEEP_NO_ROOM; }
+        if (plan != SWEEP_COLLECT) { mlog("mines: own mine #%d at %d,%d not picked up (%s) - it stays", obj_index(o), x, y,
+                                          plan == SWEEP_FULL ? "mine weapon full" : "no free box"); return; }
+        PLAY_SOUND(SND_WEAPON_ACTIVATE, NULL);
+    } else {
+        DISARM_EFFECT(o);
+        DISARM_MARK(x, y, 0);
+    }
     int ammo = w ? W_AMMO(w) : 0;
-    if (plan == SWEEP_COLLECT && !w) {                  /* revive an emptied pack with this one charge */
-        pack = dead_pack();
+    if (plan == SWEEP_COLLECT && !w) {                  /* revive an emptied pack (his own one for a pick-up) with this charge */
+        if (!pack) pack = dead_pack();
         w = pack ? OBJ_OWNER(pack) : NULL;
         if (w && put_in(w, o, &k, 1)) {
             W_AMMO(w) = 1;
             OBJ_FLAGS(pack) &= (BYTE)~OF_USED;
             PICK_UP(u, pack, 0);
-            if (weapons_carried(TYPE_MINE, NULL) != w) {  /* refused: undo, destroy as the original */
+            if (weapons_carried(TYPE_MINE, NULL) != w) {  /* refused: undo */
                 OBJ_FLAGS(pack) |= OF_USED; W_AMMO(w) = 0;
-                mlog("sweeper: the revived mine pack #%d was not taken - mine destroyed", obj_index(pack));
+                mlog("%s: the revived mine pack #%d was not taken", who, obj_index(pack));
                 plan = SWEEP_NO_ROOM;
             }
         } else plan = SWEEP_NO_PACK;
@@ -448,23 +585,25 @@ static void sweep_take(BYTE *u, BYTE *o)
         if (put_in(w, o, &k, free_charges(w, NULL) > ammo)) W_AMMO(w) = (short)(ammo + 1); else plan = SWEEP_FULL;
     }
     if (plan != SWEEP_COLLECT) {
+        if (pickup) { mlog("mines: own mine #%d at %d,%d not picked up - it stays", obj_index(o), x, y); return; }
         MINE_DESTROY(o);
         mlog("sweeper: mine #%d at %d,%d (army %d) disarmed and destroyed (%s)", obj_index(o), x, y, army,
              plan == SWEEP_FULL ? "mine weapon full" : plan == SWEEP_NO_ROOM ? "no free box" : "no mine weapon / pack");
         return;
     }
     bag_mine(o);
-    mlog("sweeper: mine #%d at %d,%d (army %d) disarmed and COLLECTED into %s slot %d of %d, ammo %d -> %d, free charges %d",
-         obj_index(o), x, y, army, pack ? "a revived mine pack," : "Sarge's mine weapon,", k, W_MAX(w), pack ? 0 : ammo, W_AMMO(w),
-         free_charges(w, NULL));
+    mlog("%s: mine #%d at %d,%d (army %d) %s into %s slot %d of %d, ammo %d -> %d, free charges %d", who,
+         obj_index(o), x, y, army, pickup ? "PICKED UP" : "disarmed and COLLECTED", pack ? "a revived mine pack," : "Sarge's mine weapon,",
+         k, W_MAX(w), pack ? 0 : ammo, W_AMMO(w), free_charges(w, NULL));
 }
+static void sweep_take(BYTE *u, BYTE *o) { take_mine(u, o, 0); }
 
 /* every frame: the detector (reveal + beeps), the disarm walk */
 static int sweeper_frame(BYTE *u, DWORD now, int walking)
 {
     int stop = 0;
     SW.carried = sweeper_active(u);
-    if (!SW.carried) { SW.count = 0; D.obj = -1; return 0; }
+    if (!SW.carried) { SW.count = 0; return 0; }
     SW.selected = SARGE_WEAPON(u) && W_TYPE(SARGE_WEAPON(u)) == TYPE_SWEEPER;
     if (SW.selected) { short m[2]; MUZZLE_POINT(u, m); SW.plate_x = m[0]; SW.plate_y = m[1]; }
     safe_sync();
@@ -495,31 +634,47 @@ static int sweeper_frame(BYTE *u, DWORD now, int walking)
         DWORD period = BEEP_NEAR_MS + (DWORD)((BEEP_FAR_MS - BEEP_NEAR_MS) * (nearest > SWEEP_RADIUS ? SWEEP_RADIUS : nearest) / SWEEP_RADIUS);
         if (now - SW.beep_at >= period) { PLAY_SOUND(SND_WEAPON_ACTIVATE, NULL); SW.beep_at = now; if (g_cfg.log >= 3) mlog("sweeper: beep (%d px, every %lu ms)", nearest, period); }
     }
-    if (D.obj >= 0) {                                   /* walking to a mine to disarm it */
-        BYTE *o = D.obj < OBJECT_COUNT ? object(D.obj) : NULL;
-        if (!o || !laid_mine(o)) { mlog("sweeper: the mine to disarm is gone"); D.obj = -1; }
-        else if (dist(sx, sy, OBJ_X(o), OBJ_Y(o)) <= DISARM_REACH) { stop = 1; sweep_take(u, o); D.obj = -1; }
-        else if (now - D.at > DISARM_TIMEOUT_MS) { mlog("sweeper: disarm walk timed out"); D.obj = -1; }
-        else if (walking) D.idle_since = now;
-        else if (now - D.idle_since > DISARM_IDLE_MS) { mlog("sweeper: the walk ended %d px from the mine - no disarm", dist(sx, sy, OBJ_X(o), OBJ_Y(o))); D.obj = -1; }
-    }
     return stop;
 }
 
+/* every frame: a walk to a mine (sweeper disarm / own pick-up) - done when Sarge is within DISARM_REACH */
+static int mine_walk_frame(BYTE *u, DWORD now, int walking)
+{
+    if (D.obj < 0 || !u) return 0;
+    const char *who = D.pickup ? "mines" : "sweeper";
+    BYTE *o = D.obj < OBJECT_COUNT ? object(D.obj) : NULL;
+    int d = o ? dist(SARGE_X(u), SARGE_Y(u), OBJ_X(o), OBJ_Y(o)) : 0;
+    if (!o || !laid_mine(o)) { mlog("%s: the mine to %s is gone", who, D.pickup ? "pick up" : "disarm"); D.obj = -1; }
+    else if (!D.pickup && !SW.carried) { mlog("sweeper: no sweeper any more - disarm walk dropped"); D.obj = -1; }
+    else if (d <= DISARM_REACH) { D.obj = -1; take_mine(u, o, D.pickup); return 1; }
+    else if (now - D.at > DISARM_TIMEOUT_MS) { mlog("%s: walk to the mine timed out", who); D.obj = -1; }
+    else if (walking) D.idle_since = now;
+    else if (now - D.idle_since > DISARM_IDLE_MS) { mlog("%s: the walk ended %d px from the mine - nothing done", who, d); D.obj = -1; }
+    return 0;
+}
+
 /* a click on a visible mine with the sweeper carried: 1 = done here, 2 = walk to (*walk_x, *walk_y) first */
-static int sweeper_click(BYTE *u, int wx, int wy, DWORD now, int *walk_x, int *walk_y)
+/* a click on a visible mine: with the sweeper carried any mine (disarm / collect), without it Sarge's own mine (pick up).
+ * 1 = done here, 2 = walk to (*walk_x, *walk_y) first, 0 = not on such a mine */
+static int mine_object_click(BYTE *u, int wx, int wy, DWORD now, int *walk_x, int *walk_y)
 {
     D.obj = -1;
-    if (!sweeper_active(u)) return 0;
-    BYTE *o = mine_at(wx, wy);
+    if (!u || SARGE_VEHICLE(u) || !objects_ok() || !layout_view_is_gameplay()) return 0;
+    int ok, pickup = 0;
+    BYTE *o = sweeper_active(u) ? mine_at(wx, wy) : NULL;
+    if (!o) { o = own_hover(u, wx, wy, &ok); pickup = 1; }
     if (!o) return 0;
     int sx = SARGE_X(u), sy = SARGE_Y(u), d = dist(sx, sy, OBJ_X(o), OBJ_Y(o));
-    static const char *PLAN[] = { "collect", "destroy (full)", "destroy (no mine weapon / pack)", "destroy (no free box)" };
-    mlog("sweeper: click on mine #%d at %d,%d (%d px away) - %s", obj_index(o), OBJ_X(o), OBJ_Y(o), d, PLAN[sweep_plan(o)]);
-    if (d <= DISARM_REACH) { sweep_take(u, o); return 1; }
+    if (pickup) mlog("mines: click on own mine #%d at %d,%d (%d px away) - %s", obj_index(o), OBJ_X(o), OBJ_Y(o), d, ok ? "pick up" : "cannot (full / no free box)");
+    else {
+        static const char *PLAN[] = { "collect", "destroy (full)", "destroy (no mine weapon / pack)", "destroy (no free box)" };
+        mlog("sweeper: click on mine #%d at %d,%d (%d px away) - %s", obj_index(o), OBJ_X(o), OBJ_Y(o), d, PLAN[sweep_plan(o)]);
+    }
+    if (pickup && !ok) return 1;                         /* on his mine, nothing to do: no walk either */
+    if (d <= DISARM_REACH) { take_mine(u, o, pickup); return 1; }
     *walk_x = OBJ_X(o) + (sx - OBJ_X(o)) * DISARM_SHORT / d;
     *walk_y = OBJ_Y(o) + (sy - OBJ_Y(o)) * DISARM_SHORT / d;
-    D.obj = obj_index(o); D.at = D.idle_since = now;
+    D.obj = obj_index(o); D.pickup = pickup; D.at = D.idle_since = now;
     return 2;
 }
 
@@ -599,10 +754,22 @@ int mines_sweep_hud(int *count, int *nearest)
     return 1;
 }
 
+/* modern.c: one of Sarge's own mines under the pointer (no sweeper): where, and whether a click picks it up */
+int mines_pickup_hover(int *x, int *y, int *ok)
+{
+    int wx, wy;
+    BYTE *o = controls_pointer_world(&wx, &wy) ? own_hover(SARGE, wx, wy, ok) : NULL;
+    if (!o) return 0;
+    *x = OBJ_X(o); *y = OBJ_Y(o);
+    return 1;
+}
+
 int mines_pointer_in_reach(void)
 {
     SweepInfo si;
+    int x, y, ok;
     if (mines_sweep_info(&si) && si.hover) return 1;      /* on a mine: the disarm pointer (modern.c) */
+    if (mines_pickup_hover(&x, &y, &ok)) return 1;        /* on his own mine: the pick-up pointer */
     MinePreview p;
     return mines_preview(&p) && p.state != MINE_OUT;
 }
@@ -610,27 +777,57 @@ int mines_pointer_in_reach(void)
 int mines_click(int wx, int wy, DWORD now, int *walk_x, int *walk_y)
 {
     BYTE *u = SARGE, *w;
-    int sw = sweeper_click(u, wx, wy, now, walk_x, walk_y);
+    if (F.active) { mlog("mines: walk + lay at %d,%d cancelled (another click)", F.x, F.y); F.active = 0; }
+    int sw = mine_object_click(u, wx, wy, now, walk_x, walk_y);
     if (sw) return sw;
     if (!active_for(u) || !(w = mine_weapon(u))) return 0;
     int tx, ty, st = spot_state(u, w, wx, wy, &tx, &ty);
-    if (st == MINE_OUT) return 0;                                       /* outside the ring: the normal click */
+    if (st == MINE_OUT) {                                               /* beyond the ring: walk there and lay */
+        if (far_state(w, tx, ty) != MINE_FAR || R.phase) return 0;      /* not placeable: the normal walk */
+        F.active = 1; F.x = tx; F.y = ty; F.weapon = w; F.at = F.idle_since = now;
+        *walk_x = tx; *walk_y = ty;
+        mlog("mines: walk + lay at tile %d,%d (Sarge %d,%d, %d px away)", tx, ty, SARGE_X(u), SARGE_Y(u), dist(SARGE_X(u), SARGE_Y(u), tx, ty));
+        return 2;
+    }
     if (st != MINE_OK) {
         static const char *WHY[] = { "", "", "blocked ground", "no way there", "another mine too close", "no mines left" };
         mlog("mines: click at %d,%d (tile %d,%d): not placeable - %s", wx, wy, tx, ty, WHY[st]);
         return 1;                                                       /* inside the ring: no walk either */
     }
     if (R.phase) { mlog("mines: click at %d,%d ignored - still laying the last one", wx, wy); return 1; }
-    R.phase = 1; R.frames = 0; R.x = tx; R.y = ty; R.at = now; R.sarge = u; R.weapon = w;
-    mlog("mines: lay at tile %d,%d (pointer %d,%d, Sarge %d,%d, %d px away), %d mines", tx, ty, wx, wy, SARGE_X(u), SARGE_Y(u),
-         (int)sqrt((double)(wx - SARGE_X(u)) * (wx - SARGE_X(u)) + (double)(wy - SARGE_Y(u)) * (wy - SARGE_Y(u))), W_AMMO(w));
+    start_lay(u, w, tx, ty, wx, wy, now);
     return 1;
+}
+
+/* every frame: walk + lay - lay once Sarge is close enough */
+static int far_lay_frame(BYTE *u, DWORD now, int walking)
+{
+    if (!F.active) return 0;
+    BYTE *w = mine_weapon(u);
+    int d = u ? dist(SARGE_X(u), SARGE_Y(u), F.x, F.y) : 0;
+    const char *why = NULL;
+    if (!u || w != F.weapon) why = "weapon changed";
+    else if (!R.phase && (INPUT & INPUT_FIRE)) why = "fired";
+    else if (now - F.at > LAY_WALK_TIMEOUT_MS) why = "timed out";
+    else if (d <= LAY_ARRIVE) {
+        F.active = 0;
+        int tx, ty, st = spot_state(u, w, F.x, F.y, &tx, &ty);
+        if (st == MINE_OK && !R.phase) { start_lay(u, w, tx, ty, F.x, F.y, now); return 1; }
+        mlog("mines: walk + lay: at the tile %d,%d it is not placeable (%d) - nothing laid", F.x, F.y, st);
+        return 1;
+    }
+    else if (walking) F.idle_since = now;
+    else if (now - F.idle_since > LAY_IDLE_MS) why = "the walk ended short";
+    if (why) { mlog("mines: walk + lay at %d,%d cancelled (%s, %d px away)", F.x, F.y, why, d); F.active = 0; }
+    return 0;
 }
 
 int mines_frame(DWORD now, int walking, int *face_x, int *face_y)
 {
     BYTE *u = SARGE;
     int stop = sweeper_frame(u, now, walking) ? MF_STOP_WALK : 0;
+    if (mine_walk_frame(u, now, walking)) stop |= MF_STOP_WALK;
+    if (far_lay_frame(u, now, walking)) stop |= MF_STOP_WALK;
     if (!R.phase) return stop;
     if (u != R.sarge || mine_weapon(u) != R.weapon || !layout_view_is_gameplay()) {
         mlog("mines: placement at %d,%d dropped (Sarge / weapon changed)", R.x, R.y);
@@ -747,27 +944,32 @@ void __fastcall mines_step(BYTE *mine, DWORD *who)
 /* weapons.c (mine pack top-up, 2026-11-21): how many charges of this mine weapon really lie in the bag - its ammo may
  * never go above this (the top-up used to raise only the ammo count: "more ammo than free charges") */
 int mines_free_charges(BYTE *weapon) { return weapon ? free_charges(weapon, NULL) : 0; }
-/* weapons.c (mine pack top-up): move up to n FREE charges of the pack weapon `from` into used-up slots of `to` (the two
- * object numbers are swapped, so each array keeps pointing at real objects). Ammo is NOT changed here; returns how many
- * were moved (the caller adds them to `to`'s ammo and takes them from the pack's). */
+/* weapons.c (mine / explosive pack top-up): move up to n FREE charges of the pack weapon `from` into `to`: into a
+ * used-up slot of `to` (the two object numbers are swapped), else at the end of `to`'s grown array (append_charge; the
+ * charge leaves `from`'s array). Each array keeps pointing at real objects only. Ammo is NOT changed here; returns how
+ * many were moved (the caller adds them to `to`'s ammo, at most STACK_MAX, and takes them from the pack's). */
 int mines_transfer(BYTE *to, BYTE *from, int n)
 {
     if (!to || !from || to == from || !OBJECTS) return 0;
-    short *ct = W_CHARGES(to), *cf = W_CHARGES(from);
-    int nt = W_MAX(to), nf = W_MAX(from), moved = 0;
-    if (!ct || !cf || nt <= 0 || nf <= 0 || IsBadWritePtr(ct, (UINT_PTR)nt * 2) || IsBadWritePtr(cf, (UINT_PTR)nf * 2)) return 0;
+    int moved = 0;
     while (moved < n) {
-        int k = used_slot(to), j = -1;
-        if (k < 0) break;
+        short *cf = W_CHARGES(from);
+        int nf = W_MAX(from), j = -1;
+        if (!cf || nf <= 0 || IsBadWritePtr(cf, (UINT_PTR)nf * 2)) break;
         for (int i = 0; i < nf && j < 0; i++) {
             if (cf[i] < 0 || cf[i] >= OBJECT_COUNT) continue;
             BYTE f = OBJ_FLAGS(object(cf[i]));
             if ((f & OF_IN_BAG) && !(f & OF_USED)) j = i;
         }
         if (j < 0) break;
-        short t = ct[k]; ct[k] = cf[j]; cf[j] = t;
+        short obj = cf[j];
+        int k = used_slot(to);
+        if (k >= 0) { short t = W_CHARGES(to)[k]; W_CHARGES(to)[k] = obj; cf[j] = t; OBJ_OWNER(object(t)) = from; }
+        else { if (append_charge(to, obj) < 0) break; remove_charge(from, j); }
+        OBJ_OWNER(object(obj)) = to;
         moved++;
     }
+    if (moved && g_cfg.log >= 1) mlog("mines: %d charge(s) moved between packs (type %d) - array now %d long", moved, W_TYPE(to), W_MAX(to));
     return moved;
 }
 

@@ -523,6 +523,9 @@ static int weapon_is_hold_to_aim(BYTE *u)
 #define STATE_SHOOTING    7     /* the shot animation; a new press only counts after it */
 #define SHOT_TIMEOUT_MS   400   /* press again anyway if no shot animation was seen (e.g. no ammo) */
 #define WEAPON_BAZOOKA_TYPE 4   /* ARMY_BAZOOKA (game table) */
+#define WEAPON_MINE_TYPE    11  /* mines: ONE per click too (2026-11-21, user: "right clicking the mines is putting 2" - the held
+                                   re-press during the laying animation started a second aim + release at once, ~60 ms later) */
+#define WEAPON_EXPLOSIVE_TYPE 12 /* explosives: the same (Wine: one held right press placed three, 85 ms apart) */
 #define WEAPON_RIFLE_TYPE   9   /* ARMY_RIFLE (the auto rifle is 10) */
 static int rifle_semi_auto(void)
 {
@@ -538,7 +541,7 @@ static void fire_pulse(BYTE *u, int left, DWORD now)
         S.firing = 1;
         S.shot_at = now;
         S.saw_shot = 0;
-    } else if (!S.pressing && (SARGE_WEAPON_TYPE(u) == WEAPON_BAZOOKA_TYPE || (SARGE_WEAPON_TYPE(u) == WEAPON_RIFLE_TYPE && rifle_semi_auto()))) {
+    } else if (!S.pressing && (SARGE_WEAPON_TYPE(u) == WEAPON_BAZOOKA_TYPE || SARGE_WEAPON_TYPE(u) == WEAPON_MINE_TYPE || SARGE_WEAPON_TYPE(u) == WEAPON_EXPLOSIVE_TYPE || (SARGE_WEAPON_TYPE(u) == WEAPON_RIFLE_TYPE && rifle_semi_auto()))) {
         if (SARGE_WEAPON_TYPE(u) == WEAPON_RIFLE_TYPE && now - S.released_at > 200) g_click_hint_at = now;   /* held: "click" hint */
         /* the bazooka: one rocket per click (a click held a moment fired a second one - user 2026-11-17).
          * The RIFLE too (2026-11-20, user: "the rifle and auto rifle seem the same with the mouse controls. want the
