@@ -367,7 +367,7 @@ void patches_apply(void)
     hook_call("music: stream create, wave record (call 0x410df1) -> music.c", 0x410df1, 0x4107b0, (void *)music_stub_create);
     hook_call("music: stream play, wave record (call 0x4112aa) -> music.c", 0x4112aa, 0x4107b0, (void *)music_stub_play);
     hook_call("music: stream first fill, wave record (call 0x411e4f) -> music.c", 0x411e4f, 0x4107b0, (void *)music_stub_fill);
-    hook_call("music: stream refill, wave record (call 0x411ff9) -> music.c", 0x411ff9, 0x4107b0, (void *)music_stub_fill);
+    hook_call("music: stream refill, wave record (call 0x411ff9) -> music.c", 0x411ff9, 0x4107b0, (void *)music_stub_refill);
     hook_call("music: stream rewind, wave record (call 0x411175) -> music.c", 0x411175, 0x4107b0, (void *)music_stub_rewind);
     hook_call("music: stream restart, wave record (call 0x411043) -> music.c", 0x411043, 0x4107b0, (void *)music_stub_rewind);
     /* mines.c (2026-11-21, [controls] mine_click): the mine weapon's lay call in FUN_00445c70 (case 11) -> mines_lay,
