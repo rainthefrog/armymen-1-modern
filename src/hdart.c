@@ -24,8 +24,9 @@ static const char *const NAMES[] = { "Title_legal", "alp_load", "alp_misn_select
 #define TOL 12                    /* summed colour difference that still counts as "the background" */
 #define MATCH_MIN 40              /* % of the background that must show: win/lose radios cover ~44 % */
 
-typedef struct { uint32_t *orig; uint32_t *hd; int hw, hh; int tried_hd; BYTE *bad; int keep_ui; } Art;
+typedef struct { uint32_t *orig; uint32_t *hd; int hw, hh; int tried_hd; BYTE *bad; int keep_ui; int bad_permille; } Art;
 static void build_bad_mask(Art *a);
+#define HD_CENTRE_FAITHFUL 10      /* per mille of the centre differing: below = the HD centre is used */
 static Art g_art[COUNT];
 static int g_loaded_orig, g_current = -1;
 static int g_serial;              /* changes when the current HD picture changes (gpu.c re-uploads) */
@@ -212,7 +213,12 @@ int hdart_prepare(uint32_t *pix, int w, int h, int menu)
              * doubled, ragged panel edges and a broken BACK / CANCEL bar. [display] hd_menus_mix_centre = 1 = the old
              * per-pixel mix. Left: a seam where the widened picture meets the centre (needs wide art made without
              * panels, or the menu renderer - tooling/docs/menu-render-evaluation.md). */
-            if (a->keep_ui && (!g_mix_centre || (a->bad && a->bad[y * PW + x]))) bg = 0;
+            /* 2026-11-21 (user, Alpine mission select: "this is rendering the original on the HD art"): a picture
+             * whose HD centre matches the original (under HD_CENTRE_FAITHFUL per mille of pixels differ, e.g.
+             * alp_misn_select 0 %) keeps its HD centre - the original only where it differs; the whole-centre rule
+             * stays for pictures with moved panels (des_misn_select). */
+            int whole = a->keep_ui && !g_mix_centre && !(a->bad && a->bad_permille < HD_CENTRE_FAITHFUL);
+            if (a->keep_ui && (whole || (a->bad && a->bad[y * PW + x]))) bg = 0;
             *p = bg ? (*p & 0x00FFFFFFu) : (*p | 0xFF000000u);
         }
     return 1;
@@ -251,7 +257,9 @@ static void build_bad_mask(Art *a)
             a->bad[y * PW + x] = (BYTE)(d > BAD_TOL);
             n_bad += d > BAD_TOL;
         }
-    mlog("hdart: %d%% of the centre differs from the original - the original is used there", n_bad * 100 / (PW * PH));
+    a->bad_permille = n_bad * 1000 / (PW * PH);
+    mlog("hdart: %d.%d%% of the centre differs from the original - %s", a->bad_permille / 10, a->bad_permille % 10,
+         a->keep_ui && a->bad_permille >= HD_CENTRE_FAITHFUL && !g_mix_centre ? "menu panels: the whole centre is the original's" : "the original is used where it differs");
 }
 
 /* ---------------------------------------------------------------- the menu cursor
