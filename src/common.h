@@ -54,6 +54,7 @@ struct Surf {
     int hd_state, hd_id;      /* hdsprites.c: 0 = not identified yet; hd_id = catalogue entry or -1 */
     void *hd_ref;             /* hdworld.c: per pixel, which upscaled sprite/tile pixel is there (or NULL) */
     int *hd_tiles;            /* hdworld.c: tile atlas surfaces: pack entry per 16x16 tile (+1, 0 = unknown) */
+    unsigned serial;          /* surface.c: creation number in this process (savestate.c save files) */
 };
 
 struct DDraw {
@@ -907,6 +908,10 @@ void savestate_install(void);               /* patches.c, first: the exe's CRT h
 int savestate_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);   /* window hook: the save / load / slot keys */
 const char *savestate_banner(void);         /* modern.c: the confirmation text, or NULL */
 void savestate_region(const char *name, void *p, size_t n);      /* mod state saved with a quicksave, put back on a load */
+void savestate_note_patch(uintptr_t va, size_t n);   /* patches.c write_mem: patched exe data keeps the value of this process on a load */
+void missionpath_request_scenario(int scenario);    /* missionpath.c: start that scenario's first mission at the campaign screen */
+int missionpath_screen_state(void);                  /* missionpath.c: the menu screen state (2 = campaign select), -1 none */
+void hdworld_surface_replaced(Surf *s);              /* hdworld.c: a load put other pixels into s (its references are stale) */
 #define SAVESTATE(v) savestate_region(#v, &(v), sizeof(v))
 void weapons_savestate(void); void allies_savestate(void); void aware_savestate(void); void capture_savestate(void);
 void weapons_army_saved(void); void weapons_debug_dump(const char *why); void weapons_debug_pickup(int charges_only); void weapons_debug_die(void);
@@ -922,3 +927,5 @@ int surf_restore_refs(const SurfRef *list, int n);   /* surface.c: a load: count
 void surf_keep_released(int on);            /* surface.c: released surfaces kept as zombies while a quicksave exists */
 int surf_purge(int (*needed)(Surf *s));     /* surface.c: destroy zombies no quicksave needs */
 int surf_count_not_in(const SurfRef *list, int n);   /* surface.c: alive surfaces made after that save */
+Surf *surf_new(DDraw *dd, int w, int h, DWORD caps);   /* surface.c: a surface for a load from a save file */
+int surf_list_all(Surf **out, int max);       /* surface.c: every surface held (incl. zombies) */

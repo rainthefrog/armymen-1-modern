@@ -17,6 +17,7 @@ int write_mem(uintptr_t va, const void *src, size_t n)
     if (!VirtualProtect((void *)va, n, PAGE_EXECUTE_READWRITE, &old)) return 0;
     memcpy((void *)va, src, n);
     VirtualProtect((void *)va, n, old, &old);
+    savestate_note_patch(va, n);                     /* savestate.c: a patched place in the exe's data keeps its value on a load */
     FlushInstructionCache(GetCurrentProcess(), (void *)va, n);
     return 1;
 }

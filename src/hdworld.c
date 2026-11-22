@@ -1330,3 +1330,12 @@ int hdworld_pixel_upscaled(const Surf *b, int x, int y)
     }
     return 0;
 }
+
+/* savestate.c, a load from a save file put the saved pixels into s: what hdworld knew about its pixels is stale */
+void hdworld_surface_replaced(Surf *s)
+{
+    if (!s) return;
+    hdworld_forget(s);                            /* the rolled map surface: its row tables (mem = s->hd_ref) */
+    free(s->hd_ref); s->hd_ref = NULL;
+    free(s->hd_tiles); s->hd_tiles = NULL;
+}
