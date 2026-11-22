@@ -43,6 +43,9 @@
  *      - left click on Sarge himself: one kit on Sarge (when hurt; at full health the click is the stance click);
  *      - the HUD shows the carried kits as a small medkit + "xN" right of the VEHICLE HEALTH pips (weapons.c, allies_kits).
  *    Kits carry over to the next part of the same scenario and are restored on a restart (see "Carried kits" below).
+ *
+ * 4. The medical tent heals them too ([gameplay] tent_heals_allies = 1; 2026-11-22, user: "healing tent should also
+ *    heal allies"). See "Medical tent" below for how the game heals Sarge there (mission script only).
  * ============================================================================================ */
 #include "common.h"
 #include <math.h>
@@ -414,18 +417,113 @@ int allies_heal_info(HealInfo *hi)
     return 1;
 }
 
+/* ---------------------------------------------------------------- 4. medical tent
+ * How the game heals Sarge at the tent (2026-11-22, read from the shipped Maps\alp*.txt + the exe): there is NO tent
+ * code in the exe - the tent ("greenmash", a plain object) only gives the place, the mission SCRIPT does the healing.
+ * Every single-player Alpine script (alp1_1 .. alp4_2) has the same block:
+ *     PAD medicaltentpad <n> GREEN SARGE > 0              (n = 23 in alp1/alp2, 9 in alp3, 30 in alp4)
+ *     IF on_medicaltentpad AFTER off_medicaltentpad AND gsmedtime AFTER NULL AND startup AFTER killed_greenmash THEN
+ *         HEAL ME 10, TRIGGERDELAY 1.5 gsmedtime
+ * = while Sarge stands on pad n and the tent is not destroyed: +10 % of his max at once, then again every 1.5 s.
+ * HEAL = action 5 of the script parser FUN_00454a70, run by FUN_00452480 case 5 -> FUN_0041e7e0 (__fastcall ecx = UID,
+ * edx = percent): Sarge (UID type 6) health += pct x max / 100, capped; a unit (type 2): the same per trooper +
+ * the unit sum. The pad's own trigger only counts Sarge ("GREEN SARGE"), so soldiers were never healed there.
+ * ("on_medicaltentpad1 ... GREEN UNIT -> HEAL ME 100" also heals SARGE, once, when a green unit enters.)
+ * Mod: the player's soldiers (allies_each) standing on the same pad heal by the same rule: TENT_PCT of THEIR max
+ * (the doubled one) on entering, then every TENT_EVERY_MS of game time, only while the tent is not destroyed.
+ * The pad: the script's pad trigger table (FUN_0045b210 fills it while the script loads; names char *[512] at
+ * 0x6a45d0, count 0x6a4dd0, records 0x24 bytes at 0x69dbd0: +0 short index, +2 short PHYSICAL pad number - as
+ * FUN_0045bb80 reads it). "Standing on it": the trooper's tile in the pad layer (as missionpath.c on_pad).
+ * The tent: named item TENT_NAME (objectives_item_ground -1 = destroyed; not named = taken as standing).
+ * Sarge's own tent healing is the script's, untouched. */
+#define PADTRIG_COUNT      (*(int *)0x6a4dd0)
+#define PADTRIG_NAME(i)    (((const char **)0x6a45d0)[i])
+#define PADTRIG_PAD(i)     (*(short *)(0x69dbd2 + (i) * 0x24))
+#define PAD_BITS_LAYER     (*(BYTE **)0x4e354c)          /* pads 0..7: bits */
+#define PAD_BYTE_LAYER     (*(BYTE **)0x4e3550)          /* pads 8..255: byte value */
+#define MAP_TILE_COUNT     (*(unsigned *)0x6083c8)
+#define MAP_TILES_W        (*(unsigned short *)0x4e368c)
+#define TENT_PAD_NAME      "medicaltentpad"
+#define TENT_NAME          "greenmash"
+#define TENT_PCT           10                             /* HEAL ME 10 */
+#define TENT_EVERY_MS      1500                           /* TRIGGERDELAY 1.5 gsmedtime */
+
+static int tent_on(void) { static int v = -1; if (v < 0) v = GetPrivateProfileIntA("gameplay", "tent_heals_allies", 1, mod_ini_path()) != 0; return v; }
+
+static struct { BYTE *t; int ms; } g_tent[REGEN_SLOTS];   /* per soldier on the pad: game ms since his last tent heal (-1 = off it) */
+static int g_tent_pad = -2;                                /* -2 = not looked up this run, -1 = no tent pad in this mission */
+
+static int tent_pad(void)
+{
+    if (g_tent_pad != -2) return g_tent_pad;
+    int n = PADTRIG_COUNT;
+    if (n <= 0) return -1;                                   /* script not loaded yet (or no pads): ask again */
+    g_tent_pad = -1;
+    if (n <= 512)
+        for (int i = 0; i < n; i++) {
+            const char *nm = PADTRIG_NAME(i);
+            if (!nm || IsBadReadPtr(nm, sizeof TENT_PAD_NAME) || lstrcmpiA(nm, TENT_PAD_NAME)) continue;
+            int p = PADTRIG_PAD(i);
+            if (p >= 0 && p < 256) g_tent_pad = p;
+            break;
+        }
+    if (g_tent_pad >= 0) {
+        BYTE *layer = g_tent_pad < 8 ? PAD_BITS_LAYER : PAD_BYTE_LAYER;   /* where it is (log only, once per mission) */
+        unsigned nt = MAP_TILE_COUNT, w = MAP_TILES_W, k = 0; long long sx = 0, sy = 0;
+        if (layer && w && nt && nt <= 1024 * 1024 && !IsBadReadPtr(layer, nt))
+            for (unsigned t = 0; t < nt; t++)
+                if (g_tent_pad < 8 ? (layer[t] & (1 << g_tent_pad)) != 0 : layer[t] == g_tent_pad) { sx += (t % w) * 16 + 8; sy += (t / w) * 16 + 8; k++; }
+        mlog("allies: medical tent pad %d (script pad '%s', %u tiles, centre %d,%d) - soldiers on it heal %d %% every %d ms",
+             g_tent_pad, TENT_PAD_NAME, k, k ? (int)(sx / k) : 0, k ? (int)(sy / k) : 0, TENT_PCT, TENT_EVERY_MS);
+    }
+    return g_tent_pad;
+}
+static int on_pad(int pad, int x, int y)
+{
+    BYTE *layer = pad < 8 ? PAD_BITS_LAYER : PAD_BYTE_LAYER;
+    unsigned n = MAP_TILE_COUNT, w = MAP_TILES_W;
+    if (!layer || !w || x < 0 || y < 0) return 0;
+    unsigned t = (unsigned)(y / 16) * w + (unsigned)(x / 16);
+    if (t >= n || IsBadReadPtr(layer + t, 1)) return 0;
+    return pad < 8 ? (layer[t] & (1 << pad)) != 0 : layer[t] == pad;
+}
+static int tent_standing(void)
+{
+    int x, y, raw;
+    return objectives_item_ground(TENT_NAME, &x, &y, &raw, NULL) != -1;
+}
+
+static void tent_one(BYTE *t, int cx, int cy, int top, int veh)
+{
+    (void)cx; (void)cy; (void)top; (void)veh;
+    unsigned h = (unsigned)((uintptr_t)t >> 4) * 2654435761u % REGEN_SLOTS;
+    for (int k = 0; k < REGEN_SLOTS && g_tent[h].t && g_tent[h].t != t; k++) h = (h + 1) % REGEN_SLOTS;
+    if (g_tent[h].t != t) { if (g_tent[h].t) return; g_tent[h].t = t; g_tent[h].ms = -1; }
+    if (!on_pad(g_tent_pad, SARGE_X(t), SARGE_Y(t))) { g_tent[h].ms = -1; return; }
+    if (g_tent[h].ms >= 0) { g_tent[h].ms += g_reg_dt; if (g_tent[h].ms < TENT_EVERY_MS) return; }
+    g_tent[h].ms = 0;                                        /* stepped on (heal at once, as on_pad fires) or 1.5 s gone */
+    int hp = HEALTH(t), mx = MAX_HEALTH(t);
+    if (hp >= mx) return;
+    int add = mx * TENT_PCT / 100, to;
+    if (add < 1) add = 1;
+    to = hp + add > mx ? mx : hp + add;
+    set_health(t, to);
+    if (g_cfg.log >= 1) mlog("allies: trooper %p at the medical tent (pad %d, %d,%d): health %d -> %d / %d", t, g_tent_pad, SARGE_X(t), SARGE_Y(t), hp, to, mx);
+}
+
 /* ---------------------------------------------------------------- per gameplay frame */
 
 void allies_frame(void)
 {
     static unsigned run;
     unsigned r = gameplay_run(NULL, NULL);
-    if (r != run) { run = r; memset(g_reg, 0, sizeof g_reg); g_reg_ms = 0; }   /* troopers of the last run: forgotten */
+    if (r != run) { run = r; memset(g_reg, 0, sizeof g_reg); g_reg_ms = 0; memset(g_tent, 0, sizeof g_tent); g_tent_pad = -2; }   /* troopers of the last run: forgotten */
     DWORD now = clock_game_ms();
     g_reg_dt = g_reg_ms ? (int)(now - g_reg_ms) : 0;
     g_reg_ms = now;
     if (g_reg_dt < 0 || g_reg_dt > 250) g_reg_dt = 0;      /* a gap (menu, loading): not healing time */
     if (g_cfg.ally_regen) allies_each(regen_one);
+    if (tent_on() && tent_pad() >= 0 && tent_standing()) allies_each(tent_one);
     kits_valid();
     BYTE *u = SARGE;
     if (g_heal) {
@@ -437,4 +535,4 @@ void allies_frame(void)
 
 
 /* savestate.c: medkits, regeneration and a heal walk are part of the mission state */
-void allies_savestate(void) { SAVESTATE(K); SAVESTATE(g_reg); SAVESTATE(g_reg_ms); SAVESTATE(g_reg_dt); SAVESTATE(g_heal); SAVESTATE(g_heal_weapon); SAVESTATE(H); }
+void allies_savestate(void) { SAVESTATE(K); SAVESTATE(g_reg); SAVESTATE(g_reg_ms); SAVESTATE(g_reg_dt); SAVESTATE(g_heal); SAVESTATE(g_heal_weapon); SAVESTATE(H); SAVESTATE(g_tent); }
