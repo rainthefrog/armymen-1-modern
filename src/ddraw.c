@@ -312,6 +312,23 @@ static LONG CALLBACK crash_report(EXCEPTION_POINTERS *e)
          c->Eax, c->Ebx, c->Ecx, c->Edx, c->Esi, c->Edi, c->Esp,
          IsBadReadPtr(sp, 16) ? 0 : sp[0], IsBadReadPtr(sp, 16) ? 0 : sp[1],
          IsBadReadPtr(sp, 16) ? 0 : sp[2], IsBadReadPtr(sp, 16) ? 0 : sp[3]);
+    /* 2026-11-22: the stack words that point into code (exe .text 0x401000..0x4a0000 or our dll) - the likely return
+     * addresses, so the mod caller of a crashing game routine can be found (ddraw+offset: nm of the built dll) */
+    {
+        char line[600]; int len = 0, found = 0;
+        BYTE *self = (BYTE *)g_self;
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(self + ((IMAGE_DOS_HEADER *)self)->e_lfanew);
+        DWORD self_n = nt->OptionalHeader.SizeOfImage;
+        for (int i = 0; i < 256 && found < 16 && !IsBadReadPtr(sp + i, 4); i++) {
+            DWORD v = sp[i];
+            if (v >= 0x401000 && v < 0x4a0000)
+                len += snprintf(line + len, sizeof line - len, " [%d]exe:%06lx", i, v), found++;
+            else if (v > (DWORD)(uintptr_t)self && v < (DWORD)(uintptr_t)self + self_n)
+                len += snprintf(line + len, sizeof line - len, " [%d]ddraw+%lx", i, v - (DWORD)(uintptr_t)self), found++;
+            if (len > (int)sizeof line - 40) break;
+        }
+        mlog("EXCEPTION stack code words:%s", found ? line : " none");
+    }
     if (guarded) {
         mlog("GUARDED: the fault above was inside \"%s\" - call abandoned, the game goes on", g_guard->what);
         c->Eip = (DWORD)(uintptr_t)guard_land;

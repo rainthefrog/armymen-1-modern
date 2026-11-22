@@ -372,7 +372,12 @@ void aware_frame(void)
     BYTE *s = SARGE_OBJ;
     g_could = g_targ = 0;
     if (!on() || !s || OBJ_HEALTH(s) <= 0) { memset(g_aw, 0, sizeof g_aw); g_n = 0; return; }
-    if (s != g_last_sarge || OBJ_UID(s) != g_me) { memset(g_aw, 0, sizeof g_aw); memset(g_hit_units, 0, sizeof g_hit_units); memset(g_ul, 0, sizeof g_ul); g_last_sarge = s; g_shot_at = 0; }
+    /* 2026-11-22: also on every new mission run - Sarge is the same static record (and UID) in every mission, so the
+     * check above never saw a new map, and g_aw kept trooper pointers of the last one (read by aware_filter_seen) */
+    static unsigned run;
+    unsigned r = gameplay_run(NULL, NULL);
+    if (s != g_last_sarge || OBJ_UID(s) != g_me || r != run) {
+        run = r; memset(g_aw, 0, sizeof g_aw); memset(g_hit_units, 0, sizeof g_hit_units); memset(g_ul, 0, sizeof g_ul); g_last_sarge = s; g_shot_at = 0; }
     g_me = OBJ_UID(s);
     g_veh = SARGE_VEH_OBJ(s) ? OBJ_UID(SARGE_VEH_OBJ(s)) : 0;
     BYTE *target = sarge_target();

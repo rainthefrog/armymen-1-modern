@@ -1095,11 +1095,10 @@ static int is_enemy_at(BYTE *it)
  * armies are walked: legion (ARMY_RECORD) +4 / +8 = first / end of the UNIT array (stride 0x2c4);
  * UNIT +0x70 mode (3..5 on the map), +0xb4 pTroops[10], +0xdc nLastTroop (i <= n); TROOPER +0x68
  * mode 1 = alive, +0x1c health, +0x26c avatar -> +0x1c ANIM (ANIM +0x1c world RECT); the hit is the
- * game's own sprite-mask test ObjectIntersectPoint 0x42faf0 (__fastcall ecx ANIM*, edx SPOINT*).
+ * game's own sprite-mask test ObjectIntersectPoint 0x42faf0 (__fastcall ecx ANIM*, edx SPOINT*) - via roofs_cell_hit_ok +
+ * roofs_cell_hit (validated + guarded, 2026-11-22).
  * Vehicles: legion +0x50 count, +0x54 pointers, health +0x1c, mover box as in vehicle_at. */
 #define UNIT_STRIDE 0x2c4
-typedef int (__fastcall *AnimHitFn)(BYTE *anim, short *point);
-#define ANIM_HIT ((AnimHitFn)0x42faf0)
 /* FIRING ZONE (2026-11-20, user: "firing and trying to move is still super clunky - lets instead have the area around
  * the enemy be a firing zone too. that way the cursor needs to be further away to walk"): a point within
  * [controls] fire_zone_px (default 24) around an enemy soldier's / vehicle's hitbox counts as that enemy (click =
@@ -1411,9 +1410,10 @@ static void hover_selftest(BYTE *u, DWORD now)
             int x = (r[0] + r[2]) / 2, y = (r[1] + r[3]) / 2, sx = x - CAMERA_X, sy = y - CAMERA_Y;
             if (sx < 0 || sy < 0 || sx >= vw || sy >= vh) continue;
             int hits = 0, tried = 0;
+            if (!roofs_cell_hit_ok(cells[i])) continue;
             for (int yy = r[1]; yy < r[3]; yy += 3) for (int xx = r[0]; xx < r[2]; xx += 3) {
-                short q[2] = { (short)xx, (short)yy }; tried++;
-                if (ANIM_HIT(cells[i], q)) { if (!hits) { x = xx; y = yy; } hits++; }
+                tried++;
+                if (roofs_cell_hit(cells[i], xx, yy)) { if (!hits) { x = xx; y = yy; } hits++; }
             }
             BYTE *thing;
             int h = hover_at(u, NULL, x, y, &thing);
@@ -1504,7 +1504,7 @@ static int hover_at(BYTE *u, BYTE *veh, int wx, int wy, BYTE **thing)
             /* enemy vehicles and soldiers: their hitbox (the cell rect); target OBJECTS (buildings, boards): only where
              * their picture really has a pixel (2026-11-21, user: "the buildings don't need the extra area around them
              * to be fire zone" - the cell rect includes the picture's see-through margin) */
-            if (is_enemy_at(ow) || (is_target_object(ow) && ANIM_HIT(cl[i], p))) enemy = ow;
+            if (is_enemy_at(ow) || (is_target_object(ow) && roofs_cell_hit_ok(cl[i]) && roofs_cell_hit(cl[i], wx, wy))) enemy = ow;
         }
     }
     if (log_next == 2 && g_cfg.log >= 3) { log_next = 3; mlog("controls: enemy under pointer %d,%d: %p", wx, wy, enemy); }

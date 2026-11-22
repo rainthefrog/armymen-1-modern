@@ -202,9 +202,8 @@ static int on_interface(int x, int y)
 }
 /* "Under the sprites" drawing (route line / marker): pixels where a world sprite is solid are left
  * alone - the sprite cells near the drawing are collected once (roofs.c registry) and each pixel is
- * tested with the game's sprite-mask test ObjectIntersectPoint (0x42faf0, ecx cell, edx world point). */
-typedef int (__fastcall *CellHitFn)(BYTE *cell, short *point);
-#define CELL_HIT ((CellHitFn)0x42faf0)
+ * tested with the game's sprite-mask test ObjectIntersectPoint (0x42faf0, ecx cell, edx world point) - roofs_cell_hit,
+ * guarded; a cell joins the batch only after roofs_cell_hit_ok (2026-11-22: a freed cell of the last map crashed here). */
 static BYTE *g_under[256]; static int g_nunder;
 static int g_route;                        /* px(): drawing the route line (ground level) */
 static void under_begin(int wx0, int wy0, int wx1, int wy1)
@@ -214,7 +213,7 @@ static void under_begin(int wx0, int wy0, int wx1, int wy1)
     g_nunder = 0;
     for (int i = 0; i < n && g_nunder < 256; i++) {
         const int *r = (const int *)(all[i] + 0x1c);
-        if (r[2] < wx0 || r[0] > wx1 || r[3] < wy0 || r[1] > wy1) continue;
+        if (r[2] < wx0 || r[0] > wx1 || r[3] < wy0 || r[1] > wy1 || !roofs_cell_hit_ok(all[i])) continue;
         g_under[g_nunder++] = all[i];
     }
 }
@@ -222,10 +221,9 @@ static int under_sprite(int x, int y)
 {
     if (!g_nunder) return 0;
     int wx = x + CAMERA_X, wy = y + CAMERA_Y + layout_field_shift();
-    short p[2] = { (short)wx, (short)wy };
     for (int i = 0; i < g_nunder; i++) {
         const int *r = (const int *)(g_under[i] + 0x1c);
-        if (wx >= r[0] && wx < r[2] && wy >= r[1] && wy < r[3] && CELL_HIT(g_under[i], p)) return 1;
+        if (wx >= r[0] && wx < r[2] && wy >= r[1] && wy < r[3] && roofs_cell_hit(g_under[i], wx, wy)) return 1;
     }
     return 0;
 }
