@@ -312,6 +312,10 @@ void patches_apply(void)
     static const BYTE cell_o[] = { 0x83,0xec,0x20, 0x8d,0x44,0x24,0x10, 0x53, 0x55, 0x8b,0xe9 };   /* FUN_0042eef0 */
     roofs_draw_cell_original = (DrawCellFn)hook_wrap("roofs: draw sprite (FUN_0042eef0) -> roofs.c (see through)",
                                                      0x42eef0, cell_o, sizeof cell_o, (void *)roofs_draw_cell);
+    /* the three layer passes of a map region (FUN_0042e3e0 -> FUN_0042e950): building fronts over figures */
+    hook_call("roofs: map region layer 0 (0x42e41f)", 0x42e41f, 0x42e950, (void *)roofs_layer_0);
+    hook_call("roofs: map region layer 1 (0x42e435)", 0x42e435, 0x42e950, (void *)roofs_layer_1);
+    hook_call("roofs: map region layer 2 (0x42e44b)", 0x42e44b, 0x42e950, (void *)roofs_layer_2);
     static const BYTE blit_o[] = { 0x55, 0x8b,0xec, 0x83,0xec,0x0c, 0x53, 0x56, 0x57 };   /* FUN_004040c0 / 4041b0 / 4042a0 */
     static const BYTE shad_o[] = { 0x55, 0x8b,0xec, 0x83,0xec,0x14, 0x53, 0x56, 0x57 };   /* FUN_00404390 */
     hdworld_wrle_original = (Blit5Fn)hook_wrap("hdworld: sprite WRLE (FUN_004041b0)", 0x4041b0, blit_o, sizeof blit_o, (void *)hdworld_wrle);

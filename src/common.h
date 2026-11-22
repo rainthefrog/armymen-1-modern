@@ -100,6 +100,7 @@ struct Config {
     int menu_text;                  /* [display] menu_text: menu labels drawn by the mod at window resolution (menutext.c) */
     int radio_overlay;              /* [display] radio_overlay: radio messages over the battlefield, text redrawn (radio.c) */
     int see_interior;               /* [display] see_interior: Sarge in a building -> its floor shown open (roofs.c, gpu.c) */
+    int fronts_order;               /* [display] fronts_order: figures in front of a building front drawn over it (roofs.c) */
     int fix_squash;                 /* [gameplay] fix_squash: no squash death for walking onto a blocked tile (gameplay.c) */
     int longer_range;               /* [gameplay] longer_range: direct-fire weapons reach weapon_range_pct % (gameplay.c) */
     int weapon_range_pct;           /* [gameplay] weapon_range_pct (default 120) */
@@ -363,6 +364,9 @@ void roofs_debug_near(int wx, int wy);
 int roofs_cells_list(BYTE **out, int max);
 void roofs_new_frame(void);                                        /* roofs.c: before the battlefield */
 void roofs_draw_ghost(Surf *b);                                     /* roofs.c: after the battlefield */
+void __fastcall roofs_layer_0(void *rect, void *list);            /* roofs.c: FUN_0042e950 per map layer (FUN_0042e3e0) */
+void __fastcall roofs_layer_1(void *rect, void *list);
+void __fastcall roofs_layer_2(void *rect, void *list);
 int hdart_prepare(uint32_t *pix, int w, int h, int menu);         /* hdart.c: HD menu backgrounds */
 const uint32_t *hdart_picture(int *w, int *h, int *serial);
 int hdart_active(void);                                             /* hdart.c: menu shows an HD background */
@@ -393,6 +397,7 @@ void hdworld_cell_low(int low);   /* roofs.c: the cell the game is drawing is a 
 void hdworld_cell_top(int top);   /* hdworld.c: the cell being drawn is a vehicle turret (above its hull) */
 void hdworld_cell_sort(int y);   /* roofs.c: the drawn cell's sort row inside its image (world_pos.y - wrect.top) */
 void hdworld_cell_begin(const BYTE *cell);   /* roofs.c: the cell the game draws now (NULL after) */
+void hdworld_skip_shadows(int on);   /* roofs.c: a figure drawn again over a building front - its shadow not again */
 int hdworld_cell_image(const BYTE *cell, int idx, int *hx, int *hy, int *slice, int *wl, int *wt);
 int hdworld_entry_at(int x, int y);                                  /* hdworld.c: image entry drawn at a back-buffer pixel */
 int hdworld_pixel_upscaled(const Surf *b, int x, int y);              /* hdworld.c: the GPU shows the upscaled picture at this back-buffer pixel */

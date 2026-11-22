@@ -19,6 +19,7 @@
  * [display] see_through = 1
  * ============================================================================================ */
 #include "common.h"
+#include <limits.h>
 
 #define LOCKED_BITS   (*(BYTE **)0x4e2444)
 #define LOCKED_PITCH  (*(int *)0x4e2880)
@@ -155,6 +156,151 @@ int roofs_cells_at(int wx, int wy, BYTE **out, int max)
     return n;
 }
 
+/* ---------------------------------------------------------------- building fronts over figures in front of them
+ * 2026-11-21 (user, mission 7 bank: "there are soldiers walking out of the bank - but they appear under the
+ * rubble"). The game draws a map region in three passes (FUN_0042e3e0 -> FUN_0042e950 per layer list):
+ *   layer 0 (0x4e3568, sorted by the +0x3c part number): building parts drawn UNDER figures (the bank's walls,
+ *                                                         doorway and rubble pile: world.pak entry 11657),
+ *   layer 1 (0x4e357c, sorted by world_pos.y):          everything that moves or stands - soldiers, vehicles,
+ *   layer 2 (0x4e3590, sorted by +0x3c):                 building parts drawn OVER figures (the bank's roof with
+ *                                                         the wall tops, the BANK sign block and the broken roof
+ *                                                         edge round the hole: entry 17067) - so a roof hides who
+ *                                                         is inside.
+ * Layer 2 is drawn after every figure in the region, whatever their positions: a soldier standing IN FRONT of
+ * the building (south of it) is drawn under the roof part wherever its picture and his overlap - the soldiers
+ * walking out of the bank's hole had their heads / rifles under the broken roof edge and the sign block (Wine
+ * log 2026-11-21: bank part 1 pos y 2494 layer 0, Sarge y 2705..2810 layer 1, bank part 2 pos y 2580 layer 2,
+ * every region redraw in that order; the original 8-bit picture shows the same).
+ * Now: after the layer-2 pass, each figure of this pass whose feet (world_pos) lie BELOW the lowest opaque
+ * pixel of every layer-2 part it overlaps (checked in the part's own picture, in the columns round his feet) is
+ * drawn once more with the game's own routine and the same clip - on top of it, as the y order says. A figure
+ * inside the building (a roof pixel below his feet in those columns) stays hidden under it. His shadow is not
+ * drawn again (it would darken the roof part). The game's data decides: layer, positions, the part's RLE picture.
+ * [display] fronts_order = 1 (0 = the game's order). */
+#define LAYER_LIST_0  0x4e3568                   /* FUN_0042e950's edx per pass (FUN_0042e3e0) */
+#define LAYER_LIST_1  0x4e357c
+#define LAYER_LIST_2  0x4e3590
+#define DRAW_LAYER    ((LayerFn)0x42e950)        /* __fastcall ecx = region rect (world), edx = layer list */
+#define FRAME_OF(c)   (*(BYTE **)((c) + 4))      /* ANIMCELL +4: the frame drawn (+0 RLE data, +0x3c format) */
+#define FEET_COLS     4                          /* columns either side of the feet checked in the front part */
+#define MAX_LAYER_FIGS 64
+#define MAX_FRONTS    16
+typedef void (__fastcall *LayerFn)(void *rect, void *list);
+typedef struct { BYTE *cell; int rect[4]; } LayerFig;
+typedef struct { BYTE *cell; int rect[4]; const BYTE *data; int dword; } LayerFront;
+static int g_layer = -1;                         /* pass being drawn (FUN_0042e3e0), -1 = another path */
+static LayerFig g_lfig[MAX_LAYER_FIGS]; static int g_nlfig;
+static LayerFront g_lfront[MAX_FRONTS]; static int g_nlfront;
+static int g_layer_redraw;                       /* drawing a figure again: not noted */
+static void roofs_draw_cell_body(BYTE *cell, void *clip);
+
+/* figures: soldiers (raw 5), Sarge (6), vehicles (3); owner-less cells only as a turret on its hull */
+static int is_figure(const BYTE *cell, const BYTE *owner)
+{
+    if (!owner) {
+        const BYTE *hull = cell - TURRET_IN_HULL, *vo;
+        if (IsBadReadPtr(hull, 0x10)) return 0;
+        vo = *(BYTE *const *)(hull + 0x0c);
+        return vo && !IsBadReadPtr(vo, 0xa0) && RAW_TYPE(*(const DWORD *)vo) == RAW_VEHICLE && *(BYTE *const *)(vo + 0x9c) == hull;
+    }
+    int t = RAW_TYPE(*(const DWORD *)owner);
+    return t == 3 || t == 5 || t == 6;
+}
+
+static void layer_note(BYTE *cell, void *clip, BYTE *owner)
+{
+    (void)clip;
+    if (g_layer_redraw || g_layer < 1) return;
+    if (g_layer == 1) {
+        if (g_nlfig < MAX_LAYER_FIGS && is_figure(cell, owner)) {
+            g_lfig[g_nlfig].cell = cell; memcpy(g_lfig[g_nlfig].rect, CELL_WRECT(cell), sizeof g_lfig[0].rect); g_nlfig++;
+        }
+        return;
+    }
+    /* layer 2: a front part; its picture = the frame the game just drew (formats 0 DRLE = dword rows, 1 / 2 WRLE) */
+    if (g_nlfront >= MAX_FRONTS) return;
+    BYTE *fr = FRAME_OF(cell);
+    if (!fr || IsBadReadPtr(fr, 0x40)) return;
+    int fmt = (char)fr[0x3c];
+    const BYTE *d = *(const BYTE **)fr;
+    if ((fmt != 0 && fmt != 1 && fmt != 2) || !d || IsBadReadPtr(d, 4)) return;
+    LayerFront *f = &g_lfront[g_nlfront++];
+    f->cell = cell; memcpy(f->rect, CELL_WRECT(cell), sizeof f->rect); f->data = d; f->dword = fmt == 0;
+}
+
+/* Does row py of the RLE picture have an opaque pixel in columns [a, b]? Rows: [skip, run, pixels...] until the
+ * width (as hdworld.c rle_size). */
+static int rle_row_opaque(const BYTE *d, int dword, int py, int a, int b)
+{
+    int w = *(const uint16_t *)d;
+    if (a < 0) a = 0;
+    if (b >= w) b = w - 1;
+    if (a > b) return 0;
+    size_t off = dword ? ((const uint32_t *)(d + 4))[py] : ((const uint16_t *)(d + 4))[py];
+    const BYTE *p = d + off;
+    for (int x = 0, guard = 0; x < w && guard < 1024; guard++) {
+        if (IsBadReadPtr(p, 2)) return 0;
+        x += *p++;                                     /* transparent run */
+        if (x > b || x >= w) return 0;
+        int n = *p++;
+        if (n && x + n - 1 >= a) return 1;            /* the run [x, x + n) meets [a, b] (x <= b here) */
+        p += n; x += n;
+    }
+    return 0;
+}
+
+/* The lowest opaque row (world y) of the front part in the columns round wx, INT_MIN where it has none there,
+ * INT_MAX when its picture is not the one expected (then the game's order is kept). */
+static int front_bottom(const LayerFront *f, int wx)
+{
+    const BYTE *d = f->data;
+    int w = *(const uint16_t *)d, h = *(const uint16_t *)(d + 2);
+    if (w != f->rect[2] - f->rect[0] || h != f->rect[3] - f->rect[1]) return INT_MAX;
+    if (IsBadReadPtr(d, 4 + (size_t)h * (f->dword ? 4 : 2))) return INT_MAX;
+    int a = wx - FEET_COLS - f->rect[0], b = wx + FEET_COLS - f->rect[0];
+    for (int y = h - 1; y >= 0; y--)
+        if (rle_row_opaque(d, f->dword, y, a, b)) return f->rect[1] + y;
+    return INT_MIN;
+}
+
+/* After the layer-2 pass: figures in front of every front part they overlap are drawn again on top. */
+static void layer_fronts_done(void *rect)
+{
+    if (!g_nlfront || !g_nlfig || !g_cfg.fronts_order) return;
+    for (int i = 0; i < g_nlfig; i++) {
+        BYTE *c = g_lfig[i].cell;
+        if (IsBadReadPtr(c, CELL_BYTES) || !(*(DWORD *)c & 1)) continue;
+        int fx = *(short *)(c + 0x10), fy = *(short *)(c + 0x12), over = 0, behind = 0;
+        for (int k = 0; k < g_nlfront && !behind; k++) {
+            if (!rects_overlap(g_lfig[i].rect, g_lfront[k].rect)) continue;
+            int b = front_bottom(&g_lfront[k], fx);
+            if (b == INT_MIN) continue;                /* no facade pixel in his columns: nothing of it below his feet */
+            if (fy > b) over = 1; else behind = 1;
+        }
+        if (!over || behind) continue;
+        g_layer_redraw = 1;
+        hdworld_skip_shadows(1);
+        roofs_draw_cell_body(c, rect);
+        hdworld_skip_shadows(0);
+        g_layer_redraw = 0;
+        if (g_cfg.log >= 2) { static int n; if (n++ < 20) mlog("roofs: figure %p at %d,%d drawn again over a building front (layer 2)", c, fx, fy); }
+    }
+}
+
+void __fastcall roofs_layer_0(void *rect, void *list) { g_layer = 0; DRAW_LAYER(rect, list); g_layer = -1; }
+void __fastcall roofs_layer_1(void *rect, void *list) { g_nlfig = 0; g_layer = 1; DRAW_LAYER(rect, list); g_layer = -1; }
+void __fastcall roofs_layer_2(void *rect, void *list)
+{
+    g_nlfront = 0; g_layer = 2; DRAW_LAYER(rect, list); g_layer = -1;
+    static int faults;
+    if (faults < 3) {
+        Guard g;
+        if (GUARD_TRY(g, "building fronts (roofs.c)")) { layer_fronts_done(rect); guard_leave(&g); }
+        else { g_layer_redraw = 0; hdworld_skip_shadows(0); faults++; }
+    }
+    g_nlfig = g_nlfront = 0;
+}
+
 static void roofs_draw_cell_body(BYTE *cell, void *clip)
 {
     BYTE *owner = cell ? CELL_OWNER(cell) : NULL;
@@ -177,6 +323,7 @@ static void roofs_draw_cell_body(BYTE *cell, void *clip)
     hdworld_cell_begin(NULL);
     if (top && g_cfg.log >= 2) { static int n; if (n++ < 6) mlog("roofs: turret cell %p (hull %p)", cell, cell - TURRET_IN_HULL); }
     if (cell) remember_cell(cell);
+    if (cell) layer_note(cell, clip, owner);
     if (!g_cfg.see_through || !owner) return;
     DWORD uid = *(DWORD *)owner;
     int type = RAW_TYPE(uid);
