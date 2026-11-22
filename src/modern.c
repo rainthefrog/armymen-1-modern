@@ -1111,17 +1111,28 @@ static void modern_draw_body(Surf *b)
                 }
             }
             if (mp.state != MINE_OUT) {
-                static const char *WHY[] = { "", "", "BLOCKED", "NO WAY", "TOO CLOSE", "NO MINES" };
+                static const char *WHY[] = { "", "", "BLOCKED", "NO WAY", "TOO CLOSE", "NO MINES", "WALK + LAY" };
                 int mx, my; to_screen(mp.x, mp.y, &mx, &my);
-                BYTE m = mp.state == MINE_OK && !mp.busy ? C_RED : C_GREY;
+                BYTE m = (mp.state == MINE_OK || mp.state == MINE_FAR) && !mp.busy ? (mp.state == MINE_FAR ? C_ORANGE : C_RED) : C_GREY;
                 for (int k = -6; k <= 6; k++) {                          /* the X, 2 px strokes, black outline */
                     for (int o = -1; o <= 2; o++) { px(mx + k + o, my + k, C_BLACK); px(mx + k + o, my - k, C_BLACK); }
                     px(mx + k, my + k - 1, C_BLACK); px(mx + k, my - k + 1, C_BLACK); px(mx + k + 1, my + k + 1, C_BLACK); px(mx + k + 1, my - k - 1, C_BLACK);
                 }
                 for (int k = -5; k <= 5; k++) { px(mx + k, my + k, m); px(mx + k + 1, my + k, m); px(mx + k, my - k, m); px(mx + k + 1, my - k, m); }
                 /* why not (the mines left show at the pointer already: ammo at the reticle) */
-                if (mp.state != MINE_OK) text(mx + 10, my - 12, WHY[mp.state], C_GREY, 1);
+                if (mp.state != MINE_OK) text(mx + 10, my - 12, WHY[mp.state], mp.state == MINE_FAR ? C_ORANGE : C_GREY, 1);   /* beyond the ring: walk + lay */
             }
+        }
+    }
+    {   /* Sarge's own mine under the pointer, no sweeper (mines.c, 2026-11-21 round 3): the pick-up pointer - a green
+         * outlined ring on the mine + "CLICK: PICK UP" (grey "FULL - CANNOT PICK UP" when his mine weapon has no room) */
+        int hx, hy, ok;
+        if (mines_pickup_hover(&hx, &hy, &ok)) {
+            int x, y; to_screen(hx, hy, &x, &y);
+            BYTE c = ok ? C_GREEN : C_GREY;
+            circle(x, y, 13, C_BLACK, 0); circle(x, y, 12, c, 0); circle(x, y, 11, c, 0); circle(x, y, 10, C_BLACK, 0);
+            for (int k = -3; k <= 3; k++) { px(x + k, y - 16, c); px(x + k, y - 17, C_BLACK); }   /* a small "lift" bar above */
+            text(x + 17, y - 12, ok ? "CLICK: PICK UP" : "FULL - CANNOT PICK UP", c, 1);
         }
     }
     {   /* medkit selected (allies.c, 2026-11-21): beside the heal pointer (the red / grey cross is the Windows pointer)

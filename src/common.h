@@ -816,7 +816,9 @@ void music_stub_create(void), music_stub_play(void), music_stub_fill(void), musi
 int controls_sarge_running(void);                                     /* controls.c: Sarge sprints (modern controls) */
 void squad_debug_follow(void);                                        /* squad.c: testing aid, every player unit follows Sarge */
 /* mines.c (2026-11-21): mine placement with the mouse - a ring round Sarge, left click inside it lays the mine there */
-enum { MINE_OK, MINE_OUT, MINE_BLOCKED, MINE_NO_WAY, MINE_CLOSE, MINE_EMPTY };   /* mines_preview state */
+enum { MINE_OK, MINE_OUT, MINE_BLOCKED, MINE_NO_WAY, MINE_CLOSE, MINE_EMPTY, MINE_FAR };   /* MINE_FAR: beyond the ring, a tap walks there + lays */
+int mines_pickup_hover(int *x, int *y, int *ok);   /* modern.c: Sarge's own mine under the pointer (no sweeper): a click picks it up */
+   /* mines_preview state */
 typedef struct { int sarge_x, sarge_y, reach, x, y, state, left, busy; } MinePreview;   /* world px; x, y = tile middle */
 int mines_preview(MinePreview *p);          /* modern.c: mines selected (modern controls, on foot): ring + marker */
 int mines_pointer_in_reach(void);           /* controls.c: the pointer is inside the ring (mine pointer, no walk ring) */
