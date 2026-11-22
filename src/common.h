@@ -851,6 +851,8 @@ void audio_find_wave_stub(void);                                      /* audio.c
 size_t __cdecl audio_fread(void *buf, size_t size, size_t count, void *file);   /* audio.c: call 0x40f515 (the effect data read) */
 int __fastcall audio_source_volume(BYTE *src);                           /* audio.c: FUN_004031e0 rewrite (stale-safe) */
 void music_stub_create(void), music_stub_play(void), music_stub_fill(void), music_stub_refill(void), music_stub_rewind(void);   /* music.c: FUN_004107b0 calls of the stream code */
+void music_frame(void);                     /* music.c: dd_present, game thread - restarts the music when [audio] am2_music is switched */
+void music_option_switched(void);           /* music.c: panel.c click_row - the same at once (game thread only) */
 int controls_sarge_running(void);                                     /* controls.c: Sarge sprints (modern controls) */
 void squad_debug_follow(void);                                        /* squad.c: testing aid, every player unit follows Sarge */
 /* mines.c (2026-11-21): mine placement with the mouse - a ring round Sarge, left click inside it lays the mine there */

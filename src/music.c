@@ -30,8 +30,9 @@
  * record cache gives every slot of an id the same handle and play's FUN_004121e0 finds the FIRST slot), so after
  * switching the option mid-mission the old slot (11025 Hz 8-bit buffer, original chunk size and length) was
  * refilled from the AM II file = loud noise, "looping" every 7.8 s (user log 2026-11-21, DESERT1 + frontyard.wav).
- * Now a slot always streams the file it was made for; switching takes effect when the game makes a new slot and
- * plays it (next screen / mission). A missing / bad file = the original, logged.
+ * Now a slot always streams the file it was made for. Switching the option restarts the playing music at once
+ * with the new choice (2026-11-22, music_frame / music_option_switched at the end of this file: the slot is
+ * released and the game plays the stream id again). A missing / bad file = the original, logged.
  * Pack: scripts/am2_music.py (track table, loudness matched to the AM1 music).
  */
 #include "common.h"
@@ -259,3 +260,103 @@ MUSIC_STUB(music_stub_play, 1, "%esi");      /* 0x4112aa FUN_00411250: ESI = FUN
 MUSIC_STUB(music_stub_fill, 2, "%ebx");      /* 0x411e4f FUN_00411df0: EBX = slot (ECX at entry) */
 MUSIC_STUB(music_stub_refill, 2, "%esi");    /* 0x411ff9 FUN_00411f90: ESI = slot (ECX at entry) */
 MUSIC_STUB(music_stub_rewind, 3, "%esi");    /* 0x411175 FUN_00411120 / 0x411043 FUN_00410ff0: ESI = slot */
+
+/* ---- switching [audio] am2_music while music plays (2026-11-22, user: "the am2 music isn't starting to play when
+ * I switch mid mission") ----
+ * Before, a switch applied only to the next track: a playing stream keeps the record (format, chunk size, length)
+ * it was made from (see the header). Now the switch RESTARTS every playing music stream whose choice changes - at
+ * once from panel.c click_row (F10 panel, Mod Settings via panel_row_set: music_option_switched), else at the end
+ * of the next game frame (dd_present: music_frame); both on the game thread only (the sound code is not
+ * thread-safe). Its slot(s) are released with the game's own FUN_00412440 (ECX = handle: FUN_00411720 stop +
+ * timer kill + buffer release + record ref, then FUN_00402b40 table entry), then the same stream id is played
+ * again with the game's play FUN_00401df0 (ECX = sound id, DX = the flags it was played with) - the create hook
+ * above makes the new slot from the new choice (AM II track or the original), with its own buffer format. The
+ * track starts from the beginning; loop flag 0x800 and the game's volume handling are kept (they come from the
+ * flags / the play path). Every slot of the id is released (the game can leave an older slot of the same handle
+ * playing, see the header), so no old slot keeps playing beside the new one. */
+#define SND_ENABLED     (*(int *)0x4e2208)            /* sound system up */
+#define SND_TABLE       ((BYTE *)0x4d8108)            /* registered sounds: 16 bytes { id, handle, WORD flags, ... } */
+#define SND_TABLE_N     (*(unsigned *)0x4e2140)
+#define MUS_SLOTS       (*(BYTE **)0x4e3b0c)          /* music stream slots, 0x48 bytes */
+#define MUS_SLOTS_N     (*(unsigned *)0x4e3b1c)
+#define MUS_SLOT_SIZE   0x48
+#define SLOT_ID         0x04                          /* sound id */
+#define SLOT_SERIAL     0x08                          /* -1 = unused */
+#define SLOT_HANDLE     0x0c                          /* record handle (= the play / instance handle) */
+#define SLOT_FLAGS      0x10                          /* play flags + state; 0x100 = playing */
+#define SLOT_PLAYING    0x100
+#define SND_FLAG_MUSIC  0x08
+#define SND_FLAG_LOOP   0x800
+#define SND_PLAY        0x401df0                      /* FUN_00401df0: ECX = sound id, DX = flags */
+#define MUS_RELEASE     0x412440                      /* FUN_00412440: ECX = handle - release slot + table entry */
+typedef int (__fastcall *SndPlayFn)(int id, int flags);
+typedef void (__fastcall *MusReleaseFn)(int handle);
+
+static BYTE *slot_of_handle(int h)
+{
+    BYTE *s = MUS_SLOTS;
+    if (!s || s == (BYTE *)-1) return NULL;
+    for (unsigned i = 0; i < MUS_SLOTS_N; i++) {
+        BYTE *sl = s + i * MUS_SLOT_SIZE;
+        if (*(int *)(sl + SLOT_SERIAL) != -1 && *(int *)(sl + SLOT_HANDLE) == h) return sl;
+    }
+    return NULL;
+}
+
+static void restart_streams(int on)
+{
+    BYTE *s = MUS_SLOTS;
+    if (!SND_ENABLED || !s || s == (BYTE *)-1) { mlog("music: switched %s - no music streams", on ? "on" : "off"); return; }
+    int m = mission_now(), n = 0, ids[8], handles[8], flags[8];
+    for (unsigned i = 0; i < MUS_SLOTS_N && n < 8; i++) {
+        BYTE *sl = s + i * MUS_SLOT_SIZE;
+        int id = *(int *)(sl + SLOT_ID), h = *(int *)(sl + SLOT_HANDLE);
+        WORD sf = *(WORD *)(sl + SLOT_FLAGS);
+        if (*(int *)(sl + SLOT_SERIAL) == -1 || id < MUS_FIRST || id >= MUS_FIRST + MUS_COUNT || !(sf & SLOT_PLAYING)) continue;
+        int dup = 0;
+        for (int k = 0; k < n; k++) dup |= ids[k] == id;
+        if (dup) continue;
+        Rec *cur = slot_record(sl);
+        Track *now = cur ? &g_tracks[cur->track] : NULL, *t = on ? choose(id, m) : NULL;
+        if (now == t) { mlog("music: switched %s - stream %d %s keeps %s", on ? "on" : "off", id, NAMES[id - MUS_FIRST], t ? t->name : "the original"); continue; }
+        int fl = -1;                                  /* the flags it was played with: its table entry */
+        for (unsigned e = 0; e < SND_TABLE_N && e < 0x800; e++)
+            if (*(int *)(SND_TABLE + e * 16) == id && *(int *)(SND_TABLE + e * 16 + 4) == h) { fl = *(WORD *)(SND_TABLE + e * 16 + 8); break; }
+        if (fl < 0) fl = sf & (SND_FLAG_MUSIC | SND_FLAG_LOOP);   /* not registered: music + its loop flag */
+        ids[n] = id; handles[n] = h; flags[n] = fl | SND_FLAG_MUSIC; n++;
+        mlog("music: switched %s - stream %d %s restarts with %s (slot flags %04x, play flags %04x)", on ? "on" : "off", id,
+             NAMES[id - MUS_FIRST], t ? t->name : "the original", sf, flags[n - 1]);
+    }
+    for (int k = 0; k < n; k++) {
+        int released = 0;
+        while (released < 8 && slot_of_handle(handles[k])) { ((MusReleaseFn)MUS_RELEASE)(handles[k]); released++; }
+        int r = ((SndPlayFn)SND_PLAY)(ids[k], flags[k]);
+        mlog("music: stream %d: %d slot(s) released, played again (%d)", ids[k], released, r);
+    }
+}
+
+static DWORD g_game_thread;                           /* the thread that runs the game (dd_present) */
+
+static void apply_switch(void)
+{
+    static int applied = -1;
+    int on = g_cfg.am2_music != 0;
+    if (applied == on) return;
+    if (applied >= 0) restart_streams(on);
+    applied = on;
+}
+
+/* dd_present: game thread, end of each game frame (menus and missions) */
+void music_frame(void)
+{
+    g_game_thread = GetCurrentThreadId();
+    apply_switch();
+}
+
+/* panel.c click_row (F10 panel, and Mod Settings through panel_row_set): the option was just switched. A static
+ * menu page may not end a game frame for a while, so apply it here - on the game thread only; elsewhere the next
+ * music_frame does it. */
+void music_option_switched(void)
+{
+    if (g_game_thread && GetCurrentThreadId() == g_game_thread) apply_switch();
+}

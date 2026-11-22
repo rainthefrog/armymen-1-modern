@@ -155,6 +155,7 @@ static void click_row(int row)
     *r->value = !*r->value;
     WritePrivateProfileStringA(r->section, r->key, *r->value ? "1" : "0", mod_ini_path());
     mlog("panel: %s %d", r->name, *r->value);
+    if (r->value == &g_cfg.am2_music) music_option_switched();   /* music.c: restart the playing music with the new choice now */
 }
 
 static int overlay_click(int x, int y)
