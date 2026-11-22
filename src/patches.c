@@ -21,6 +21,40 @@ int write_mem(uintptr_t va, const void *src, size_t n)
     return 1;
 }
 
+/* Terrain palette load, FUN_00403970 (2026-11-21, Alpine text fix).
+ * Caller: FUN_00403b30 (display / terrain palette set-up, "<terrain>\final_pal.bmp") at 0x403b9d.
+ * __fastcall: ecx = file / resource name, edx = BITMAPINFO buffer (40-byte header + 256 RGBQUAD, a
+ * local of the caller, NOT cleared); returns nonzero when the file is a usable <= 8-bit bitmap.
+ * Kept: the load itself. Changed: the game reads only biClrUsed colours. Alpine\final_pal.bmp has 246,
+ * so entries 246..255 were left-over stack bytes - different on every run and after every terrain
+ * change (Desert -> Alpine: text colour 250 = 31fac4 cyan or dark; cold start: 49df06). On the
+ * original 8-bit desktop Windows' static colours filled them (SetSystemPaletteUse STATIC +
+ * GetSystemPaletteEntries, both replaced by the "palette: use game palette" patch). Index 250 is the
+ * colour of every HUD text (message box, objective box, "No unit"), 248..255 the UI green ramp.
+ * Now the missing entries get the Desert palette's tail (Desert and Bayou define all 256: 245..247
+ * black, 248..255 the green ramp 00ff00 .. 002000), so Alpine's HUD looks like the other terrains. */
+typedef int (__fastcall *PalLoadFn)(const char *name, BITMAPINFO *bi);
+#define PAL_LOAD          ((PalLoadFn)0x403970)
+#define PAL_LOAD_CALL     0x403b9d           /* in FUN_00403b30 */
+static const BYTE PAL_TAIL_GREEN[256 - 245] = { 0, 0, 0, 0xff, 0xe0, 0xc0, 0xa0, 0x80, 0x60, 0x40, 0x20 }; /* 245..255 */
+
+static int __fastcall pal_load(const char *name, BITMAPINFO *bi)
+{
+    int ok = PAL_LOAD(name, bi);
+    if (!ok) return ok;
+    DWORD n = bi->bmiHeader.biClrUsed;
+    if (n >= 256) return ok;
+    for (DWORD i = n; i < 256; i++) {
+        RGBQUAD *q = &bi->bmiColors[i];
+        q->rgbRed = 0; q->rgbBlue = 0; q->rgbReserved = 0;
+        q->rgbGreen = i >= 245 ? PAL_TAIL_GREEN[i - 245] : 0;
+    }
+    static int logged;
+    if (logged++ < 8) mlog("palette: %s defines %lu colours; %lu..255 set to the UI tail (black, green ramp)",
+                           name ? name : "?", (unsigned long)n, (unsigned long)n);
+    return ok;
+}
+
 static void apply(const Patch *p)
 {
     const BYTE *cur = (const BYTE *)p->va;
@@ -151,6 +185,8 @@ void patches_apply(void)
         { "startup: skip DirectPlayLobby probe", 0x4084b3, dp_o, dp_n, sizeof dp_o },
     };
     for (size_t i = 0; i < sizeof fixed / sizeof fixed[0]; i++) apply(&fixed[i]);
+    hook_call("palette: terrain palette load fills undefined entries (0x403b9d)", PAL_LOAD_CALL, 0x403970,
+              (void *)pal_load);
 
     if (g_cfg.mouse_fix) {
         /* FUN_0041f380: mov eax,[0x4fe448]; push esi; test eax,eax */

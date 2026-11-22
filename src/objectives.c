@@ -172,23 +172,62 @@ static void draw_sectors(Surf *b)
 #define PIN_MAX_H 200             /* rows of the box (16 lines at most) */
 #define PIN_CHAR  7               /* the message font is about 6.6 px per character (6 clipped the line ends, 2026-11-20) */
 
+/* Width in pixels of the first n characters of s in the game's cached font (as FUN_0044b760 advances: font
+ * table *0x6975e0, entry [font]; glyph c >= 0x20 at font + u16[font - 0x40 + 2c], its first u16 = width;
+ * control characters < 0x20 only change the colour). -1 when the font cannot be read. */
+#define GAME_FONT_TABLE (*(BYTE ***)0x6975e0)
+static int pin_width(int font, const char *s, int n)
+{
+    if (font < 0 || font > 15) return -1;
+    BYTE **tab = GAME_FONT_TABLE;
+    if (!tab || IsBadReadPtr(tab + font, sizeof *tab)) return -1;
+    BYTE *f = tab[font];
+    if (!f || IsBadReadPtr(f - 0x40, 0x40 + 0xe0 * 2)) return -1;
+    int w = 0;
+    for (int i = 0; i < n && s[i]; i++) {
+        BYTE c = (BYTE)s[i];
+        if (c < 0x20) continue;
+        const BYTE *g = f + *(const WORD *)(f - 0x40 + c * 2);
+        if (IsBadReadPtr(g, 2)) return -1;
+        w += *(const WORD *)g;
+    }
+    return w;
+}
+
 static TargetZones g_zones;                           /* target sectors, spots, border objects of the last finished frame (zones_note) */
 static void draw_pinned(Surf *b)
 {
     g_zones.dim_on = 0;
     if (!g_cfg.pin_objective || !g_text[0] || g_font < 0 || !hud_draw_string_original) return;
-    /* word-wrap into lines of at most PIN_W / PIN_CHAR characters */
+    /* word-wrap into lines no wider than the clip box. 2026-11-21: by the font's real glyph widths (pin_width);
+     * the 7 px estimate let wide letters overflow, and FUN_0044b760 then wraps inside the 1-line clip box and
+     * drops the rest ("...Blue spy hidin" / "out at", Bayou 19). Estimate only when the font is not readable. */
     static char lines[16][64];
+    static char wrapped[sizeof g_text]; static int wrapped_font = -1, wrapped_n;   /* wrap once per text / font */
     int n = 0, max = (PIN_W - 8) / PIN_CHAR;
     if (max > 63) max = 63;
     const char *p = g_text;
+    if (wrapped_font == g_font && !lstrcmpA(wrapped, g_text)) { n = wrapped_n; p = ""; }
+    else { lstrcpynA(wrapped, g_text, sizeof wrapped); wrapped_font = g_font; }
     while (*p && n < 16) {
         while (*p == ' ') p++;
         int len = lstrlenA(p), cut = len <= max ? len : max;
-        if (len > max) { int k = cut; while (k > 0 && p[k] != ' ') k--; if (k > 0) cut = k; }
+        if (pin_width(g_font, p, 1) >= 0) {           /* the longest run of whole words that fits */
+            cut = 0;
+            for (int k = 1; k <= len && k <= 63; k++) {
+                if (p[k] != ' ' && p[k] != 0) continue;
+                if (pin_width(g_font, p, k) > PIN_W - 8) break;
+                cut = k;
+            }
+            if (!cut) {                                /* one word wider than the box: as many letters as fit */
+                cut = 1;
+                while (cut < len && cut < 63 && pin_width(g_font, p, cut + 1) <= PIN_W - 8) cut++;
+            }
+        } else if (len > max) { int k = cut; while (k > 0 && p[k] != ' ') k--; if (k > 0) cut = k; }
         lstrcpynA(lines[n++], p, cut + 1);
         p += cut;
     }
+    wrapped_n = n;
     int h = 8 + (n + 1) * PIN_LINE;
     if (PIN_X + PIN_W > b->w || PIN_Y + h > b->h) return;
     /* Upscaled battlefield (2026-11-20, user: "the mission text doesn't look like it was cleanly cut from the
