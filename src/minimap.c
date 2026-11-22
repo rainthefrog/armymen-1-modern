@@ -81,6 +81,8 @@ typedef int (__fastcall *AllianceFn)(int mine, int other);
 #define SHADE_40         (*(BYTE **)0x4e2448)        /* x0.40 shade table (tips.c) */
 
 static const char *const ARMY_NAME[] = { "Green", "Tan", "Blue", "Grey" };
+/* indexed by the UID class field MINUS 1: the class is 1-based like the vehicles' (2026-11-21, user: "the minimap is saying a
+ * rifleman squad is a grenade squad" - class 1 = rifle was shown as UNIT_NAME[1]) */
 static const char *const UNIT_NAME[] = { "Rifle", "Grenade", "Flame", "Bazooka", "Engineer", "Mortar", "Mine", "Special" };
 /* indexed by the UID class field ((uid >> 16) & 0x3f) as the game itself names them (FUN_0044a030 debug name: 2 JEEP,
  * 3 TANK, 4 HALFTRACK, 5 CONVOY; 2026-11-21 fix: the table was one off - a tank showed as "Half-track") */
@@ -438,7 +440,7 @@ static void blip_title(const Blip *b, char *s)
         else wsprintfA(s, "%s%sSarge", an, sep);
         break;
     case PIN_UNIT:
-        wsprintfA(s, "%s%s%s squad", an, sep, b->sub >= 0 && b->sub < 8 ? UNIT_NAME[b->sub] : "");
+        wsprintfA(s, "%s%s%s squad", an, sep, b->sub >= 1 && b->sub <= 8 ? UNIT_NAME[b->sub - 1] : "");
         break;
     case PIN_VEHICLE:
         wsprintfA(s, "%s%s%s", an, sep, minimap_vehicle_name((DWORD)b->sub << 16));
