@@ -973,6 +973,50 @@ int mines_transfer(BYTE *to, BYTE *from, int n)
     return moved;
 }
 
+/* weapons.c (carry-over to the next part, 2026-11-21): give the mine / explosive weapon w exactly this charge array (the
+ * object numbers recorded when the last part was won). After a map reload the record is a NEW one (MakeWeapon at the map
+ * load gave every pack its ORIGINAL charges), so the charges moved between packs (mines_transfer, the grown array) would
+ * otherwise be lost and the ammo count would run past the array. Each listed object must still be a charge of this type
+ * (category 9, number = type); it leaves any other weapon's array and is owned by w. The array is allocated with the
+ * game's allocator (freed by the game's own weapon free 0x446350). Returns the new length; an unchanged array is kept. */
+int mines_set_charges(BYTE *w, const short *objs, int n)
+{
+    if (!w || !OBJECTS || n < 0 || (W_TYPE(w) != TYPE_MINE && W_TYPE(w) != TYPE_EXPLOSIVE)) return -1;
+    short *c = W_CHARGES(w);
+    int cur = W_MAX(w);
+    if (c && cur == n && n > 0 && !IsBadReadPtr(c, (UINT_PTR)n * 2) && !memcmp(c, objs, (size_t)n * 2)) {
+        for (int i = 0; i < n; i++) if (objs[i] >= 0 && objs[i] < OBJECT_COUNT) OBJ_OWNER(object(objs[i])) = w;
+        return n;
+    }
+    short *arr = n > 0 ? (short *)GAME_ALLOC(n * 2) : NULL;
+    if (n > 0 && !arr) return -1;
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        int id = objs[i];
+        if (id < 0 || id >= OBJECT_COUNT) continue;
+        BYTE *o = object(id);
+        if (OBJ_CATEGORY(o) != CAT_WEAPON_OBJ || OBJ_NUMBER(o) != W_TYPE(w)) continue;
+        BYTE *old = OBJ_OWNER(o);
+        if (old && old != w && !IsBadReadPtr(old, 0x20) && W_TYPE(old) == W_TYPE(w)) {
+            int j = charge_slot(old, o);
+            if (j >= 0) remove_charge(old, j);
+        }
+        arr[k++] = (short)id;
+        OBJ_OWNER(o) = w;
+    }
+    if (c && cur > 0 && !IsBadReadPtr(c, (UINT_PTR)cur * 2))        /* the old array's charges that are not ours any more */
+        for (int i = 0; i < cur; i++) {
+            if (c[i] < 0 || c[i] >= OBJECT_COUNT) continue;
+            BYTE *o = object(c[i]);
+            int mine = 0;
+            for (int q = 0; q < k && !mine; q++) mine = arr[q] == c[i];
+            if (!mine && OBJ_OWNER(o) == w) OBJ_OWNER(o) = NULL;
+        }
+    if (c) GAME_FREE(c);
+    W_CHARGES(w) = arr; W_MAX(w) = (short)k;
+    return k;
+}
+
 
 /* savestate.c: mine walks and the sweeper's reveal flags are part of the mission state */
 void mines_savestate(void) { SAVESTATE(F); SAVESTATE(D); SAVESTATE(g_safe); SAVESTATE(g_was_hidden); SAVESTATE(g_safe_for); }

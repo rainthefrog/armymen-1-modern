@@ -369,6 +369,8 @@ void patches_apply(void)
     static const BYTE wpn_o[] = { 0x56, 0x8b,0xf1, 0x85,0xd2 };                  /* FUN_0041ab30: push esi; mov esi,ecx; test edx,edx */
     hook_jmp("deploy: vehicle weapons (FUN_0041ab30) -> deploy.c (NULL-safe)", 0x41ab30, wpn_o, sizeof wpn_o, (void *)deploy_vehicle_weapons);
     static const BYTE asave_o[] = { 0x81,0xec,0x50,0x01,0x00,0x00 };             /* FUN_0041a3e0 army file writer: sub esp,150h */
+    /* (2026-11-21) the same wrap records Sarge's weapons for the next part (weapons.c weapons_army_saved, carry-over;
+     * put back by weapons_frame -> carry_apply; the army file's own item pickups FUN_004495c0(1) pass weapons_touch) */
     capture_army_save_original = (ArmySaveFn)hook_wrap("capture: army file writer (FUN_0041a3e0) -> capture.c", 0x41a3e0, asave_o, sizeof asave_o,
                                                        (void *)capture_army_save);
     /* vehicles.c (2026-11-20): the player's vehicle update (unstick, no creeping into objects, trace) and the turret

@@ -23,7 +23,8 @@
  *   - mouse wheel (modern controls): steps through the boxes holding a weapon in screen order.
  *   - left click on a box: use that weapon; right click: drop it (not the rifle).
  *   - after a drop, another carried weapon of that kind moves into the slot (it keeps its box).
- * Boxes are forgotten when Sarge dies or a new mission starts (a new Sarge object).
+ * Boxes are forgotten when Sarge dies or a new mission run starts; at the next part of the same scenario (and its
+ * Play Again) they are rebuilt from a plain record taken at the win ("carry-over to the next part" below).
  * [controls] six_weapons = 1 (with modern controls; the keys 1/2/3 still pick the kinds).
  * ============================================================================================ */
 #include "common.h"
@@ -84,6 +85,9 @@ static void forget(void)
 }
 
 /* Boxes belong to one Sarge; a new one (new mission) or a dead one has none. */
+static int g_carry_pending;                     /* the next part's start: the weapons of the last part are put back (carry_apply) */
+static void carry_new_run(int scenario, int mission);
+static void carry_apply(BYTE *u);
 static int valid(BYTE *u)
 {
     /* 2026-11-20 crash (user log: EXCEPTION in 0x4492b0 called from here at a mission start): the new mission's
@@ -92,12 +96,16 @@ static int valid(BYTE *u)
      * 2026-11-21 crash (user: 0x43fdc6, the HUD weapon icon read Sarge's current weapon type as "ens/"): mission 7 lost
      * with Sarge alive and entered again from the menus - same Sarge (the static legion record), same mission number,
      * so the boxes of the lost run were kept and a freed weapon record went back into a slot. Now keyed on the mission
-     * RUN (gameplay_run: any (re)start, incl. Play Again and the same mission again). */
+     * RUN (gameplay_run: any (re)start, incl. Play Again and the same mission again).
+     * 2026-11-21 carry-over: the boxes are still forgotten on every new run (no pointer survives a run), but at the next
+     * part of the same scenario (and its Play Again) they are rebuilt from the plain record taken at the win (below). */
     static unsigned run;
-    unsigned r = gameplay_run(NULL, NULL);
+    int s, m;
+    unsigned r = gameplay_run(&s, &m);
     if (!u || u != g_owner || SARGE_HEALTH(u) <= 0 || r != run) {
         if (r != run && (g_store[1].type || g_store[2].type || g_store[3].type || g_store[4].type || g_store[5].type))
             mlog("weapons: boxes of the last mission run forgotten (run %u)", r);
+        if (r != run) carry_new_run(s, m);
         forget(); g_owner = u; run = r; return 0;
     }
     return 1;
@@ -163,6 +171,204 @@ static int activate(BYTE *u, int b)
     return ok;
 }
 
+/* ---------------------------------------------------------------- carry-over to the next part
+ * 2026-11-21 (user: "sometimes the weapons don't carry over to a new mission on the same map. make sure they do").
+ * What the game does: winning a part writes the army file (FUN_0046a970 -> FUN_0041a3e0). For Sarge it holds only
+ * position, health and his vehicle (record 0x8005) - NOT his weapons. The weapons go with the OBJECT records written
+ * at its end (FUN_0046b5c0, "OBJS", 0x1c bytes per map object whose +0x70 has bit 0x40: UID, health, +0x70/+0x71
+ * flags, position, ammo = WEAPON +0xc). A picked-up item has +0x70 |= 0x60 (0x20 = in the bag) and +0x71 |= 0x40
+ * (carried by Sarge; FUN_00449330).
+ *   - The next part normally CONTINUES on the loaded map (Wine: same object table, no army file read): Sarge's three
+ *     slots simply stay. Only the mod's boxes were lost - valid() forgets them on every new run (the boxes not in a
+ *     game slot = g_store: B1..B3, unused A boxes). Wine 2026-11-21 Desert 1 -> 2: flamethrower 99, mortar 15,
+ *     grenades 8 forgotten, only the bazooka (in the heavy slot) left.
+ *   - Play Again of a later part (and every load of a later part) reloads the map: the army file is read
+ *     (FUN_0041a970: SargeDeploy FUN_004487e0 -> FUN_004489c0 empties the heavy / special slots, then FUN_0046b6c0 ->
+ *     FUN_0046b750 per object: flags + ammo back, and an item carried by Sarge is picked up again with
+ *     FUN_004495c0(1)). That pickup keeps one weapon per kind (a full slot refuses): the other carried weapons stay
+ *     "in the bag" but in no slot = lost. Mine / explosive packs get their ORIGINAL charges back from MakeWeapon at
+ *     the map load (charges moved in by mines_transfer are gone; ammo > charges). Map unload frees every item's
+ *     WEAPON (FUN_00446350), so nothing from the last run may be kept by pointer.
+ * Here: at the army file write (capture_army_save -> weapons_army_saved) every carried weapon is recorded as plain
+ * data (type, ammo, box, slot, its object number + UID, the charge array); at the first play frame of the next part
+ * (or its Play Again: scenario same, mission = recorded + 1) the boxes are rebuilt from it: each item is looked up
+ * again in the CURRENT object table by number and UID (the same map file: the same objects), its ammo / charges set,
+ * and it goes back into its game slot or its box. The current weapon is selected again. Any other run (a new
+ * scenario, the scenario's first part again) drops the record. [controls] carry_weapons = 1 (0 = as before). */
+#define OBJECTS_C       (*(BYTE **)0x4e30ec)
+#define OBJECT_COUNT_C  (*(int *)0x4e30e8)
+#define OBJECT_SIZE_C   0xd0
+#define OBJ_UID_C(o)    (*(DWORD *)(o))
+#define OBJ_CAT_C(o)    (*(short *)((o) + 0x68))
+#define OBJ_F70(o)      (*((BYTE *)(o) + 0x70))
+#define CAT_PICKUP_C    0x19                     /* a weapon item (lying on the map or carried) */
+#define OF_USED_C       0x04                     /* gone (dropped empty, used up) */
+#define OF_IN_BAG_C     0x20                     /* carried */
+#define OF_SAVE_C       0x40                     /* written to the army file's object records (FUN_0046b5c0) */
+#define W_CHARGES_C(r)  (*(short **)((BYTE *)(r) + 0x1c))
+#define CARRY_CHARGES   256
+#define CARRY_MAX       (SLOTS + BOXES)
+typedef struct { int type, box, slot, obj; DWORD uid; short ammo, max; int ncharges; short charges[CARRY_CHARGES]; } CarryItem;
+static struct { int valid, scen, mission, cur_slot, cur_box, n; CarryItem w[CARRY_MAX]; } g_carry;
+
+static int carry_on(void)
+{
+    static int cfg = -1;
+    if (cfg < 0) cfg = GetPrivateProfileIntA("controls", "carry_weapons", 1, mod_ini_path());
+    return cfg && six();
+}
+static int obj_number(void *item)
+{
+    BYTE *o = OBJECTS_C;
+    if (!o || !item || (BYTE *)item < o || (BYTE *)item >= o + (size_t)OBJECT_COUNT_C * OBJECT_SIZE_C) return -1;
+    return (int)(((BYTE *)item - o) / OBJECT_SIZE_C);
+}
+static const char *box_name(int b)
+{
+    static const char *n[BOXES] = { "A1", "A2", "A3", "B1", "B2", "B3" };
+    return b >= 0 && b < BOXES ? n[b] : "--";
+}
+
+static void carry_record(CarryItem *e, void *rec, void *item, int box, int slot)
+{
+    memset(e, 0, sizeof *e);
+    e->type = *(int *)rec; e->box = box; e->slot = slot;
+    e->ammo = W_AMMO(rec); e->max = W_MAX_AMMO(rec);
+    e->obj = obj_number(item);
+    e->uid = e->obj >= 0 ? OBJ_UID_C((BYTE *)item) : 0;
+    if ((e->type == TYPE_MINE || e->type == TYPE_EXPLOSIVE) && W_CHARGES_C(rec) && e->max > 0) {
+        int n = e->max < CARRY_CHARGES ? e->max : CARRY_CHARGES;
+        if (!IsBadReadPtr(W_CHARGES_C(rec), (UINT_PTR)n * 2)) { memcpy(e->charges, W_CHARGES_C(rec), (size_t)n * 2); e->ncharges = n; }
+    }
+}
+
+/* capture.c, at the army file write (a part was won; the next part of the scenario follows) */
+void weapons_army_saved(void)
+{
+    BYTE *u = SARGE;
+    int s, m;
+    gameplay_run(&s, &m);
+    g_carry.valid = 0;
+    if (!carry_on() || !u || SARGE_HEALTH(u) <= 0) return;
+    valid(u); sync(u);
+    g_carry.scen = s; g_carry.mission = m; g_carry.n = 0;
+    g_carry.cur_slot = CUR_SLOT(u);
+    g_carry.cur_box = g_carry.cur_slot >= 0 && g_carry.cur_slot < SLOTS ? g_slot_box[g_carry.cur_slot] : -1;
+    for (int c = 0; c < SLOTS; c++) {
+        void *rec = SLOT_TYPE(u, c), *it = SLOT_ITEM(u, c);
+        if (!rec || IsBadReadPtr(rec, 0x20) || (c > 0 && !safe_item(it))) continue;
+        carry_record(&g_carry.w[g_carry.n++], rec, safe_item(it) ? it : NULL, c ? g_slot_box[c] : 0, c);
+    }
+    for (int b = 0; b < BOXES; b++) {
+        if (!g_store[b].type || !safe_item(g_store[b].item) || g_carry.n >= CARRY_MAX) continue;
+        carry_record(&g_carry.w[g_carry.n++], g_store[b].type, g_store[b].item, b, -1);
+    }
+    char line[400];
+    int len = 0;
+    line[0] = 0;
+    for (int i = 0; i < g_carry.n && len < (int)sizeof line - 48; i++) {
+        CarryItem *e = &g_carry.w[i];
+        len += wsprintfA(line + len, " %s:type %d ammo %d%s", box_name(e->box), e->type, e->ammo, e->slot >= 0 ? "*" : "");
+        if (e->ncharges) len += wsprintfA(line + len, " (%d charges)", e->ncharges);
+    }
+    g_carry.valid = 1;
+    mlog("weapons: part won (scenario %d mission %d) - weapons recorded for the next part:%s (* = in a game slot; current %s)",
+         s, m, g_carry.n ? line : " none", box_name(g_carry.cur_box));
+}
+
+/* a new mission run: is it the next part (or its Play Again) of the recorded one? */
+static void carry_new_run(int scenario, int mission)
+{
+    if (!g_carry.valid) return;
+    if (scenario == g_carry.scen && mission == g_carry.mission + 1) {
+        g_carry_pending = 1;
+        mlog("weapons: scenario %d mission %d starts - the %d weapon(s) of mission %d will be put back", scenario, mission, g_carry.n, g_carry.mission);
+    } else {
+        g_carry_pending = 0; g_carry.valid = 0;
+        mlog("weapons: scenario %d mission %d is not the next part of %d / %d - recorded weapons dropped", scenario, mission, g_carry.scen, g_carry.mission);
+    }
+}
+
+/* the recorded item in the current object table (same number, same UID, still a weapon of that type), or NULL */
+static BYTE *carry_find(const CarryItem *e)
+{
+    BYTE *o = OBJECTS_C;
+    if (!o || e->obj < 0 || e->obj >= OBJECT_COUNT_C) return NULL;
+    o += (size_t)e->obj * OBJECT_SIZE_C;
+    if (OBJ_UID_C(o) != e->uid || OBJ_CAT_C(o) != CAT_PICKUP_C || !safe_item(o) || ITEM_TYPE(o) != e->type) return NULL;
+    return o;
+}
+
+static void carry_apply(BYTE *u)
+{
+    if (!g_carry.valid || !carry_on()) return;
+    void *had_rec[SLOTS] = { 0 }, *had_item[SLOTS] = { 0 };
+    for (int c = 1; c < SLOTS; c++) {                 /* what the game put into the slots itself */
+        had_rec[c] = SLOT_TYPE(u, c); had_item[c] = SLOT_ITEM(u, c);
+        SLOT_TYPE(u, c) = NULL; SLOT_ITEM(u, c) = NULL;
+    }
+    forget();
+    int back = 0, lost = 0;
+    for (int i = 0; i < g_carry.n; i++) {
+        const CarryItem *e = &g_carry.w[i];
+        if (e->slot == 0) {                           /* the rifle slot: the auto rifle is an item, the plain rifle is not */
+            BYTE *o = e->obj >= 0 ? carry_find(e) : NULL;
+            if (o && SLOT_TYPE(u, 0) != ITEM_WEAPON(o)) {
+                SLOT_TYPE(u, 0) = ITEM_WEAPON(o); SLOT_ITEM(u, 0) = o;
+                if (!(OBJ_F70(o) & OF_IN_BAG_C)) OBJ_F70(o) |= OF_IN_BAG_C | OF_SAVE_C;
+                mlog("weapons:   A1 type %d (item #%d) back in the rifle slot", e->type, e->obj);
+            }
+            continue;
+        }
+        BYTE *o = carry_find(e);
+        if (!o || (OBJ_F70(o) & OF_USED_C)) {
+            mlog("weapons:   %s type %d ammo %d: item #%d (uid %08lx) %s - not put back", box_name(e->box), e->type, e->ammo, e->obj, e->uid,
+                 o ? "used up" : "not in this map");
+            lost++;
+            continue;
+        }
+        BYTE *rec = ITEM_WEAPON(o);
+        if (!(OBJ_F70(o) & OF_IN_BAG_C)) OBJ_F70(o) |= OF_IN_BAG_C | OF_SAVE_C;   /* not restored as carried: it is again */
+        if (e->ncharges) {
+            int k = mines_set_charges(rec, e->charges, e->ncharges);
+            if (k != e->ncharges) mlog("weapons:   %s type %d: %d of %d recorded charges found", box_name(e->box), e->type, k, e->ncharges);
+        } else if (W_MAX_AMMO(rec) < e->max) W_MAX_AMMO(rec) = e->max;
+        int was = W_AMMO(rec);
+        W_AMMO(rec) = e->ammo;
+        int c = e->slot, b = e->box;
+        if (c >= 1 && c < SLOTS && !SLOT_ITEM(u, c) && ITEM_CATEGORY(o) == c) {
+            SLOT_TYPE(u, c) = rec; SLOT_ITEM(u, c) = o;
+            if (b < 1 || b >= boxes() || slot_of_box(b) >= 0 || g_store[b].type) b = first_free_box(u);
+            g_slot_box[c] = b;
+        } else {
+            if (b < 1 || b >= boxes() || !box_free(u, b)) b = first_free_box(u);
+            if (b < 0) { mlog("weapons:   type %d: no free box - not put back", e->type); lost++; continue; }
+            g_store[b] = (Weapon){ rec, o };
+        }
+        back++;
+        char extra[48] = "";
+        if (e->ncharges) wsprintfA(extra, ", %d charge(s) in the bag", mines_free_charges(rec));
+        mlog("weapons:   %s type %d ammo %d (was %d%s) item #%d%s", box_name(b), e->type, e->ammo, was, extra, e->obj,
+             c >= 1 && c < SLOTS && SLOT_ITEM(u, c) == o ? " in its game slot" : "");
+    }
+    for (int c = 1; c < SLOTS; c++) {                 /* something the game had in a slot that is not in the record: keep it */
+        if (!had_item[c] || !safe_item(had_item[c])) continue;
+        int found = 0;
+        for (int b = 0; b < BOXES && !found; b++) found = g_store[b].item == had_item[c];
+        for (int k = 1; k < SLOTS && !found; k++) found = SLOT_ITEM(u, k) == had_item[c];
+        if (found) continue;
+        if (!SLOT_ITEM(u, c)) { SLOT_TYPE(u, c) = had_rec[c]; SLOT_ITEM(u, c) = had_item[c]; g_slot_box[c] = -1; }
+        else { int b = first_free_box(u); if (b >= 0) g_store[b] = (Weapon){ had_rec[c], had_item[c] }; }
+        mlog("weapons:   type %d (in a game slot, not recorded) kept", ITEM_TYPE(had_item[c]));
+    }
+    sync(u);
+    int cur = g_carry.cur_slot;                       /* the weapon in use at the win */
+    if (cur < 0 || cur >= SLOTS || !SLOT_TYPE(u, cur)) cur = 0;
+    if (!SARGE_VEHICLE(u) && *(void **)(u + 0x20) != SLOT_TYPE(u, cur)) { CUR_SLOT(u) = -1; SELECT_SLOT(u, cur); RESET_THROW_CHARGE(); }
+    remember(u);
+    mlog("weapons: %d weapon(s) of mission %d put back%s", back, g_carry.mission, lost ? " (some lost: see above)" : "");
+}
+
 /* ---------------------------------------------------------------- pickup */
 
 TouchFn weapons_touch_original;
@@ -206,6 +412,15 @@ static void merge_ammo(BYTE *u, void *item, int arg, int dup_box)
 }
 
 static void __fastcall weapons_touch_px(BYTE *unit, void *item, int arg) {
+    /* arg 1 = the army file load putting a carried item back (FUN_0046b750, after a map reload): the boxes still hold
+     * the last run's items (freed with that map) - forgotten; the game's own pickup runs (one weapon per kind), the
+     * rest of the boxes is rebuilt at the first play frame (carry_apply) */
+    if (arg) {
+        if (g_cfg.log >= 1) mlog("weapons: army file load puts item #%d (type %d) back - the game's pickup", obj_number(item), safe_item(item) ? ITEM_TYPE(item) : -1);
+        if (unit == SARGE) forget();
+        PX_GAME(weapons_touch_original(unit, item, arg));
+        return;
+    }
     BYTE *u = SARGE;
     if (!six() || unit != u || !item || SARGE_VEHICLE(u)) { PX_GAME(weapons_touch_original(unit, item, arg)); return; }
     valid(u);
@@ -231,6 +446,7 @@ static void __fastcall weapons_touch_px(BYTE *unit, void *item, int arg) {
             if (take <= 0) return;
             if (take < got) {
                 W_AMMO(rec) = (short)(got - take); W_AMMO(d.type) = (short)(have + take);
+                OBJ_F70(item) |= OF_SAVE_C;                /* the pack keeps its lowered ammo / charges in the army file */
                 if (g_cfg.log >= 1) mlog("weapons: type %d topped up %d -> %d (cap %d), %d left in the pack", type, have, have + take, cap, got - take);
                 remember(u);
                 return;
@@ -242,6 +458,7 @@ static void __fastcall weapons_touch_px(BYTE *unit, void *item, int arg) {
         if (got <= 0 || have < 0 || have >= MAX_AMMO) return;
         if (have + got > MAX_AMMO) {                     /* only part fits: the rest stays in the pack */
             W_AMMO(rec) = (short)(have + got - MAX_AMMO); W_AMMO(d.type) = MAX_AMMO;
+            OBJ_F70(item) |= OF_SAVE_C;                    /* the pack keeps its lowered ammo in the army file (a reload gave it all back) */
             if (W_MAX_AMMO(d.type) < MAX_AMMO) W_MAX_AMMO(d.type) = MAX_AMMO;
             if (g_cfg.log >= 1) mlog("weapons: type %d topped up %d -> %d (cap), %d left in the pack", type, have, MAX_AMMO, have + got - MAX_AMMO);
             remember(u);
@@ -282,6 +499,7 @@ void weapons_frame(void)
     BYTE *u = SARGE;
     if (u && !SARGE_VEHICLE(u)) track_current(u);
     if (!six() || !valid(u)) { memset(g_seen, 0, sizeof g_seen); return; }
+    if (g_carry_pending && layout_view_is_gameplay()) { g_carry_pending = 0; carry_apply(u); }   /* in play: after the game's own restore */
     for (int c = 1; c < SLOTS; c++) {
         if (!g_seen[c] || SLOT_ITEM(u, c)) continue;          /* no drop */
         g_slot_box[c] = -1;
@@ -820,3 +1038,76 @@ void weapons_select_box(int b)
 
 /* savestate.c: the boxes are part of the mission state (saved with a quicksave, put back on a load) */
 void weapons_savestate(void) { SAVESTATE(g_store); SAVESTATE(g_slot_box); SAVESTATE(g_owner); SAVESTATE(g_seen); SAVESTATE(g_cur_seen); SAVESTATE(g_prev); }
+
+/* ---------------------------------------------------------------- test aids ([debug] cheat_keys; controls.c keys)
+ * Ctrl+W pick up a weapon item, Ctrl+Shift+W a mine / explosive pack, Ctrl+V win the part (dump first), Ctrl+U Sarge dies.
+ * weapons_debug_dump logs Sarge's slots and the boxes (record, type, ammo, charges, item number / UID / flags). */
+#define OBJECTS_D       (*(BYTE **)0x4e30ec)
+#define OBJECT_COUNT_D  (*(int *)0x4e30e8)
+#define OBJECT_SIZE_D   0xd0
+static int obj_idx_d(void *it) { BYTE *o = OBJECTS_D; return o && (BYTE *)it >= o && (BYTE *)it < o + (size_t)OBJECT_COUNT_D * OBJECT_SIZE_D ? (int)(((BYTE *)it - o) / OBJECT_SIZE_D) : -1; }
+static void dump_w(const char *tag, void *rec, void *item)
+{
+    if (!rec) { mlog("weapons:   %s empty (item %p)", tag, item); return; }
+    if (IsBadReadPtr(rec, 0x20)) { mlog("weapons:   %s rec %p UNREADABLE item %p", tag, rec, item); return; }
+    int idx = obj_idx_d(item);
+    int ty = *(int *)rec;
+    mlog("weapons:   %s rec %p type %d ammo %d/%d free charges %d item %p idx %d uid %08lx f70 %02x f71 %02x", tag, rec, ty, W_AMMO(rec), W_MAX_AMMO(rec), ty == TYPE_MINE || ty == TYPE_EXPLOSIVE ? mines_free_charges(rec) : -1,
+         item, idx, idx >= 0 ? *(DWORD *)item : 0, idx >= 0 ? ((BYTE *)item)[0x70] : 0, idx >= 0 ? ((BYTE *)item)[0x71] : 0);
+}
+void weapons_debug_dump(const char *why)
+{
+    BYTE *u = SARGE;
+    int s, m; unsigned r = gameplay_run(&s, &m);
+    mlog("weapons: DUMP %s: run %u scen %d mission %d sarge %p hp %d veh %08x cur %d owner %p objs %p/%d", why, r, s, m, u, u ? SARGE_HEALTH(u) : 0,
+         u ? SARGE_VEHICLE(u) : 0, u ? CUR_SLOT(u) : 0, g_owner, OBJECTS_D, OBJECT_COUNT_D);
+    if (!u) return;
+    for (int c = 0; c < SLOTS; c++) { char t[24]; wsprintfA(t, "slot%d(box %d)", c, g_slot_box[c]); dump_w(t, SLOT_TYPE(u, c), SLOT_ITEM(u, c)); }
+    for (int b = 0; b < BOXES; b++) if (g_store[b].type) { char t[16]; wsprintfA(t, "store%d", b); dump_w(t, g_store[b].type, g_store[b].item); }
+}
+/* Ctrl+W (cheat_keys): pick up the nearest weapon item lying on the map whose type is not carried yet (none: any
+ * type), through the game's own pickup (0x4495c0, wrapped by weapons_touch) - a test aid for the six boxes */
+void weapons_debug_pickup(int charges_only)
+{
+    BYTE *u = SARGE, *best = NULL;
+    if (!u || !OBJECTS_D) return;
+    static int census;
+    if (!census++) {
+        BYTE *o = OBJECTS_D;
+        for (int i = 0; i < OBJECT_COUNT_D; i++, o += OBJECT_SIZE_D) {
+            BYTE *w = *(BYTE **)(o + 0x20);
+            if (*(short *)(o + 0x68) != 0x19 || !w || IsBadReadPtr(w, 0x20)) continue;
+            mlog("cheat: map item idx %d type %d ammo %d/%d at %d,%d flags %02x", i, *(int *)w, W_AMMO(w), W_MAX_AMMO(w), *(short *)(o + 4), *(short *)(o + 6), o[0x70]);
+        }
+    }
+    for (int pass = 0; pass < 2 && !best; pass++) {
+        long bd = 0x7fffffff;
+        BYTE *o = OBJECTS_D;
+        for (int i = 0; i < OBJECT_COUNT_D; i++, o += OBJECT_SIZE_D) {
+            if (*(short *)(o + 0x68) != 0x19 || (o[0x70] & 0x24)) continue;
+            BYTE *w = *(BYTE **)(o + 0x20);
+            if (!w || IsBadReadPtr(w, 0x20)) continue;
+            int t = *(int *)w;
+            if (t < 1 || t > 0x14 || (t >= 0xe && t <= 0x13) || (pass == 0 && weapons_carried(t, NULL))) continue;
+            if (charges_only && t != TYPE_MINE && t != TYPE_EXPLOSIVE) continue;
+            if (charges_only && pass == 0) continue;
+            long dx = *(short *)(o + 4) - *(short *)(u + 4), dy = *(short *)(o + 6) - *(short *)(u + 6), d = dx * dx + dy * dy;
+            if (d < bd) { bd = d; best = o; }
+        }
+    }
+    if (!best) { mlog("cheat: no weapon item on the map"); return; }
+    BYTE *w = *(BYTE **)(best + 0x20);
+    mlog("cheat: pick up item idx %d type %d ammo %d at %d,%d", obj_idx_d(best), *(int *)w, W_AMMO(w), *(short *)(best + 4), *(short *)(best + 6));
+    ((TouchFn)0x4495c0)(u, best, 0);
+    weapons_debug_dump("after cheat pickup");
+}
+/* Ctrl+U (cheat_keys): Sarge dies (invulnerability off, a lethal bullet through ItemDamage 0x431f60) - Play Again tests */
+void weapons_debug_die(void)
+{
+    BYTE *u = SARGE;
+    if (!u) return;
+    *(volatile BYTE *)0x69752c = 0;
+    short from[2] = { *(short *)(u + 4), *(short *)(u + 6) };
+    mlog("cheat: Sarge dies");
+    ((void (__fastcall *)(void *, int, int, short *, DWORD))0x431f60)(u, 1000, 6, from, 0);
+}

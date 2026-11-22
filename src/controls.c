@@ -2585,6 +2585,9 @@ static void teleport_to_vehicle(BYTE *u)
         PLACE_UNIT(u, tx, ty);
         if (SARGE_X(u) != x || SARGE_Y(u) != y) {
             mlog("cheat: Sarge to %d,%d next to vehicle %p (type %d) at %d,%d", SARGE_X(u), SARGE_Y(u), best, VEH_TYPE(best), VEH_X(best), VEH_Y(best));
+            /* Shift (testing: in a vehicle at a win): straight into the PLAYER's own vehicles only - the raw SargeInVehicle bypasses
+             * capture.c, and an enemy vehicle entered this way crashed the Play Again after a win at 0x416c26 (Wine 2026-11-21) */
+            if (key_down(VK_SHIFT) && capture_sarge_in_original && ((*(DWORD *)best >> 26) & 7) == 1) { capture_sarge_in_original(u, best); mlog("cheat: Ctrl+Shift+B - Sarge gets in (SargeInVehicle 0x448ae0): vehicle %08x", SARGE_VEHICLE(u)); }   /* testing: in a vehicle at a win */
             return;
         }
     }
@@ -2692,6 +2695,15 @@ static void cheat_keys(void)
         }
     }
     y_was = yk;
+    static int w_was; int wk = fg && ctrl && key_down('W');
+    if (wk && !w_was && u && !SARGE_VEHICLE(u)) weapons_debug_pickup(key_down(VK_SHIFT));   /* Shift: a mine / explosive pack */
+    w_was = wk;
+    static int v2_was; int v2 = fg && ctrl && key_down('V');   /* Ctrl+V: mission won now (the game's Triumph cheat 0x46b850) */
+    if (v2 && !v2_was && u && layout_view_is_gameplay()) { weapons_debug_dump("before Triumph"); mlog("cheat: Triumph (mission won)"); ((VoidFnPtr)0x46b850)(); }
+    v2_was = v2;
+    static int d_was; int dk = fg && ctrl && key_down('U');
+    if (dk && !d_was && u && layout_view_is_gameplay()) weapons_debug_die();
+    d_was = dk;
     t_was = t; i_was = i; v_was = vk;
 }
 
