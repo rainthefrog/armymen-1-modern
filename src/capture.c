@@ -219,6 +219,42 @@ static int has_crew_assigned(BYTE *v)
     return 0;
 }
 
+/* ---- THE crew rule (2026-11-21, user: "vehicles in mission before the bank one are still showing as empty even though
+ * they are not. need to disable the shoot area around the vehicles when empty"). Shared by capture.c (enter, hover
+ * note), controls.c (fire zone) and modern.c (hover note) through capture_vehicle_crewed / capture_crew_reason.
+ * What marks a crew in Army Men 1 (Wine probe, mission 6 des3_1, all 8 Tan tanks dumped every 5 s with every unit /
+ * trooper dword that holds the vehicle's pointer or UID): enemy tanks have NO crew object at all - no driver (+0x14c),
+ * no unit with +0xac = the tank, only FOLLOW escorts (unit +0x90 = the tank, TanRifle10/11/13 - not crew). npc
+ * (+0xe8) is 1 on EVERY deployed non-player vehicle (VehicleInitialDeploy 0x417010 / SETAICONTROL 0x41e750), so it
+ * says nothing; speed is 0 whenever a patrolling tank waits at a pad (TRIGGERDELAY 5) or a DEFEND tank holds - those
+ * read "empty". The field that does tell: the vehicle's AI MODES, +0xf4 in-mode (used while it has an aiGoal) and
+ * +0xf8 at-mode (used when it has none), set by the script's DEPLOY <veh> ATMODE x (FUN_0041dfc0: both = x) and
+ * ORDER <veh> ... INMODE x THEN ATMODE y (FUN_0041d940: +0xf4 / +0xf8). The vehicle AI looks for targets only when
+ * the mode in effect is not 0 (FUN_004309c0 / FUN_00430700: aiGoal ? +0xf4 : +0xf8, 0 = IGNORE = never fires).
+ * Mission 6 at start: TanTank2/5/6/7 (patrol / ATTACK, DEFEND) +0xf4 3 / +0xf8 2; TanTank1/8 (ORDER GOTO itself
+ * INMODE IGNORE THEN ATMODE IGNORE - "//driven": empty until TanRifle8/15 walk over and UNDEPLOY into them, then
+ * ORDER ... INMODE ATTACK) 0 / 0; TanTank3 (no script order) 0 / 0. Mission 8 (des4_1): DEPLOY TanTankN ATMODE
+ * ATTACK -> crewed from the moment it appears.
+ * Rule: another army's vehicle is CREWED when it is alive and deployed and has a driver, troopers inside, a squad
+ * assigned on the map (+0xac), a fighting mode (+0xf4 or +0xf8 not IGNORE) or moves under AI control (npc + speed).
+ * Otherwise it is EMPTY: no fire zone round it, Sarge may take it (capture_can_enter adds the remaining "can he"
+ * conditions). A captured vehicle gets its modes cleared (capture()), so once left it reads empty again. */
+#define VEH_IN_MODE(v)    (*(int *)((v) + 0xf4))         /* AI mode while it has an aiGoal (script INMODE) */
+#define VEH_AT_MODE(v)    (*(int *)((v) + 0xf8))         /* AI mode when it has none (script ATMODE) */
+#define MODE_IGNORE       0
+
+const char *capture_crew_reason(BYTE *v)
+{
+    if (!v || IsBadReadPtr(v, 0x100) || UID_TYPE(UID(v)) != ITEM_VEHICLE || v == g_cap.v) return NULL;
+    if (ITEM_HEALTH(v) <= 0 || VEH_STATE(v) != VEH_DEPLOYED) return NULL;
+    if (VEH_DRIVER(v) || has_passengers(v)) return "Occupied";
+    if (has_crew_assigned(v)) return "Occupied - crew nearby";
+    if (VEH_NPC(v) && VEH_SPEED(v) != 0) return "Occupied - moving";
+    if (UID_ARMY(UID(v)) != PLAYER_ARMY && (VEH_IN_MODE(v) != MODE_IGNORE || VEH_AT_MODE(v) != MODE_IGNORE)) return "Occupied - manned";
+    return NULL;
+}
+int capture_vehicle_crewed(BYTE *v) { return capture_crew_reason(v) != NULL; }
+
 static BYTE *player_legion(void) { return ARMY_RECORD(PLAYER_ARMY); }
 
 /* 2026-11-20 CRASH FIX (user log, build 21:28:48: EXCEPTION at 0x4188f5 in VehicleFind, uid 04c20032, slot 49 empty):
@@ -253,8 +289,8 @@ int capture_can_enter(BYTE *v)
     if (!v || VEH_STATE(v) != VEH_DEPLOYED || v == g_cap.v) return 0;   /* (the captured one carries the player's UID) */
     if (UID_ARMY(UID(v)) == PLAYER_ARMY) return VEH_NPC(v) == 0;
     if (!capture_allowed() || g_cap.v) return 0;
-    if (UID_TYPE(UID(v)) != ITEM_VEHICLE || ITEM_HEALTH(v) <= 0 || VEH_DRIVER(v) || VEH_SPEED(v) != 0) return 0;
-    return !has_passengers(v) && !has_crew_assigned(v) && slot_free();
+    if (UID_TYPE(UID(v)) != ITEM_VEHICLE || ITEM_HEALTH(v) <= 0 || VEH_SPEED(v) != 0) return 0;
+    return !capture_vehicle_crewed(v) && slot_free();
 }
 
 /* The one-button mouse's enter pointer over another army's vehicle: only near Sarge (further away it stays a
@@ -284,6 +320,7 @@ static void capture(BYTE *s, BYTE *v)
     VEH_NPC(v) = 0;
     VEH_AI_GOAL(v) = 0;
     VEH_HUMAN_AI(v) = 0;
+    VEH_IN_MODE(v) = VEH_AT_MODE(v) = MODE_IGNORE;      /* no crew of its own: left behind it reads empty (crew rule) */
     if (had_tad) TAD_CREATE(PLAYER_ARMY, ITEM_VEHICLE, v, 0);
     recolour_to_player(v);
     mlog("capture: vehicle %p colours %p,%p -> player table %p", v, g_cap.trans[0], g_cap.trans[1], UNIT_COLOR_TABLES[PLAYER_ARMY]);
@@ -314,7 +351,8 @@ void __fastcall capture_sarge_in(BYTE *s, BYTE *v)
      * shooting)"): every way in (click, F key, the game's own enter) ends here - an occupied vehicle (another
      * driver, troopers inside) or one moving under AI control is refused */
     if (s && v && !IsBadReadPtr(v, 0x150) && SARGE_VEHICLE(s) != v &&
-        ((VEH_DRIVER(v) && VEH_DRIVER(v) != s) || has_passengers(v) || (VEH_NPC(v) && VEH_SPEED(v) != 0))) {
+        (UID_ARMY(UID(v)) != UID_ARMY(UID(s)) ? (VEH_DRIVER(v) != s && capture_vehicle_crewed(v))
+                                                 : ((VEH_DRIVER(v) && VEH_DRIVER(v) != s) || has_passengers(v) || (VEH_NPC(v) && VEH_SPEED(v) != 0)))) {
         static DWORD said;
         if (GetTickCount() - said > 1000) { said = GetTickCount(); mlog("capture: Sarge kept out of occupied vehicle %p (driver %p)", v, VEH_DRIVER(v)); }
         return;
@@ -468,9 +506,10 @@ void capture_frame(void)
                 for (int i = 0; i < n && i < LEG_VEH_MAX; i++) {
                     BYTE *v = LEG_VEH(leg, i);
                     if (!v || VEH_STATE(v) != VEH_DEPLOYED) continue;
-                    mlog("capture: army %d vehicle %p class %d at %d,%d health %d npc %d speed %d driver %p passengers %d -> %s",
-                         a, v, (int)((UID(v) >> 16) & 0x3f) - 1, *(short *)(v + 4), *(short *)(v + 6), ITEM_HEALTH(v), VEH_NPC(v),
-                         VEH_SPEED(v), VEH_DRIVER(v), has_passengers(v), capture_can_enter(v) ? "enterable" : "not enterable");
+                    mlog("capture: army %d vehicle %p uid %08lx %s at %d,%d health %d npc %d speed %d modes %d/%d driver %p passengers %d crew %s -> %s",
+                         a, v, UID(v), minimap_vehicle_name(UID(v)), *(short *)(v + 4), *(short *)(v + 6), ITEM_HEALTH(v), VEH_NPC(v),
+                         VEH_SPEED(v), VEH_IN_MODE(v), VEH_AT_MODE(v), VEH_DRIVER(v), has_passengers(v), capture_crew_reason(v) ? capture_crew_reason(v) : "none",
+                         capture_can_enter(v) ? "enterable" : "not enterable");
                 }
             }
         }
@@ -513,9 +552,8 @@ const char *capture_hover_note(int wx, int wy, int *vx, int *vy)
             *vx = x; *vy = y;
             if (ITEM_HEALTH(v) <= 0) return "Wrecked";
             if (VEH_STATE(v) != VEH_DEPLOYED) return NULL;
-            if (VEH_DRIVER(v) || has_passengers(v)) return "Occupied";
-            if (has_crew_assigned(v)) return "Occupied - crew nearby";
-            if (VEH_NPC(v) && VEH_SPEED(v) != 0) return "Occupied - moving";
+            const char *crew = capture_crew_reason(v);   /* the shared crew rule */
+            if (crew) return crew;
             if (VEH_SPEED(v) != 0) return "Moving";
             if (!slot_free()) return "Cannot take";
             if (dx * dx + dy * dy > HOVER_REACH * HOVER_REACH) return "Get closer";

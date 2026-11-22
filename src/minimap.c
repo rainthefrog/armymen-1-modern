@@ -82,7 +82,10 @@ typedef int (__fastcall *AllianceFn)(int mine, int other);
 
 static const char *const ARMY_NAME[] = { "Green", "Tan", "Blue", "Grey" };
 static const char *const UNIT_NAME[] = { "Rifle", "Grenade", "Flame", "Bazooka", "Engineer", "Mortar", "Mine", "Special" };
-static const char *const VEHICLE_NAME[] = { "Vehicle", "Jeep", "Tank", "Half-track", "Truck", "Commander" };
+/* indexed by the UID class field ((uid >> 16) & 0x3f) as the game itself names them (FUN_0044a030 debug name: 2 JEEP,
+ * 3 TANK, 4 HALFTRACK, 5 CONVOY; 2026-11-21 fix: the table was one off - a tank showed as "Half-track") */
+static const char *const VEHICLE_NAME[] = { "Vehicle", "Vehicle", "Jeep", "Tank", "Half-track", "Convoy truck" };
+const char *minimap_vehicle_name(DWORD uid) { int c = (int)((uid >> 16) & 0x3f); return c >= 2 && c <= 5 ? VEHICLE_NAME[c] : VEHICLE_NAME[0]; }
 static const char *const CATEGORY[] = {
     "Rock", "Bush", "Tree", "Big tree", "Fallen tree", "Fence", "Wall", "Bridge", "Foot bridge", "Explosives",
     "Gun turret", "AA gun", "Base", "Aux base", "Air strip", "Heli pad", "Prison camp", "Building", "Pill box",
@@ -438,7 +441,7 @@ static void blip_title(const Blip *b, char *s)
         wsprintfA(s, "%s%s%s squad", an, sep, b->sub >= 0 && b->sub < 8 ? UNIT_NAME[b->sub] : "");
         break;
     case PIN_VEHICLE:
-        wsprintfA(s, "%s%s%s", an, sep, b->sub >= 1 && b->sub <= 5 ? VEHICLE_NAME[b->sub] : VEHICLE_NAME[0]);
+        wsprintfA(s, "%s%s%s", an, sep, minimap_vehicle_name((DWORD)b->sub << 16));
         break;
     default: {
         int o = b->owner_look;

@@ -105,7 +105,7 @@ static int describe(BYTE *it, RECT *wr, char *lab, int n)
     } else if (raw == 3) {                                       /* vehicle: its mover's box */
         BYTE *m = *(BYTE **)(it + 0x9c);
         if (m) r = (const int *)(m + 0x1c);
-        wsprintfA(lab, "VEHICLE %s type %d hp %d/%d", an, (int)((*(DWORD *)it >> 16) & 0x3f), hp, mx);
+        wsprintfA(lab, "VEHICLE %s %s (type %d) hp %d/%d", an, minimap_vehicle_name(*(DWORD *)it), (int)((*(DWORD *)it >> 16) & 0x3f), hp, mx);
     } else {
         wsprintfA(lab, "ITEM type %d %s hp %d", raw - 1, an, hp);
     }
