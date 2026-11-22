@@ -1209,7 +1209,11 @@ static BYTE *enemy_unit_at(int wx, int wy)
             if (!m) continue;
             RECT rc = { *(int *)(m + 0x1c), *(int *)(m + 0x20), *(int *)(m + 0x24), *(int *)(m + 0x28) };
             if (PtInRect(&rc, pt)) return v;
-            zone_try(&rc, pt, v, &zbest, &zd);
+            /* 2026-11-21 (user: "need to disable the shoot area around the vehicles when empty"): only a CREWED vehicle
+             * (capture.c crew rule, shared with the enter pointer and the hover note) has a firing zone; round an empty one
+             * the pointer walks / shows the enter pointer. Its hitbox stays a target (an empty vehicle Sarge cannot take -
+             * option off, already driving one - can still be shot; an enterable one never gets here: vehicle_at wins). */
+            if (capture_vehicle_crewed(v)) zone_try(&rc, pt, v, &zbest, &zd);
         }
     }
     return zbest;                                           /* the nearest enemy whose firing zone holds the point */
@@ -1438,6 +1442,30 @@ static void hover_selftest(BYTE *u, DWORD now)
                 mlog("controls: selftest enemy %p (army %d) at %d,%d screen %d,%d: hover %d thing %p", t, a, x, y, sx, sy, h, thing);
                 n++;
             }
+        }
+    }
+    /* vehicles on screen (2026-11-21 crew rule / fire zone check): the pointer meaning at the hitbox centre and 12 / 20 /
+     * 40 px right of and above the hitbox (mover box) edge - G ground, T target, E enter, F far enemy */
+    for (int a = 1; a <= 3; a++) {
+        if (!LEGION_STATUS(a) || ALLIED(0, a)) continue;
+        BYTE *leg = ARMY_RECORD(a);
+        int nv = leg ? *(signed char *)(leg + 0x50) : 0;
+        for (int i = 0; i < nv && i < 50; i++) {
+            BYTE *v = *(BYTE **)(leg + 0x54 + 4 * i), *m = v ? VEH_MOVER(v) : NULL;
+            if (!m || *(short *)(v + 0x1c) <= 0) continue;
+            const int *r = (const int *)(m + 0x1c);
+            int cx = (r[0] + r[2]) / 2, cy = (r[1] + r[3]) / 2;
+            if (cx - CAMERA_X < 0 || cy - CAMERA_Y < 0 || cx - CAMERA_X >= vw || cy - CAMERA_Y >= vh) continue;
+            static const char K[] = "GTEF";
+            const int pts[7][2] = { { cx, cy }, { r[2] + 12, cy }, { r[2] + 20, cy }, { r[2] + 40, cy },
+                                    { cx, r[1] - 12 }, { cx, r[1] - 20 }, { cx, r[1] - 40 } };
+            char res[8];
+            for (int k = 0; k < 7; k++) { BYTE *th; res[k] = K[hover_at(u, NULL, pts[k][0], pts[k][1], &th) & 3]; }
+            res[7] = 0;
+            const char *crew = capture_crew_reason(v);
+            mlog("controls: selftest vehicle %p (army %d, %s) box %d,%d-%d,%d crew %s: centre %c | right +12 %c +20 %c +40 %c | above +12 %c +20 %c +40 %c",
+                 v, a, minimap_vehicle_name(*(DWORD *)v), r[0], r[1], r[2], r[3], crew ? crew : "none (empty)",
+                 res[0], res[1], res[2], res[3], res[4], res[5], res[6]);
         }
     }
 }
@@ -2354,6 +2382,13 @@ static void apply_modern_controls(void)
         BYTE *thing = NULL;
         int hover = pointer && field ? hover_at(u, veh, px + CAMERA_X, py + CAMERA_Y, &thing) : HOVER_GROUND;
         hover_selftest(u, now);
+        if (g_cfg.log >= 2) {                   /* the pointer's meaning when it changes (rig checks: fire zone / enter) */
+            static int h_was = -1; static BYTE *t_was;
+            if (hover != h_was || thing != t_was)
+                mlog("controls: hover %s thing %p at world %d,%d (Sarge %d,%d)", hover == HOVER_TARGET ? "TARGET" : hover == HOVER_ENTER ? "ENTER" :
+                     hover == HOVER_FAR_ENEMY ? "FAR_ENEMY" : "GROUND", thing, px + CAMERA_X, py + CAMERA_Y, SARGE_X(u), SARGE_Y(u));
+            h_was = hover; t_was = thing;
+        }
         note_hover(hover, thing, u, veh);
         static int raw_was;                     /* the left button itself last frame */
         int lpress = left && !raw_was, lrelease = !left && raw_was;

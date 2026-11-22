@@ -330,6 +330,7 @@ unsigned layout_hud_signature(void);
 unsigned layout_hud_mask_signature(void);                       /* layout.c: changes when any mask row would (modern.c keeps rows between frames) */
 int weapons_ui_rect(RECT *r);                                 /* weapons.c: the spare-weapon column (1x) */
 void controls_block_left(void);                               /* controls.c: this left press is used up */
+const char *minimap_vehicle_name(DWORD uid);                         /* minimap.c: "Jeep" / "Tank" / "Half-track" / "Convoy truck" from a vehicle UID */
 void layout_minimap_cycle(void);                                   /* layout.c: minimap 1.5 -> 2 -> 2.5x (animated) */
 float layout_group_scale(int g);                              /* layout.c: HUD group size (0 msg, 1 centre, 2 air, 3 minimap) */
 void layout_group_cycle(int g);
@@ -800,6 +801,8 @@ int capture_allowed(void);                                        /* option on a
 int capture_can_enter(BYTE *vehicle);                             /* Sarge may climb in (own: the game's rule) */
 BYTE *__fastcall capture_vehicle_find(DWORD uid);                  /* capture.c: VehicleFind 0x4188c0 rewrite (NULL-safe) */
 int capture_hover_ok(BYTE *vehicle);                              /* another army's vehicle: enter pointer near Sarge */
+int capture_vehicle_crewed(BYTE *vehicle);                        /* capture.c: another army's vehicle has a crew (THE crew rule) */
+const char *capture_crew_reason(BYTE *vehicle);                   /* capture.c: "Occupied ..." why it counts as crewed, NULL = empty */
 const char *capture_hover_note(int wx, int wy, int *vx, int *vy);   /* capture.c: why an enemy vehicle cannot be taken */
 BYTE *capture_vehicle(void);
 int capture_driver_seat(int *wx, int *wy, int *facing);           /* capture.c: captured vehicle position + hull facing */
