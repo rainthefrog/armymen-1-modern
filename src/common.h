@@ -539,7 +539,7 @@ enum { MOD_AIM_ASSIST, MOD_ROLL, MOD_STAMINA, MOD_SIDE_BUTTONS, MOD_SPRINT_TOGGL
        MOD_ARROWS, MOD_AMMO, MOD_RANGE_RING, MOD_ROUTE, MOD_PEEK, MOD_VEHICLE_ZOOM, MOD_NO_SHAKE, MOD_SKIP_VIDEO,
        MOD_HEALTH_BARS, MOD_STATS, MOD_RESTART,
        MOD_GAMEPAD, MOD_THROW_POINTER, MOD_COLOURBLIND, MOD_SQUAD_MOUSE, MOD_RADIAL, MOD_PING, MOD_HALF_DAMAGE,
-       MOD_THROW_HOLD, MOD_STANCE_HINTS,
+       MOD_THROW_HOLD, MOD_STANCE_HINTS, MOD_ENEMY_LABELS,
        MOD_COUNT };
 enum { MK_ROLL, MK_PEEK, MK_STATS, MK_RADIAL, MK_PING, MK_RESTART, MK_COUNT };   /* the mod's own keys ([keys], KEYS page) */
 typedef struct { int connected; float lx, ly, rx, ry, lt, rt; WORD held, pressed; } ModPad;   /* XInput buttons */
@@ -879,6 +879,9 @@ int weapons_room_for_special(void);         /* weapons.c: a special weapon picke
 void __fastcall mines_lay(BYTE *weapon, int army, DWORD point);   /* call 0x445f44 -> MineLay 0x446600 */
 /* allies.c (2026-11-21): the player's soldiers - regeneration, more health, medkits used on them (AM2 style) */
 void allies_frame(void);                    /* gameplay.c gameplay_frame: regeneration, mission change */
+void drops_frame(void);                     /* drops.c: enemy soldiers drop their weapon where they die (gameplay_frame) */
+void drops_install(void);                   /* drops.c: spare weapon pickups made at map load */
+int drops_hover_label(const char **name, int *wx, int *wy);   /* drops.c: kind of the enemy soldier under the fire pointer */
 unsigned gameplay_run(int *scenario, int *mission);   /* gameplay.c: changes on every mission (re)start (also Play Again / same mission again) */
 void __fastcall allies_trooper_join(BYTE *trooper, BYTE *unit);   /* call 0x43b4e5 -> FUN_0043b5f0 (trooper joins his unit) */
 int __fastcall allies_pickup_test(BYTE *item, BYTE *sarge);       /* call 0x439855 -> FUN_00439700 (may Sarge pick this up) */

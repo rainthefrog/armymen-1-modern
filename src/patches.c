@@ -464,4 +464,5 @@ void patches_apply(void)
     modmenu_install();                                   /* modmenu.c: Mod Settings in the game's menus */
     missionpath_install();                               /* missionpath.c: [debug] start_mission = direct mission start (testing aid) */
     framerate_install();                                 /* framerate.c: gravity / animation exact at any frame rate */
+    drops_install();                                     /* drops.c: spare weapon pickups at map load (enemy weapon drops) */
 }
