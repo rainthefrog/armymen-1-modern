@@ -3,15 +3,19 @@
  *
  * Only the_map.boundrect (the map inset by 14 tiles, 0x4e2ff4) is meant to be seen: the original
  * camera never shows anything outside it, and map makers parked objects and pickup boxes in the
- * border. With wide screens (and the map-bottom shift, layout.c) the border can come into view, so
+ * border. With wide screens the border can come into view at the left and right, so
  * the finished battlefield is darkened from FADE_IN pixels inside boundrect to fully dark FADE_OUT
  * pixels outside it.
+ * Bottom edge on wide screens: the camera may show up to the HUD panel's 94 rows past boundrect
+ * (controls_map_bottom_room, layout.c) - rows seen only through the HUD's gaps, meant to cover the
+ * window down to its bottom (user 2026-11-21: no dark / black strip there). The bottom fade is moved
+ * below the lowest row the camera can show, so it never darkens them.
  *
  * Darkening uses the exe's own shade tables (index -> index remaps on the game palette, built by
  * FUN_00403b30; pointers at 0x4e2448..0x4e2454 = x0.40 / x0.50 / x0.60 / x0.85), composed into
  * deeper levels, with an ordered dither between levels so the fade is smooth.
- * Battlefield back-buffer pixel (x, y) is world (x + screenrect.left, y + shift + screenrect.top)
- * (screenrect 0x4e2fd4 includes screen shake; shift = layout.c's map-bottom shift).
+ * Battlefield back-buffer pixel (x, y) is world (x + screenrect.left, y + screenrect.top)
+ * (screenrect 0x4e2fd4 includes screen shake).
  * [display] map_edge_fog = 1
  * ============================================================================================ */
 #include "common.h"
@@ -76,16 +80,18 @@ static int level_at(int d, int x, int y)
     return lv < LEVELS ? lv : LEVELS - 1;
 }
 
-void fog_draw(Surf *b, int shift)
+void fog_draw(Surf *b)
 {
     if (!g_cfg.map_edge_fog || !b || !b->bits || !layout_view_is_gameplay()) return;
     int bl = BOUND_L, bt = BOUND_T, br = BOUND_R, bb = BOUND_B;
     if (br - bl < 64 || bb - bt < 64) return;
+    int room = controls_map_bottom_room();      /* see the header: bottom on wide screens */
+    if (room) bb += room + FADE_IN;
     if (!build_levels()) return;
     int w = SCREEN_R - SCREEN_L, h = SCREEN_B - SCREEN_T;
     if (w > b->w) w = b->w;
     if (h > b->h) h = b->h;
-    int ox = SCREEN_L, oy = SCREEN_T + shift;
+    int ox = SCREEN_L, oy = SCREEN_T;
     /* nothing to do when the whole view is well inside */
     if (ox >= bl + FADE_IN && oy >= bt + FADE_IN && ox + w <= br - FADE_IN && oy + h <= bb - FADE_IN) return;
     for (int y = 0; y < h; y++) {

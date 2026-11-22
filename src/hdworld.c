@@ -799,30 +799,6 @@ int hdworld_under_fill(Surf *d, int y, int x0, int x1, BYTE c)
     return 1;
 }
 
-/* layout.c moved the battlefield rows of the back buffer up by n (map bottom): the links move up too
- * (reading n rows further down the map), the override mask moves with the rows, the bottom n rows are
- * black (overridden, no references). */
-void hdworld_shift_rows(Surf *b, int n)
-{
-    if (!b || n <= 0 || n >= b->h) return;
-    for (int i = 0; i < g_nlink_build; i++) {
-        Link *l = &g_link_build[i];
-        l->r.top -= n; l->r.bottom -= n; l->oy += n;
-        if (l->r.top < 0) l->r.top = 0;
-    }
-    BYTE *o = over_buf(b);
-    if (o) {
-        memmove(o, o + (size_t)n * b->w, (size_t)(b->h - n) * b->w);
-        mark_over(b, (RECT){ 0, b->h - n, b->w, b->h }, NULL, 0, 0, 0, 0);
-        g_obox[g_oi].top = 0;                          /* everything above may have moved */
-        if (IsRectEmpty(&g_obox[g_oi])) SetRect(&g_obox[g_oi], 0, 0, b->w, b->h);
-    }
-    Ref *r = refs(b, 0);
-    if (!r) return;
-    memmove(r, r + (size_t)n * b->w, (size_t)(b->h - n) * b->w * sizeof(Ref));
-    memset(r + (size_t)(b->h - n) * b->w, 0, (size_t)n * b->w * sizeof(Ref));
-}
-
 /* ---------------------------------------------------------------- the shown frame */
 
 /* The shown frame's references, double-buffered: hdworld_frame_shown (game thread, present lock) writes

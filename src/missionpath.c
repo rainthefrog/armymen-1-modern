@@ -377,7 +377,8 @@ static void progress(void)
  *     Path22, on_Path23 -> Path26, 27 -> 29, 30 -> 35, 36 -> 39, 40 -> 45, 46 -> 48, 49 -> 50; on_Path55 = MadeIt;
  *     des4_1:269-347; a goal not reached is ordered again 5 s later);
  *   - mission 6 (des3_1:132-136): GreenHalftrack1 GOTO (2390, 2700), the win is the half-track on pad 11 (TripLine);
- *   - mission 7 (des3_2:168-170): GreenHalftrack1 GOTO (509, 3760), the win is the half-track AND Sarge on pad 10.
+ *   - mission 7 (des3_2:168-170): GreenHalftrack1 GOTO (509, 3760), the win is the half-track AND Sarge on pad 10;
+ *     its lane starts at the loading spot (from_goal, ESCORTS below), not at the half-track.
  * While the escort waypoint is the current one and the vehicle is alive, the lane shown is:
  *   1. the vehicle's position (VEHICLE +4 / +6), then the route the GAME's vehicle AI follows now: VEHICLE +0xe4 aiGoal
  *      (SPOINT, the script ORDER's goal: FUN_0041d940 stores it; 0 = none, cleared on arrival in FUN_00430140),
@@ -396,11 +397,17 @@ static void progress(void)
  *   Sarge reaching the waypoint does not count. If the vehicle is destroyed / gone the mission is lost (the game restarts
  *   it): the last lane stays and the waypoint is never done - no switch to Sarge's own leg (user 2026-11-21). */
 typedef struct { int pad, x, y; } EscGoal;               /* pad >= 0: that pad's centre, else the point */
-typedef struct { int mission; const char *vehicle; int n; EscGoal goal[12]; int finish_pad, sarge_too; } Escort;
+/* from_goal (2026-11-21, user on mission 7: "driving out of the bank job should have a path"): 1 = the lane starts at the
+ * FIRST script goal, not at the vehicle. Mission 7 (des3_2:92-170): when the bank is blown the truck is still at its
+ * start in the bank yard (2368,2695); GoBank / Turn send it to (2650, 2815) and (2630, 2910), it waits there while the
+ * gold is loaded (30 trips), and only then GoHome sends it to (509, 3760). The lane drawn once at the bank's fall from
+ * the truck's start went west through the town from a spot the truck leaves at once - nothing near the truck where
+ * the run really starts. Now: the loading spot -> (509, 3760) -> pad 10, planned at mission start, shown at the fall. */
+typedef struct { int mission; const char *vehicle; int n; EscGoal goal[12]; int finish_pad, sarge_too, from_goal; } Escort;
 static const Escort ESCORTS[] = {
-    { 6, "GreenHalftrack1", 1, { { -1, 2390, 2700 } }, 11, 0 },
-    { 7, "GreenHalftrack1", 1, { { -1, 509, 3760 } }, 10, 1 },
-    { 8, "GreenHalftrack3", 10, { { 15 }, { 22 }, { 26 }, { 29 }, { 35 }, { 39 }, { 45 }, { 48 }, { 50 }, { 55 } }, 55, 0 },
+    { 6, "GreenHalftrack1", 1, { { -1, 2390, 2700 } }, 11, 0, 0 },
+    { 7, "GreenHalftrack1", 2, { { -1, 2630, 2910 }, { -1, 509, 3760 } }, 10, 1, 1 },   /* des3_2:102 loading spot, :170 */
+    { 8, "GreenHalftrack3", 10, { { 15 }, { 22 }, { 26 }, { 29 }, { 35 }, { 39 }, { 45 }, { 48 }, { 50 }, { 55 } }, 55, 0, 0 },
 };
 #define ESC_MAX        13                /* script goals + the waypoint */
 #define ESC_PTS        1200
@@ -430,6 +437,7 @@ static MissionPt g_bbuf[2][ESC_PTS / 2]; static int g_bshow = -1, g_bshow_n, g_b
 /* 2026-11-21 (user: "halftrack path - just draw it once at mission start. don't update it"): the escort lane is built
  * until its planned pieces are done (or ESC_FREEZE_MS after it first showed), then frozen for the rest of the escort. */
 #define ESC_FREEZE_MS 4000
+#define ESC_FALLBACK_PX 96                /* from_goal lanes: a dashed (unplanned) stretch longer than this -> the walked leg */
 static int g_esc_frozen; static DWORD g_esc_on_t;
 static Plan g_bplan; static int g_bplan_on, g_bplan_to, g_bplan_fx, g_bplan_fy; static DWORD g_bplan_t;          /* bridge being planned */
 static MissionPt g_lane[ESC_PTS]; static int g_lane_n; static DWORD g_esc_log_t;
@@ -612,6 +620,27 @@ static void escort_frame(void)                           /* game thread, every p
     BYTE *v = esc_vehicle();
     if (!v) { if (g_esc_dead) g_lane_n = keep; return; }
     int vx = *(short *)(v + 4), vy = *(short *)(v + 6);
+    if (g_esc->from_goal) {                               /* the lane from the first script goal (the loading spot) */
+        if (g_tail_seg < g_esc_ng) return;                /* its pieces not planned yet (they start at mission start): */
+        lane_add(g_esc_gx[0], g_esc_gy[0], 0);            /* the normal leg meanwhile */
+        lane_tail(0);
+        g_esc_frozen = 1;
+        for (int i = 1; i < g_lane_n; i++)                /* the vehicle planner fell short (a long straight dashed */
+            if (g_lane[i].dashed && dist2(g_lane[i - 1].x, g_lane[i - 1].y, g_lane[i].x, g_lane[i].y) > ESC_FALLBACK_PX * ESC_FALLBACK_PX) {
+                if (g_cfg.log >= 1) mlog("missionpath: escort lane from script goal 1: vehicle route breaks off at %d,%d - the walked leg %d is shown instead",
+                                         g_lane[i - 1].x, g_lane[i - 1].y, g_esc_wp + 1);
+                g_lane_n = 0;                             /* rest): escort_lane gives none -> the walked leg to the same pad */
+                return;
+            }
+        if (g_lane_n >= 2) g_lane[g_lane_n - 1].wp = (BYTE)(g_esc_wp + 1);
+        if (g_cfg.log >= 1) {
+            char b[300]; int o = 0; b[0] = 0;
+            for (int i = 0; i < g_lane_n && o < 260; i++) o += wsprintfA(b + o, " %d,%d%s", g_lane[i].x, g_lane[i].y, g_lane[i].dashed ? "d" : "");
+            mlog("missionpath: escort lane on: leg %d, %s (at %d,%d) from script goal 1, frozen (%d points) - drawn once:%s", g_esc_wp + 1,
+                 g_esc->vehicle, vx, vy, g_lane_n, b);
+        }
+        return;
+    }
     while (g_esc_idx < g_esc_ng - 1 && esc_at_goal(g_esc_idx, vx, vy)) {
         g_esc_idx++;
         if (g_cfg.log >= 1) mlog("missionpath: escort %s at %d,%d passed script goal %d: next %d,%d", g_esc->vehicle, vx, vy, g_esc_idx, g_esc_gx[g_esc_idx], g_esc_gy[g_esc_idx]);

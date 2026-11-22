@@ -221,7 +221,7 @@ static void under_begin(int wx0, int wy0, int wx1, int wy1)
 static int under_sprite(int x, int y)
 {
     if (!g_nunder) return 0;
-    int wx = x + CAMERA_X, wy = y + CAMERA_Y + layout_field_shift();
+    int wx = x + CAMERA_X, wy = y + CAMERA_Y;
     short p[2] = { (short)wx, (short)wy };
     for (int i = 0; i < g_nunder; i++) {
         const int *r = (const int *)(g_under[i] + 0x1c);
@@ -397,7 +397,7 @@ static int text(int x, int y, const char *s, BYTE c, int shadow)
 }
 
 /* world point -> game screen (the map-bottom shift moves the battlefield rows up) */
-static void to_screen(int wx, int wy, int *sx, int *sy) { *sx = wx - CAMERA_X; *sy = wy - CAMERA_Y - layout_field_shift(); }
+static void to_screen(int wx, int wy, int *sx, int *sy) { *sx = wx - CAMERA_X; *sy = wy - CAMERA_Y; }
 
 /* ---------------------------------------------------------------- events from other files */
 
@@ -1028,7 +1028,7 @@ static void modern_draw_body(Surf *b)
         if (n >= 2) {
             g_route = 1;
             int W = g_cfg.width, H = g_cfg.height;
-            if (!g_cfg.hd_world) under_begin(CAMERA_X - 8, CAMERA_Y + layout_field_shift() - 8, CAMERA_X + W + 8, CAMERA_Y + layout_field_shift() + H + 8);
+            if (!g_cfg.hd_world) under_begin(CAMERA_X - 8, CAMERA_Y - 8, CAMERA_X + W + 8, CAMERA_Y + H + 8);
             int R = LANE_W / 2, m = R + 2;
             for (int pass = 0; pass < 2; pass++)            /* the edge colour first at full width, then the fill inside */
             for (int i = 0; i + 1 < n; i++) {
@@ -1198,7 +1198,7 @@ static void modern_draw_body(Surf *b)
             int cx, cy; to_screen(si.sarge_x, si.sarge_y, &cx, &cy);
             circle(cx, cy, si.radius, C_SKY, 1);
             static SweepMark mk[96];
-            int n = mines_sweep_marks(mk, 96, CAMERA_X - 16, CAMERA_Y - 16, CAMERA_X + g_cfg.width + 16, CAMERA_Y + g_cfg.height + 16 + layout_field_shift());
+            int n = mines_sweep_marks(mk, 96, CAMERA_X - 16, CAMERA_Y - 16, CAMERA_X + g_cfg.width + 16, CAMERA_Y + g_cfg.height + 16);
             int breathe = (int)((t / 120) % 6); breathe = breathe > 3 ? 6 - breathe : breathe;   /* 0..3..0 */
             for (int i = 0; i < n; i++) {
                 int x, y; to_screen(mk[i].x, mk[i].y, &x, &y);
@@ -1259,7 +1259,7 @@ static void modern_draw_body(Surf *b)
                 int type = w[0], lo = ((RangeFn)0x445c50)(type), hi = ((RangeFn)0x445c60)(type);
                 int dx = rx + CAMERA_X - *(short *)(shooter + 4), dy = ry + CAMERA_Y - *(short *)(shooter + 6);
                 double d = sqrt((double)dx * dx + (double)dy * dy);
-                int sy0 = ry - layout_field_shift();
+                int sy0 = ry;
                 if (hi > 0) {
                     int tr = controls_target_in_range();     /* a target under the pointer decides; else the pointer's distance */
                     int ok = tr >= 0 ? tr : d <= hi;
@@ -1282,7 +1282,7 @@ static void modern_draw_body(Surf *b)
                     }
                     const char *hint = NULL; char hb[48];
                     if (blk) {
-                        int xs = cue.bx - CAMERA_X, ys = cue.by - CAMERA_Y - layout_field_shift();
+                        int xs = cue.bx - CAMERA_X, ys = cue.by - CAMERA_Y;
                         for (int k = -4; k <= 4; k++) { px(xs + k, ys + k, C_YELLOW); px(xs + k, ys - k, C_YELLOW); px(xs + k + 1, ys + k, C_BLACK); px(xs + k + 1, ys - k, C_BLACK); }
                         if (blk == 3) {
                             char dn[16], upk[16]; controls_stance_keys(dn, upk, sizeof dn);
@@ -1293,7 +1293,7 @@ static void modern_draw_body(Surf *b)
                         } else hint = blk == 1 ? "CLIFF: GO UP" : "RIDGE: MOVE";
                     } else if (cue.over) { blk = 4; hint = "TOO HIGH: GET LOWER"; }
                     if (cue.mg_low) {                         /* where the machine gun really tests: mg_low px lower */
-                        int xs = cue.mx - CAMERA_X, ys = cue.my - CAMERA_Y - layout_field_shift();
+                        int xs = cue.mx - CAMERA_X, ys = cue.my - CAMERA_Y;
                         circle(xs, ys, 3, C_YELLOW, 0);
                         if (!hint) hint = "MG AIMS LOW FROM HILL";
                     }
@@ -1317,10 +1317,9 @@ static void modern_draw_body(Surf *b)
         if (tg) {
             int hp = *(short *)(tg + 0x1c), mx = *(short *)(tg + 0x1e);
             if (mx > 0 && hp > 0) {
-                health_pips(rx, ry - layout_field_shift() + 11, hp, mx);
+                health_pips(rx, ry + 11, hp, mx);
             }
         }
-        ry -= layout_field_shift();
         if (controls_click_hint()) {      /* the rifle: one shot per click - the button is still held */
             int blink = (GetTickCount() / 250) & 1;
             text(rx - 15, ry + 18, "CLICK", blink ? C_YELLOW : C_WHITE, 1);

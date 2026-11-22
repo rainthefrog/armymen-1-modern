@@ -321,10 +321,10 @@ void drops_frame(void)
     if (g_cfg.log >= 3 && GetTickCount() - seen_ms > 2000 && *(BYTE **)0x697520) {
         BYTE *sg = *(BYTE **)0x697520; int cx = *(short *)0x4e2de8, cy = *(short *)0x4e2dea;
         seen_ms = GetTickCount();
-        mlog("drops: sarge at %d,%d screen %d,%d", T_X(sg), T_Y(sg), T_X(sg) - cx, T_Y(sg) - cy - layout_field_shift());
+        mlog("drops: sarge at %d,%d screen %d,%d", T_X(sg), T_Y(sg), T_X(sg) - cx, T_Y(sg) - cy);
         for (int j = 0; j < nn; j++) {
             int dx = g_now[j].x - T_X(sg), dy = g_now[j].y - T_Y(sg);
-            if (dx * dx + dy * dy < 250 * 250) mlog("drops:   near: %s at %d,%d screen %d,%d", kind_name(g_now[j].t), g_now[j].x, g_now[j].y, g_now[j].x - cx, g_now[j].y - cy - layout_field_shift());
+            if (dx * dx + dy * dy < 250 * 250) mlog("drops:   near: %s at %d,%d screen %d,%d", kind_name(g_now[j].t), g_now[j].x, g_now[j].y, g_now[j].x - cx, g_now[j].y - cy);
         }
     }
     /* who was alive last frame and is not now: dead (health <= 0, same soldier) -> drop */
