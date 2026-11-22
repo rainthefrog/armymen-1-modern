@@ -119,6 +119,7 @@ struct Config {
     int ally_health_bars;           /* [hud] ally_health_bars: health bars over the player's hurt soldiers (modern.c) */
     int am2_sounds;                 /* [audio] am2_sounds: Army Men II sound effects from <game>\am2_sounds (audio.c) */
     int am2_music;                  /* [audio] am2_music: Army Men II music from <game>\am2_music (music.c) */
+    int quicksave;                  /* [savestate] enabled: the quicksave / quickload keys work (savestate.c; the heap part is chosen at start-up) */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
     int hud_corners;                /* [hud] corners: message box / minimap in the bottom corners (layout.c) */
     float hud_corner_scale;         /* [hud] corner_scale: 1 .. 3 in quarter steps (default 1.5) */
@@ -860,3 +861,22 @@ typedef struct { int on, kits, state, pct, x, y, hp, max; } HealInfo;   /* x, y:
 int allies_heal_info(HealInfo *hi);         /* modern.c: heal mode on: the label at the pointer */
 typedef void (*SoldierFn)(BYTE *trooper, int cx, int cy, int top, int is_vehicle);
 void allies_each(SoldierFn fn);                /* modern.c: every living soldier of the player's army on the map (health bars) */
+/* savestate.c (2026-11-21): quicksave / quickload of the running mission (memory snapshot) */
+void savestate_install(void);               /* patches.c, first: the exe's CRT heap -> our arena, the idle-loop safe point */
+int savestate_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);   /* window hook: the save / load / slot keys */
+const char *savestate_banner(void);         /* modern.c: the confirmation text, or NULL */
+void savestate_region(const char *name, void *p, size_t n);      /* mod state saved with a quicksave, put back on a load */
+#define SAVESTATE(v) savestate_region(#v, &(v), sizeof(v))
+void weapons_savestate(void); void allies_savestate(void); void aware_savestate(void); void capture_savestate(void);
+void patrol_savestate(void); void mines_savestate(void); void bullets_savestate(void); void objectives_savestate(void);
+void vehicles_savestate(void); void modern_savestate(void); void fences_savestate(void); void missionpath_savestate(void);
+void controls_savestate(void);
+void clock_restore(DWORD tick);             /* clock.c: the game clock (our GetTickCount) set to tick */
+void gameplay_run_resync(void);             /* gameplay.c: after a load - the game clock went back, NOT a new mission run */
+extern unsigned surf_count_made, surf_count_gone;   /* surface.c: surfaces created / destroyed (savestate.c log) */
+typedef struct { Surf *s; LONG ref; } SurfRef;
+int surf_snapshot(SurfRef *out, int max);   /* surface.c: surfaces alive + reference counts (savestate.c) */
+int surf_restore_refs(const SurfRef *list, int n);   /* surface.c: a load: counts of the save back, zombies alive again */
+void surf_keep_released(int on);            /* surface.c: released surfaces kept as zombies while a quicksave exists */
+int surf_purge(int (*needed)(Surf *s));     /* surface.c: destroy zombies no quicksave needs */
+int surf_count_not_in(const SurfRef *list, int n);   /* surface.c: alive surfaces made after that save */

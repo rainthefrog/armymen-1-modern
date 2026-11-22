@@ -273,9 +273,15 @@ __asm__(".globl _crush_stub\n"
  * weapon record of the previous run, freed and reused for text, into Sarge's slot. */
 static unsigned g_run = 1;
 #define GP_GAME_STATE ((int (__fastcall *)(void *, int))0x423d00)   /* thiscall: the game's state (4 loading, 5 play) */
+static int last_s = -999, last_m = -999, last_t = -1, last_gs = -1;
+/* savestate.c (2026-11-21): a quickload put the game clock (+0x44) back - the same run, not a restart */
+void gameplay_run_resync(void)
+{
+    BYTE *g = *(BYTE **)0x4b3f70;
+    if (g && !IsBadReadPtr(g, 0x80)) last_t = *(int *)(g + 0x44);
+}
 unsigned gameplay_run(int *scenario, int *mission)
 {
-    static int last_s = -999, last_m = -999, last_t = -1, last_gs = -1;
     BYTE *g = *(BYTE **)0x4b3f70;
     if (!g || IsBadReadPtr(g, 0x80)) { if (scenario) *scenario = -1; if (mission) *mission = -1; return g_run; }
     int s = *(int *)(g + 0x70), m = *(int *)(g + 0x74), t = *(int *)(g + 0x44), gs = GP_GAME_STATE(g, 0);

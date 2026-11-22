@@ -466,3 +466,6 @@ void __fastcall aware_script_attack(DWORD who, DWORD target, int a, int b, int c
 
 /* patrol.c (2026-11-21): a trooper of this unit has fully noticed Sarge (a patrol ends there) */
 int aware_unit_noticed(BYTE *unit) { return on() && unit && unit_noticed(unit, NULL); }
+
+/* savestate.c: who has noticed Sarge is part of the mission state */
+void aware_savestate(void) { SAVESTATE(g_aw); SAVESTATE(g_n); SAVESTATE(g_shot_at); SAVESTATE(g_me); SAVESTATE(g_veh); SAVESTATE(g_last_sarge); SAVESTATE(g_hit_units); SAVESTATE(g_ul); }

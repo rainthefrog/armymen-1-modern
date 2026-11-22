@@ -817,3 +817,6 @@ void weapons_select_box(int b)
     if (box_weapon(u, b).type && activate(u, b) && g_cfg.log >= 2)
         mlog("weapons: key %d -> box %c%d", b + 1, box_col(b) ? 'B' : 'A', box_row(b) + 1);
 }
+
+/* savestate.c: the boxes are part of the mission state (saved with a quicksave, put back on a load) */
+void weapons_savestate(void) { SAVESTATE(g_store); SAVESTATE(g_slot_box); SAVESTATE(g_owner); SAVESTATE(g_seen); SAVESTATE(g_cur_seen); SAVESTATE(g_prev); }

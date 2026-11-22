@@ -249,3 +249,6 @@ void fences_dump(void)
         }
     mlog("fences: %d fence objects on the map, %d breakable (Sarge at %d,%d)", n, nb, SARGE_X(u), SARGE_Y(u));
 }
+
+/* savestate.c: a fence push in progress */
+void fences_savestate(void) { SAVESTATE(F); }
