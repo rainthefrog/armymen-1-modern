@@ -94,9 +94,20 @@ int hud_panel_art(void **image, RECT *src)
     return 1;
 }
 
+/* A picture pointer the game hands us may be stale (crash 2026-11-21, mission 10 restart: pic = ff2d2418, read in
+ * this hook - most likely a freed weapon box record, see weapons.c f950aaa). Unreadable = not drawn, logged with the
+ * calling game function. */
+static int bad_picture(const UiPicture *pic, void *from)
+{
+    if ((uintptr_t)pic >= 0x10000 && !IsBadReadPtr(pic, sizeof *pic)) return 0;
+    static int n;
+    if (n++ < 20) mlog("hud: picture %p unreadable - not drawn (from %p)", (void *)pic, from);
+    return 1;
+}
+
 void __fastcall hud_draw_picture(UiPicture *pic, int x, int y)
 {
-    if (!pic || !pic->image || (pic->flags & 0x3c)) return;
+    if (!pic || bad_picture(pic, __builtin_return_address(0)) || !pic->image || (pic->flags & 0x3c)) return;
     int px = x - pic->hot_x, py = y - pic->hot_y;
     if (g_cfg.log >= 5 && layout_active()) {         /* debugging: what is drawn in gameplay */
         static int n;
@@ -152,7 +163,7 @@ void __fastcall hud_draw_picture(UiPicture *pic, int x, int y)
  * The original sized the destination as src.right x src.bottom (it assumes src starts at 0,0). */
 void __fastcall hud_draw_picture_on_screen(UiPicture *pic, int x, int y)
 {
-    if (!pic || !pic->image || (pic->flags & 0x3e)) return;
+    if (!pic || bad_picture(pic, __builtin_return_address(0)) || !pic->image || (pic->flags & 0x3e)) return;
     int px = x - pic->hot_x, py = y - pic->hot_y;
     int k = layout_menu_scale();                     /* an in-game menu: placed and stretched x k/64 (layout.c) */
     int dw = pic->src.right, dh = pic->src.bottom, centred = 0;
@@ -400,7 +411,7 @@ void __cdecl hud_draw_cursor(void)
 void hud_draw_picture_raw(void *picture, int x, int y)
 {
     UiPicture *pic = picture;
-    if (!pic || !pic->image || (pic->flags & 0x3e)) return;
+    if (!pic || bad_picture(pic, __builtin_return_address(0)) || !pic->image || (pic->flags & 0x3e)) return;
     void *back = BACK_BUFFER;
     DWORD how = (pic->flags & 1) ? DDBLTFAST_WAIT : DDBLTFAST_WAIT | DDBLTFAST_SRCCOLORKEY;
     ((BltFastFn)VTBL(back)[7])(back, x - pic->hot_x, y - pic->hot_y, pic->image, &pic->src, how);
