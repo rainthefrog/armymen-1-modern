@@ -400,6 +400,7 @@ void hdworld_under_run(Surf *d, int y, int x0, int x1);   /* hdworld.c: ground-l
 int hdworld_under_fill(Surf *d, int y, int x0, int x1, BYTE c);   /* hdworld.c: the same for a run in colour c (0 = no mask: draw per pixel) */
 void hdworld_cell_low(int low);   /* roofs.c: the cell the game is drawing is a low object (rock, bush) */
 void hdworld_cell_top(int top);   /* hdworld.c: the cell being drawn is a vehicle turret (above its hull) */
+void hdworld_cell_over(int over);   /* roofs.c: drawn in the pass over every figure (roof part) or a figure drawn again over it */
 void hdworld_cell_sort(int y);   /* roofs.c: the drawn cell's sort row inside its image (world_pos.y - wrect.top) */
 void hdworld_cell_begin(const BYTE *cell);   /* roofs.c: the cell the game draws now (NULL after) */
 void hdworld_skip_shadows(int on);   /* roofs.c: a figure drawn again over a building front - its shadow not again */
