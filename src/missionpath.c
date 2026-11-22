@@ -427,6 +427,10 @@ static const Escort *g_esc; static int g_esc_wp = -1, g_esc_type, g_esc_ng, g_es
 static int g_esc_gx[ESC_MAX], g_esc_gy[ESC_MAX], g_esc_gpad[ESC_MAX];
 static MissionPt g_tail[ESC_PTS]; static int g_tail_first[ESC_MAX + 1], g_tail_seg; static Plan g_tplan;   /* goal i-1 -> goal i */
 static MissionPt g_bbuf[2][ESC_PTS / 2]; static int g_bshow = -1, g_bshow_n, g_bshow_to, g_bshow_fx, g_bshow_fy;   /* bridge shown */
+/* 2026-11-21 (user: "halftrack path - just draw it once at mission start. don't update it"): the escort lane is built
+ * until its planned pieces are done (or ESC_FREEZE_MS after it first showed), then frozen for the rest of the escort. */
+#define ESC_FREEZE_MS 4000
+static int g_esc_frozen; static DWORD g_esc_on_t;
 static Plan g_bplan; static int g_bplan_on, g_bplan_to, g_bplan_fx, g_bplan_fy; static DWORD g_bplan_t;          /* bridge being planned */
 static MissionPt g_lane[ESC_PTS]; static int g_lane_n; static DWORD g_esc_log_t;
 
@@ -474,7 +478,7 @@ static BYTE *esc_vehicle(void)
 }
 static void escort_setup(void)                           /* the route is ready (built or reused): find this mission's escort */
 {
-    g_esc = NULL; g_esc_wp = -1; g_esc_dead = 0; g_esc_idx = 0; g_tail_seg = 0; g_lane_n = 0; g_esc_logged_on = 0;
+    g_esc = NULL; g_esc_wp = -1; g_esc_dead = 0; g_esc_idx = 0; g_tail_seg = 0; g_lane_n = 0; g_esc_logged_on = 0; g_esc_frozen = 0; g_esc_on_t = 0;
     g_bshow = -1; g_bplan_on = 0;
     BYTE *g = GAME;
     if (!g) return;
@@ -583,7 +587,7 @@ static void escort_frame(void)                           /* game thread, every p
     int keep = g_lane_n;                                  /* 2026-11-21 (user): a destroyed escort loses the mission - */
     g_lane_n = 0;                                         /* its last lane stays, no switch to Sarge's own leg */
     if (!g_esc || g_esc_ng < 1) return;
-    if (g_esc_dead) { g_lane_n = keep; return; }
+    if (g_esc_dead || g_esc_frozen) { g_lane_n = keep; return; }
     if (g_tail_seg < g_esc_ng && g_esc_ng > 1) {          /* the script pieces: one planner call per frame */
         plan_step(&g_tplan, g_esc_type);                  /* piece s = g_tail[g_tail_first[s] .. g_tail_first[s + 1]) */
         if (g_tplan.fin) {
@@ -644,6 +648,11 @@ static void escort_frame(void)                           /* game thread, every p
         lane_tail(g_esc_idx);
     }
     if (g_lane_n >= 2) g_lane[g_lane_n - 1].wp = (BYTE)(g_esc_wp + 1);
+    if (!g_esc_on_t) g_esc_on_t = GetTickCount();
+    if (g_lane_n >= 2 && ((g_tail_seg >= g_esc_ng && !g_bplan_on) || GetTickCount() - g_esc_on_t >= ESC_FREEZE_MS)) {
+        g_esc_frozen = 1;
+        if (g_cfg.log >= 1) mlog("missionpath: escort lane frozen (%d points) - drawn once, not updated", g_lane_n);
+    }
     if (!g_esc_logged_on && g_cfg.log >= 1) { g_esc_logged_on = 1; mlog("missionpath: escort lane on: leg %d follows %s from %d,%d", g_esc_wp + 1, g_esc->vehicle, vx, vy); }
     DWORD now = GetTickCount();
     if (g_cfg.log >= 1 && now - g_esc_log_t >= ESC_LOG_MS) {
@@ -1485,7 +1494,7 @@ void missionpath_frame(void)
         }
         g_last_mission = m; g_left_play = 0;
         g_key = key; g_sarge = s; g_phase = 0; g_frames = 0; g_npts = 0; g_nwp = 0; g_leg = 0; g_leg_calls = 0; g_dphase = 0; g_dpieces = 0;
-        g_nmem = 0; g_cur = 0; g_vstage = 0; g_vtry = 0; g_relax = 0; g_wide_on = 0; g_esc = NULL; g_esc_wp = -1; g_lane_n = 0;
+        g_nmem = 0; g_cur = 0; g_vstage = 0; g_vtry = 0; g_relax = 0; g_wide_on = 0; g_esc = NULL; g_esc_wp = -1; g_lane_n = 0; g_esc_frozen = 0; g_esc_on_t = 0;
         g_cx = *(short *)(s + 4); g_cy = *(short *)(s + 6);
         memset(g_wfree, 0, sizeof g_wfree); memset(g_wclr, 0, sizeof g_wclr); g_wphase = 0;   /* the cell answers belong to this map */
         add(g_cx, g_cy, 0, 0);
