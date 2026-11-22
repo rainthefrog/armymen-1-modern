@@ -10,10 +10,21 @@
  *      drew nothing there), every other pixel (panel, text, cursor) keeps alpha 255;
  *   3. gpu.c draws the HD picture over the whole 16:9 area and the game's pixels on top where
  *      alpha is 255 (ps_hd). The 640x480 picture is the centre of the 854x480-equivalent HD picture.
+ * Two classes of picture (2026-11-21, one rule each, the same for every terrain):
+ *   - pure art (Title_legal, title2, *_load): the wide picture as it is, across the whole width.
+ *   - pictures with menu panels painted in (*_misn_select, multihost, multiremote): the game's buttons,
+ *     labels and clicks sit on the ORIGINAL panels, but every AI-widened picture moved them (measured
+ *     per 64 px tile against the original: alp 1.03x wider, edges -6..+8 px; bay -6..+1 / -4; des
+ *     -16..+6 / -12; multi* up to 16 px). So the centre of the HD picture is rebuilt once at load
+ *     (compose_centre): the faithful 2x upscale hd\Screens\<name>.bmp (or the original BMP when it is
+ *     missing), resampled once (Lanczos-3) to the centre's size, blended into the wide sides over
+ *     SEAM_PX game px at both centre edges (no hard cut). Panels / frames are then the original's
+ *     geometry at HD resolution, and no original 1x pixel shows where the art matches.
  * PNGs are loaded with WIC (Windows Imaging Component). [display] hd_menus = 1
  * ============================================================================================ */
 #define COBJMACROS
 #include "common.h"
+#include <math.h>
 #include <wincodec.h>
 
 static const char *const NAMES[] = { "Title_legal", "alp_load", "alp_misn_select", "bay_load", "bay_misn_select",
@@ -24,14 +35,13 @@ static const char *const NAMES[] = { "Title_legal", "alp_load", "alp_misn_select
 #define TOL 12                    /* summed colour difference that still counts as "the background" */
 #define MATCH_MIN 40              /* % of the background that must show: win/lose radios cover ~44 % */
 
-typedef struct { uint32_t *orig; uint32_t *hd; int hw, hh; int tried_hd; BYTE *bad; int keep_ui; int bad_permille; } Art;
-static void build_bad_mask(Art *a);
-#define HD_CENTRE_FAITHFUL 10      /* per mille of the centre differing: below = the HD centre is used */
+typedef struct { uint32_t *orig; uint32_t *hd; int hw, hh; int tried_hd; int panels; } Art;
+static void compose_centre(Art *a, const char *name);
+#define SEAM_PX 32                /* game px at each centre edge where the wide sides fade into the rebuilt centre */
 static Art g_art[COUNT];
 static int g_loaded_orig, g_current = -1;
 static int g_serial;              /* changes when the current HD picture changes (gpu.c re-uploads) */
 static volatile int g_active;     /* the last menu frame used an HD background */
-static int g_mix_centre;          /* [display] hd_menus_mix_centre (read with the originals) */
 
 int hdart_active(void) { return g_active; }
 
@@ -127,7 +137,6 @@ uint32_t *hdart_load_image_alpha(const char *path, int *w, int *h)
 static void load_originals(void)
 {
     g_loaded_orig = 1;
-    g_mix_centre = GetPrivateProfileIntA("display", "hd_menus_mix_centre", 0, mod_ini_path());
     char path[MAX_PATH], rel[96];
     int n = 0;
     for (int i = 0; i < COUNT; i++) {
@@ -137,10 +146,8 @@ static void load_originals(void)
         wsprintfA(rel, "Screens\\%s.bmp", NAMES[i]);
         hdart_game_path(path, MAX_PATH, rel);
         if ((g_art[i].orig = load_bmp8(path))) n++;
-        /* backgrounds with menu boxes painted into the art: where the AI centre differs, the
-         * original is kept (the boxes stay intact); pure art (title, load screens) uses the wide
-         * picture everywhere, so it has no seams */
-        g_art[i].keep_ui = strstr(NAMES[i], "misn_select") || strstr(NAMES[i], "multi");
+        /* menu panels painted into the art: the centre is rebuilt from the original's geometry (compose_centre) */
+        g_art[i].panels = strstr(NAMES[i], "misn_select") || strstr(NAMES[i], "multi");
     }
     mlog("hdart: %d menu backgrounds have a widescreen version", n);
 }
@@ -185,13 +192,19 @@ int hdart_prepare(uint32_t *pix, int w, int h, int menu)
         hdart_game_path(path, MAX_PATH, rel);
         a->hd = hdart_load_image(path, &a->hw, &a->hh);
         mlog("hdart: %s.png %s (%dx%d)", NAMES[best], a->hd ? "loaded" : "could not be read", a->hw, a->hh);
-        build_bad_mask(a);
+        if (a->hd && a->panels) compose_centre(a, NAMES[best]);
     }
     if (!a->hd) { g_current = -1; g_active = 0; return 0; }
     g_active = 1;
     if (best != g_current) { g_current = best; g_serial++; }
     /* background = the pixel AND its 3x3 neighbourhood match the original, so single pixels of the
-     * game's panel that happen to have the background's colour do not let the HD picture through */
+     * game's panel that happen to have the background's colour do not let the HD picture through.
+     * The same rule for every picture: on panel screens the HD picture's centre is the original's geometry
+     * (compose_centre), so its panels sit exactly under the game's buttons and labels.
+     * History: 2026-11-19 the panel screens showed the game's 1x pixels in the whole centre (the AI panels were
+     * 10-16 px off: doubled edges, broken BACK / CANCEL bar); 2026-11-21 a "faithful" exception gave Alpine the AI
+     * centre with 1x pixels where it differed (dither specks, a column at the left seam, the orange strip) and made
+     * it look unlike Desert. Both replaced by compose_centre. */
     const uint32_t *o = a->orig;
     static BYTE m[PW * PH];
     for (int i = 0; i < PW * PH; i++) m[i] = (BYTE)close_enough(pix[i], o[i]);
@@ -205,20 +218,6 @@ int hdart_prepare(uint32_t *pix, int w, int h, int menu)
                     if (!m[yy * PW + xx]) { bg = 0; break; }
                 }
             uint32_t *p = &pix[y * PW + x];
-            /* Screens with menu boxes painted in the art (mission select, multiplayer): the AI-widened picture is
-             * used for the SIDES only; in the 640-wide centre every pixel is the game's (and its faithful 2x upscale,
-             * hdsprites). 2026-11-19, user: "the menu has graphical issues": the widened pictures have the green
-             * panels 10-16 px away from the original's (des_misn_select: box 60..317 instead of 76..321, bar
-             * 156..473 instead of 178..470), and mixing the two per pixel ("original where they differ a lot") gave
-             * doubled, ragged panel edges and a broken BACK / CANCEL bar. [display] hd_menus_mix_centre = 1 = the old
-             * per-pixel mix. Left: a seam where the widened picture meets the centre (needs wide art made without
-             * panels, or the menu renderer - tooling/docs/menu-render-evaluation.md). */
-            /* 2026-11-21 (user, Alpine mission select: "this is rendering the original on the HD art"): a picture
-             * whose HD centre matches the original (under HD_CENTRE_FAITHFUL per mille of pixels differ, e.g.
-             * alp_misn_select 0 %) keeps its HD centre - the original only where it differs; the whole-centre rule
-             * stays for pictures with moved panels (des_misn_select). */
-            int whole = a->keep_ui && !g_mix_centre && !(a->bad && a->bad_permille < HD_CENTRE_FAITHFUL);
-            if (a->keep_ui && (whole || (a->bad && a->bad[y * PW + x]))) bg = 0;
             *p = bg ? (*p & 0x00FFFFFFu) : (*p | 0xFF000000u);
         }
     return 1;
@@ -232,34 +231,116 @@ const uint32_t *hdart_picture(int *w, int *h, int *serial)
     return g_art[g_current].hd;
 }
 
-/* ---------------------------------------------------------------- where the HD centre differs
- * The AI-extended pictures are not always faithful in the centre (bars, panels drawn a bit
- * differently). Where the HD picture's centre does not match the original background, the game's
- * own pixels are used (bad[] = 1), so menus never look broken; elsewhere the HD art shows. */
-#define BAD_TOL 120
-static void build_bad_mask(Art *a)
+/* ---------------------------------------------------------------- the centre of panel screens
+ * Resampling (once per picture, at load): separable Lanczos-3, opaque BGRA in and out. */
+#define LZ_A 3
+static double lanczos(double x)
 {
-    if (a->bad || !a->hd || !a->orig) return;
-    a->bad = malloc(PW * PH);
-    if (!a->bad) return;
-    double s = a->hh / (double)PH;                         /* HD pixels per game pixel */
-    double x0 = (a->hw - PW * s) / 2;                      /* the 640-wide centre in the HD picture */
-    int n_bad = 0;
-    for (int y = 0; y < PH; y++)
-        for (int x = 0; x < PW; x++) {
-            int hx = (int)(x0 + (x + 0.5) * s), hy = (int)((y + 0.5) * s);
-            if (hx < 0) hx = 0;
-            if (hx >= a->hw) hx = a->hw - 1;
-            if (hy >= a->hh) hy = a->hh - 1;
-            uint32_t h = a->hd[hy * a->hw + hx], o = a->orig[y * PW + x];
-            int d = abs((int)(h >> 16 & 255) - (int)(o >> 16 & 255)) + abs((int)(h >> 8 & 255) - (int)(o >> 8 & 255))
-                  + abs((int)(h & 255) - (int)(o & 255));
-            a->bad[y * PW + x] = (BYTE)(d > BAD_TOL);
-            n_bad += d > BAD_TOL;
+    if (x == 0) return 1;
+    if (x <= -LZ_A || x >= LZ_A) return 0;
+    double px = 3.14159265358979 * x;
+    return LZ_A * sin(px) * sin(px / LZ_A) / (px * px);
+}
+
+/* Weights of dn output samples over sn input samples: out[d] = sum w[d*nt+k] * in[clamp(first[d]+k)]. */
+static float *lanczos_taps(int sn, int dn, int **first, int *ntaps)
+{
+    double sc = (double)sn / dn, wid = sc > 1 ? sc : 1;          /* downscaling widens the kernel */
+    int nt = (int)ceil(2 * LZ_A * wid) + 1;
+    float *w = malloc(sizeof(float) * dn * nt);
+    *first = malloc(sizeof(int) * dn);
+    if (!w || !*first) { free(w); free(*first); *first = NULL; return NULL; }
+    for (int d = 0; d < dn; d++) {
+        double c = (d + 0.5) * sc - 0.5, sum = 0;
+        int f = (int)floor(c - LZ_A * wid) + 1;
+        (*first)[d] = f;
+        for (int k = 0; k < nt; k++) sum += w[d * nt + k] = (float)lanczos((c - (f + k)) / wid);
+        for (int k = 0; k < nt; k++) w[d * nt + k] = (float)(w[d * nt + k] / sum);
+    }
+    *ntaps = nt;
+    return w;
+}
+
+/* src (sw x sh) resampled to dst (dw x dh). Returns 0 when out of memory. */
+static int resample(const uint32_t *src, int sw, int sh, uint32_t *dst, int dw, int dh)
+{
+    int *fx = NULL, *fy = NULL, ntx = 0, nty = 0, ok = 0;
+    float *wx = lanczos_taps(sw, dw, &fx, &ntx), *wy = lanczos_taps(sh, dh, &fy, &nty);
+    float *mid = malloc(sizeof(float) * 3 * (size_t)dw * sh);    /* horizontal pass: sh rows x dw */
+    if (wx && wy && mid) {
+        for (int y = 0; y < sh; y++)
+            for (int x = 0; x < dw; x++) {
+                float r = 0, g = 0, b = 0;
+                for (int k = 0; k < ntx; k++) {
+                    int sx = fx[x] + k;
+                    sx = sx < 0 ? 0 : sx >= sw ? sw - 1 : sx;
+                    uint32_t p = src[(size_t)y * sw + sx];
+                    float w = wx[x * ntx + k];
+                    r += w * (p >> 16 & 255); g += w * (p >> 8 & 255); b += w * (p & 255);
+                }
+                float *m = &mid[((size_t)y * dw + x) * 3];
+                m[0] = r; m[1] = g; m[2] = b;
+            }
+        for (int y = 0; y < dh; y++)
+            for (int x = 0; x < dw; x++) {
+                float c[3] = { 0, 0, 0 };
+                for (int k = 0; k < nty; k++) {
+                    int sy = fy[y] + k;
+                    sy = sy < 0 ? 0 : sy >= sh ? sh - 1 : sy;
+                    const float *m = &mid[((size_t)sy * dw + x) * 3];
+                    float w = wy[y * nty + k];
+                    c[0] += w * m[0]; c[1] += w * m[1]; c[2] += w * m[2];
+                }
+                int v[3];
+                for (int i = 0; i < 3; i++) v[i] = c[i] < 0 ? 0 : c[i] > 255 ? 255 : (int)(c[i] + 0.5f);
+                dst[(size_t)y * dw + x] = 0xFF000000u | (uint32_t)v[0] << 16 | (uint32_t)v[1] << 8 | (uint32_t)v[2];
+            }
+        ok = 1;
+    }
+    free(wx); free(wy); free(fx); free(fy); free(mid);
+    return ok;
+}
+
+/* Panel screens: the HD picture's 640-wide centre (the part gpu.c puts under the game picture: x0 =
+ * (hw - 640 s) / 2, s = hh / 480) becomes the faithful upscale of the ORIGINAL - hd\Screens\<name>.bmp (the
+ * 2x art, any 4:3 size), else the original BMP itself - resampled once to the centre's size. Within SEAM_PX game
+ * px of the centre's left / right edge it fades (smoothstep) from the wide picture to that upscale: the AI sides
+ * continue the scene with other geometry, so a hard edge showed as a cut (rocks, the shack, Alpine's dark border).
+ * Every panel of the original sits at least 32 game px inside the edges (measured: misn_select from x 75, multi*
+ * from x 33), so the fade never touches a panel. */
+static void compose_centre(Art *a, const char *name)
+{
+    double s = a->hh / (double)PH;
+    int cw = (int)(PW * s + 0.5), x0 = (a->hw - cw) / 2;
+    if (cw <= 0 || x0 < 0 || x0 + cw > a->hw) return;
+    char path[MAX_PATH], rel[96];
+    wsprintfA(rel, "hd\\Screens\\%s.bmp", name);
+    hdart_game_path(path, MAX_PATH, rel);
+    int uw = 0, uh = 0;
+    uint32_t *up = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES ? hdart_load_image(path, &uw, &uh) : NULL;
+    if (up && (uw * 3 != uh * 4 || uw < PW)) { free(up); up = NULL; }   /* not a 4:3 upscale of the picture */
+    const uint32_t *src = up ? up : a->orig;
+    int sw = up ? uw : PW, sh = up ? uh : PH;
+    uint32_t *c = malloc((size_t)cw * a->hh * 4);
+    if (c && resample(src, sw, sh, c, cw, a->hh)) {
+        for (int x = 0; x < cw; x++) {
+            double gx = (x + 0.5) / s, d = gx < PW - gx ? gx : PW - gx, t = d / SEAM_PX;
+            if (t > 1) t = 1;
+            int w = (int)(256 * t * t * (3 - 2 * t) + 0.5);             /* weight of the upscale, 0..256 */
+            for (int y = 0; y < a->hh; y++) {
+                uint32_t *h = &a->hd[(size_t)y * a->hw + x0 + x], u = c[(size_t)y * cw + x];
+                if (w >= 256) { *h = u; continue; }
+                uint32_t r = ((*h >> 16 & 255) * (256 - w) + (u >> 16 & 255) * w) >> 8;
+                uint32_t g = ((*h >> 8 & 255) * (256 - w) + (u >> 8 & 255) * w) >> 8;
+                uint32_t b = ((*h & 255) * (256 - w) + (u & 255) * w) >> 8;
+                *h = 0xFF000000u | r << 16 | g << 8 | b;
+            }
         }
-    a->bad_permille = n_bad * 1000 / (PW * PH);
-    mlog("hdart: %d.%d%% of the centre differs from the original - %s", a->bad_permille / 10, a->bad_permille % 10,
-         a->keep_ui && a->bad_permille >= HD_CENTRE_FAITHFUL && !g_mix_centre ? "menu panels: the whole centre is the original's" : "the original is used where it differs");
+        mlog("hdart: %s: centre rebuilt from %s (%dx%d -> %dx%d at x %d), sides faded in over %d px", name,
+             up ? rel : "the original BMP", sw, sh, cw, a->hh, x0, SEAM_PX);
+    } else mlog("hdart: %s: centre could not be rebuilt (out of memory) - the wide picture as it is", name);
+    free(c);
+    free(up);
 }
 
 /* ---------------------------------------------------------------- the menu cursor
