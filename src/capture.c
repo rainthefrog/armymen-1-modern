@@ -391,11 +391,11 @@ void __fastcall capture_unit_enter(BYTE *unit, BYTE *v)
     capture_unit_enter_original(unit, v);
 }
 
-void __fastcall capture_handle_vehicle(BYTE *v)
-{
+static void __fastcall capture_handle_vehicle_px(BYTE *v) {
     if (v && v == g_cap.v) return;                       /* no AI control while Sarge drives it */
-    HANDLE_VEHICLE(v);
+    PX_GAME(HANDLE_VEHICLE(v));
 }
+void __fastcall capture_handle_vehicle(BYTE *v) { PX_BEGIN(px); capture_handle_vehicle_px(v); PX_END(px, PR_VEH); }   /* timed: stage PR_VEH (exclusive, common.h) */
 
 /* FUN_00418910: the Enter Vehicle key. */
 void __cdecl capture_enter_key(void)
@@ -543,8 +543,7 @@ int capture_driver_seat(int *wx, int *wy, int *facing)
  * Kept: the same lookup and result. Changed: an empty / unreadable slot, an index outside 1..50 or an army outside
  * 0..3 return NULL (= "no such vehicle", which every caller handles) instead of crashing. Redirected with hook_jmp. */
 #define VEHICLE_SLOTS 50
-BYTE *__fastcall capture_vehicle_find(DWORD uid)
-{
+static BYTE * __fastcall capture_vehicle_find_px(DWORD uid) {
     int army = (int)((uid >> 26) & 7) - 1, idx = (int)(uid & 0xffff) - 1;
     if (army < 0 || army >= ARMIES || idx < 0 || idx >= VEHICLE_SLOTS || !LEGION_STATUS(army)) return NULL;
     BYTE *leg = ARMY_RECORD(army);
@@ -553,6 +552,7 @@ BYTE *__fastcall capture_vehicle_find(DWORD uid)
     if (!v || IsBadReadPtr(v, 4) || UID(v) != uid) return NULL;
     return v;
 }
+BYTE * __fastcall capture_vehicle_find(DWORD uid) { PX_BEGIN(px); BYTE * r_ = capture_vehicle_find_px(uid); PX_END(px, PR_VEH); return r_; }   /* timed: stage PR_VEH (exclusive, common.h) */
 
 /* ---- army file (2026-11-21 CRASH, user: "mission 6 crashes after I steal a tank"; EXCEPTION at 0x417337 in
  * FUN_004196e0 on Play Again). Reproduced in Wine: Sarge drove a captured Tan tank (player UID 04c30032, slot 49)

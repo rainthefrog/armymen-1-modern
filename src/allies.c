@@ -110,8 +110,7 @@ static int in_heal_range(BYTE *t)
 
 /* ---------------------------------------------------------------- 1. more health */
 
-void __fastcall allies_trooper_join(BYTE *trooper, BYTE *unit)
-{
+static void __fastcall allies_trooper_join_px(BYTE *trooper, BYTE *unit) {
     int pct = g_cfg.ally_health_x;
     if (trooper && unit && UID_ARMY(unit) == ARMY_PLAYER && pct > 0 && pct != 100) {
         if (pct > MAX_PCT) pct = MAX_PCT;
@@ -122,8 +121,9 @@ void __fastcall allies_trooper_join(BYTE *trooper, BYTE *unit)
         HEALTH(trooper) = (short)mx;
         if (g_cfg.log >= 2) mlog("allies: trooper %p of unit %p: max health %d -> %d (ally_health_x %d)", trooper, unit, was, mx, pct);
     }
-    TROOPER_ADD_TO_UNIT(trooper, unit);
+    PX_GAME(TROOPER_ADD_TO_UNIT(trooper, unit));
 }
+void __fastcall allies_trooper_join(BYTE *trooper, BYTE *unit) { PX_BEGIN(px); allies_trooper_join_px(trooper, unit); PX_END(px, PR_ALLIES); }   /* timed: stage PR_ALLIES (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- the player's soldiers */
 
@@ -299,9 +299,8 @@ void allies_toggle_heal(void)
     set_mode(!g_heal, "heal key");
 }
 
-int __fastcall allies_pickup_test(BYTE *item, BYTE *sarge)
-{
-    int r = PICKUP_TEST(item, sarge);
+static int __fastcall allies_pickup_test_px(BYTE *item, BYTE *sarge) {
+    int r = PX_CALL(PICKUP_TEST(item, sarge));
     if (r != 0 || !g_cfg.ally_heal || !item || !sarge || sarge != SARGE || UID_ARMY(sarge) != ARMY_PLAYER) return r;
     if (OBJ_CATEGORY(item) != CAT_SPECIAL_ITEM || !OBJ_WEAPON(item) || W_TYPE(OBJ_WEAPON(item)) != TYPE_MEDKIT) return r;
     BYTE *g = GAME;
@@ -314,6 +313,7 @@ int __fastcall allies_pickup_test(BYTE *item, BYTE *sarge)
     mlog("allies: medkit picked up at full health (%d %% of max) - %d carried", pct, K.n);
     return 1;                                                           /* the game's pickup takes it */
 }
+int __fastcall allies_pickup_test(BYTE *item, BYTE *sarge) { PX_BEGIN(px); int r_ = allies_pickup_test_px(item, sarge); PX_END(px, PR_ALLIES); return r_; }   /* timed: stage PR_ALLIES (exclusive, common.h) */
 
 static int kit_pct(void) { return K.n > 0 ? K.pct[K.n - 1] : 0; }
 static int g_any_hurt;

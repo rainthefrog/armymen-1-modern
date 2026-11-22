@@ -101,8 +101,10 @@ void gameplay_frame(void)
     last_ms = now;
     int hp = SARGE_HEALTH(u), max = SARGE_MAX(u);
     if (u != who || hp <= 0 || max <= 0) {       /* new Sarge, or dead: start over */
+        /* logged on a change only (2026-11-21: dead, it was written every frame - ~120 lines and file flushes on the
+         * game thread in the user's log) */
+        if (u != who || hp != last_hp) mlog("gameplay: Sarge health %d / %d", SARGE_HEALTH(u), max);
         who = u; last_hp = hp; since_hurt_ms = 0; owed = 0;
-        mlog("gameplay: Sarge health %d / %d", SARGE_HEALTH(u), max);
         return;
     }
     if (dt < 0 || dt > 250) dt = 0;              /* a gap (menu, loading): not healing time */

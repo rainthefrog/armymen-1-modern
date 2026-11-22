@@ -172,9 +172,8 @@ static BYTE *sarge_target(void)
 
 /* ---------------------------------------------------------------- hooks */
 
-int __fastcall aware_sight_tick(int *weapon, BYTE *shooter, int cell)
-{
-    int r = GAME_SIGHT(weapon, shooter, cell);
+static int __fastcall aware_sight_tick_px(int *weapon, BYTE *shooter, int cell) {
+    int r = PX_CALL(GAME_SIGHT(weapon, shooter, cell));
     if (!on()) return r;
     BYTE *s = SARGE_OBJ, *victim = *(BYTE **)(shooter + 0x30);
     if (!s || !victim || !is_sarge_uid(OBJ_UID(victim))) return r;
@@ -190,9 +189,9 @@ int __fastcall aware_sight_tick(int *weapon, BYTE *shooter, int cell)
     if (!a->targeting) { a->targeting = 1; a->target_from = a->seen_at; a->held = 0; a->fired = 0; }
     return r;
 }
+int __fastcall aware_sight_tick(int *weapon, BYTE *shooter, int cell) { PX_BEGIN(px); int r_ = aware_sight_tick_px(weapon, shooter, cell); PX_END(px, PR_AWARE); return r_; }   /* timed: stage PR_AWARE (exclusive, common.h) */
 
-void __fastcall aware_fire_step(BYTE *t, BYTE *victim, int p1, int p2, int p3, int p4)
-{
+static void __fastcall aware_fire_step_px(BYTE *t, BYTE *victim, int p1, int p2, int p3, int p4) {
     Aw *a = on() && victim && is_sarge_uid(OBJ_UID(victim)) ? find(t) : NULL;
     if (a && a->level < 1.0f) {
         if (!a->held && g_cfg.log >= 2) mlog("aware: enemy %08lx holds fire at Sarge (awareness %.2f)", OBJ_UID(t), a->level);
@@ -201,8 +200,8 @@ void __fastcall aware_fire_step(BYTE *t, BYTE *victim, int p1, int p2, int p3, i
         int act = *(int *)(t + 0x84), ut = T_UNIT(t) ? *(int *)(T_UNIT(t) + 0x7c) : 0;
         if (ut == 4 || ut == 6) act = 0xb; else if (ut == 5) act = 0xd; else if (ut == 7) act = 0xc;
         T_STATE(t) = 0;
-        GAME_ACTION(t, act, *(short *)(t + 8));
-        GAME_HOLD(t + 0xa4, *(int *)(t + 4), *(int *)(t + 4));
+        PX_GAME(GAME_ACTION(t, act, *(short *)(t + 8)));
+        PX_GAME(GAME_HOLD(t + 0xa4, *(int *)(t + 4), *(int *)(t + 4)));
         return;
     }
     if (a && !a->fired) {
@@ -210,8 +209,9 @@ void __fastcall aware_fire_step(BYTE *t, BYTE *victim, int p1, int p2, int p3, i
         if (g_cfg.log >= 2) mlog("aware: enemy %08lx FIRST SHOT at Sarge %lu ms after targeting him (stance %d, dist %.2f of range)",
                                  OBJ_UID(t), clock_game_ms() - a->target_from, SARGE_OBJ ? clamp_class(GAME_CLASS(SARGE_OBJ)) : 0, a->dist_frac);
     }
-    GAME_FIRESTEP(t, victim, p1, p2, p3, p4);
+    PX_GAME(GAME_FIRESTEP(t, victim, p1, p2, p3, p4));
 }
+void __fastcall aware_fire_step(BYTE *t, BYTE *victim, int p1, int p2, int p3, int p4) { PX_BEGIN(px); aware_fire_step_px(t, victim, p1, p2, p3, p4); PX_END(px, PR_AWARE); }   /* timed: stage PR_AWARE (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- events */
 
@@ -281,8 +281,7 @@ int aware_filter_seen(BYTE *viewer, BYTE *target, int seen)
     g_seen_blocked++;
     return 0;
 }
-void __fastcall aware_unit_target(BYTE *target, BYTE *entry)
-{
+static void __fastcall aware_unit_target_px(BYTE *target, BYTE *entry) {
     if (on() && target && entry && ENTRY_KIND(entry) == 1 && ENTRY_OWNER(entry) && TARGET_ITEM(target) && is_sarge_uid(OBJ_UID(TARGET_ITEM(target)))) {
         BYTE *unit = ENTRY_OWNER(entry);
         float m;
@@ -300,8 +299,9 @@ void __fastcall aware_unit_target(BYTE *target, BYTE *entry)
             if (!ENTRY_TARGET(entry)) return;                 /* nothing to clear */
         }
     }
-    GAME_SET_TARGET(target, entry);
+    PX_GAME(GAME_SET_TARGET(target, entry));
 }
+void __fastcall aware_unit_target(BYTE *target, BYTE *entry) { PX_BEGIN(px); aware_unit_target_px(target, entry); PX_END(px, PR_AWARE); }   /* timed: stage PR_AWARE (exclusive, common.h) */
 
 /* log=2: units that close in on Sarge (first live trooper, sampled every second) with their awareness */
 #define UNIT_LOG_MAX 32

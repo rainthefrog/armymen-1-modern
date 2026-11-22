@@ -105,9 +105,8 @@ static int bad_picture(const UiPicture *pic, void *from)
     return 1;
 }
 
-void __fastcall hud_draw_picture(UiPicture *pic, int x, int y)
-{
-    if (!pic || bad_picture(pic, __builtin_return_address(0)) || !pic->image || (pic->flags & 0x3c)) return;
+static void __fastcall hud_draw_picture_px(UiPicture *pic, int x, int y) {
+    if (!pic || !pic->image || (pic->flags & 0x3c)) return;
     int px = x - pic->hot_x, py = y - pic->hot_y;
     if (g_cfg.log >= 5 && layout_active()) {         /* debugging: what is drawn in gameplay */
         static int n;
@@ -154,6 +153,7 @@ void __fastcall hud_draw_picture(UiPicture *pic, int x, int y)
     ((UnlockFn)VTBL(back)[32])(back, d.lpSurface);
     minimap_picture_drawn(back, pic, px, py, picture_w(pic), picture_h(pic));
 }
+void __fastcall hud_draw_picture(UiPicture *pic, int x, int y) { if (pic && bad_picture(pic, __builtin_return_address(0))) return; PX_BEGIN(px); hud_draw_picture_px(pic, x, y); PX_END(px, PR_UI); }   /* timed: stage PR_UI (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- FUN_00413050 */
 
@@ -161,9 +161,8 @@ void __fastcall hud_draw_picture(UiPicture *pic, int x, int y)
  * relative to the window's client area. Used for menu backgrounds, the pause menu ("Game
  * Options"), and some HUD parts. __fastcall: ecx = picture, edx = x, y on the stack (ret 4).
  * The original sized the destination as src.right x src.bottom (it assumes src starts at 0,0). */
-void __fastcall hud_draw_picture_on_screen(UiPicture *pic, int x, int y)
-{
-    if (!pic || bad_picture(pic, __builtin_return_address(0)) || !pic->image || (pic->flags & 0x3e)) return;
+static void __fastcall hud_draw_picture_on_screen_px(UiPicture *pic, int x, int y) {
+    if (!pic || !pic->image || (pic->flags & 0x3e)) return;
     int px = x - pic->hot_x, py = y - pic->hot_y;
     int k = layout_menu_scale();                     /* an in-game menu: placed and stretched x k/64 (layout.c) */
     int dw = pic->src.right, dh = pic->src.bottom, centred = 0;
@@ -198,6 +197,7 @@ void __fastcall hud_draw_picture_on_screen(UiPicture *pic, int x, int y)
     void *screen = SCREEN;
     ((BltFn)VTBL(screen)[5])(screen, &d, pic->image, &pic->src, how, NULL);
 }
+void __fastcall hud_draw_picture_on_screen(UiPicture *pic, int x, int y) { if (pic && bad_picture(pic, __builtin_return_address(0))) return; PX_BEGIN(px); hud_draw_picture_on_screen_px(pic, x, y); PX_END(px, PR_UI); }   /* timed: stage PR_UI (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- FUN_00406390 / FUN_00406410 */
 
@@ -208,8 +208,7 @@ void __fastcall hud_draw_picture_on_screen(UiPicture *pic, int x, int y)
 typedef DWORD (__fastcall *ColourIndexFn)(void *surface, DWORD colour);
 #define COLOUR_INDEX ((ColourIndexFn)0x405610)
 
-void __fastcall hud_fill_on_screen(RECT *r, DWORD colour)
-{
+static void __fastcall hud_fill_on_screen_px(RECT *r, DWORD colour) {
     void *screen = SCREEN;
     DDBLTFX fx;
     memset(&fx, 0, sizeof fx);
@@ -229,6 +228,7 @@ void __fastcall hud_fill_on_screen(RECT *r, DWORD colour)
     OffsetRect(&d, GAME_CLIENT_SCREEN_RECT.left, GAME_CLIENT_SCREEN_RECT.top);
     ((BltFn)VTBL(screen)[5])(screen, &d, NULL, NULL, DDBLT_WAIT | DDBLT_COLORFILL, &fx);
 }
+void __fastcall hud_fill_on_screen(RECT *r, DWORD colour) { PX_BEGIN(px); hud_fill_on_screen_px(r, colour); PX_END(px, PR_UI); }   /* timed: stage PR_UI (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- text */
 
@@ -250,8 +250,7 @@ static void place_screen_position(int *x, int *y)
  * again, so we pass that box explicitly for the original position before moving the text. */
 DrawStringFn hud_draw_string_original;
 
-void __fastcall hud_draw_string(void *surface, int x, int y, const char *text, int font, int *clip, int colour)
-{
+static void __fastcall hud_draw_string_px(void *surface, int x, int y, const char *text, int font, int *clip, int colour) {
     int box[2];
     if (surface == BACK_BUFFER) weapons_note_text(x, y, font, colour);   /* ammo counts (weapons.c) */
     if (surface == BACK_BUFFER) objectives_note_text(x, y, font, colour); /* message box font (objectives.c) */
@@ -264,8 +263,9 @@ void __fastcall hud_draw_string(void *surface, int x, int y, const char *text, i
         } else if (surface == SCREEN) place_screen_position(&x, &y);
         else layout_place(&x, &y);
     }
-    hud_draw_string_original(surface, x, y, text, font, clip, colour);
+    PX_GAME(hud_draw_string_original(surface, x, y, text, font, clip, colour));
 }
+void __fastcall hud_draw_string(void *surface, int x, int y, const char *text, int font, int *clip, int colour) { PX_BEGIN(px); hud_draw_string_px(surface, x, y, text, font, clip, colour); PX_END(px, PR_UI); }   /* timed: stage PR_UI (exclusive, common.h) */
 
 /* Wrap of FUN_00413a30 (draw a string with GDI TextOut; menu labels such as "Controls", "Audio",
  * "Abort Mission" in the pause menu). __fastcall: ecx = surface, edx = x; stack: y, text, font,
@@ -275,8 +275,7 @@ void __fastcall hud_draw_string(void *surface, int x, int y, const char *text, i
 GdiTextFn hud_draw_gdi_text_original;
 
 #define GAME_FONTS ((HFONT *)0x4e9f48)       /* the game's menu fonts (FUN_00413a30 selects GAME_FONTS[font]) */
-int __fastcall hud_draw_gdi_text(void *surface, int x, int y, const char *text, int font, int *size_out)
-{
+static int __fastcall hud_draw_gdi_text_px(void *surface, int x, int y, const char *text, int font, int *size_out) {
     if (g_cfg.log >= 2 && !layout_view_is_gameplay()) {      /* menu labels: which surface, where, colour (menu renderer) */
         static int n;
         if (n++ < 300) mlog("menutext: %s %d,%d font %d colour %08lx \"%.40s\"", surface == SCREEN ? "SCREEN" : surface == BACK_BUFFER ? "BACK" : "other",
@@ -310,7 +309,7 @@ int __fastcall hud_draw_gdi_text(void *surface, int x, int y, const char *text, 
         x += ox; y += oy;
         HFONT keep = GAME_FONTS[font];
         if (big[font][ki]) GAME_FONTS[font] = big[font][ki];
-        int r = hud_draw_gdi_text_original(surface, x, y, text, font, size_out);
+        int r = PX_CALL(hud_draw_gdi_text_original(surface, x, y, text, font, size_out));
         GAME_FONTS[font] = keep;
         if (size_out) { size_out[0] = (size_out[0] * 64 + k - 1) / k; size_out[1] = (size_out[1] * 64 + k - 1) / k; }
         return r;
@@ -322,8 +321,9 @@ int __fastcall hud_draw_gdi_text(void *surface, int x, int y, const char *text, 
         layout_menu_place(64, &x, &y);
         x += ox; y += oy;
     } else if (layout_active() && surface == SCREEN) place_screen_position(&x, &y);
-    return hud_draw_gdi_text_original(surface, x, y, text, font, size_out);
+    return PX_CALL(hud_draw_gdi_text_original(surface, x, y, text, font, size_out));
 }
+int __fastcall hud_draw_gdi_text(void *surface, int x, int y, const char *text, int font, int *size_out) { PX_BEGIN(px); int r_ = hud_draw_gdi_text_px(surface, x, y, text, font, size_out); PX_END(px, PR_UI); return r_; }   /* timed: stage PR_UI (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- minimap overlay */
 
@@ -335,8 +335,7 @@ int __fastcall hud_draw_gdi_text(void *surface, int x, int y, const char *text, 
 MinimapRectFn hud_minimap_rect_original;
 MinimapPlotFn hud_minimap_plot_original;
 
-void __fastcall hud_minimap_rect(int x1, int y1, int x2, int y2)
-{
+static void __fastcall hud_minimap_rect_px(int x1, int y1, int x2, int y2) {
     minimap_note_frame(x1, y1, x2, y2);          /* minimap.c: drawn after the pins - copy them */
     if (layout_active()) {
         int dx, dy;
@@ -345,19 +344,20 @@ void __fastcall hud_minimap_rect(int x1, int y1, int x2, int y2)
         x1 += dx; x2 += dx;
         y1 += dy; y2 += dy;
     }
-    hud_minimap_rect_original(x1, y1, x2, y2);
+    PX_GAME(hud_minimap_rect_original(x1, y1, x2, y2));
 }
+void __fastcall hud_minimap_rect(int x1, int y1, int x2, int y2) { PX_BEGIN(px); hud_minimap_rect_px(x1, y1, x2, y2); PX_END(px, PR_UI); }   /* timed: stage PR_UI (exclusive, common.h) */
 
-void __fastcall hud_minimap_plot(int x, int y)
-{
+static void __fastcall hud_minimap_plot_px(int x, int y) {
     if (layout_active()) {
         int dx, dy;
         layout_offset(ANCHOR_HUD, &dx, &dy);
         x += layout_hud_dx(x);
         y += dy;
     }
-    hud_minimap_plot_original(x, y);
+    PX_GAME(hud_minimap_plot_original(x, y));
 }
+void __fastcall hud_minimap_plot(int x, int y) { PX_BEGIN(px); hud_minimap_plot_px(x, y); PX_END(px, PR_UI); }   /* timed: stage PR_UI (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- FUN_004206a0 */
 
@@ -378,8 +378,7 @@ typedef void (__fastcall *DrawPictureFn)(UiPicture *pic, int x, int y);
  * under the new position, draw). Same logic as the original, but at the real pointer position:
  * while the pointer is over moved interface, the cursor globals hold the design position
  * (layout_pointer_to_game), so the real one is swapped in for the duration. */
-void __cdecl hud_draw_cursor(void)
-{
+static void __cdecl hud_draw_cursor_px(void) {
     mouse_poll_pointer();
     if (!CURSOR_VISIBLE) return;
     /* one cursor only (user): in gameplay, while Windows shows a cursor (the arrow over the interface,
@@ -406,6 +405,7 @@ void __cdecl hud_draw_cursor(void)
     CURSOR_X = game_x;
     CURSOR_Y = game_y;
 }
+void __cdecl hud_draw_cursor(void) { PX_BEGIN(px); hud_draw_cursor_px(); PX_END(px, PR_UI); }   /* timed: stage PR_UI (exclusive, common.h) */
 
 /* A HUD picture at a final game-screen position (no layout offset): weapons.c's spare icons. */
 void hud_draw_picture_raw(void *picture, int x, int y)

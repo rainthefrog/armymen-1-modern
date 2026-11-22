@@ -453,18 +453,17 @@ void vehicles_aim_turret(BYTE *v, double wx, double wy, DWORD now, int snap)
 
 /* call 0x417ce8 in VehicleUpdate: VehicleLockTurret(vehicle, spin) - the turret turns with the hull. Not for
  * Sarge's turret while turret_smooth (its aim is a world direction, kept by vehicles_aim_turret). */
-void __fastcall vehicles_turret_lock(BYTE *v, int spin)
-{
+static void __fastcall vehicles_turret_lock_px(BYTE *v, int spin) {
     if (g_cfg.turret_smooth && g_cfg.controls_modern && v && v == sarge_vehicle() && V_TYPE(v) != V_TYPE_FIXED_GUN) return;
-    LOCK_TURRET(v, spin);
+    PX_GAME(LOCK_TURRET(v, spin));
 }
+void __fastcall vehicles_turret_lock(BYTE *v, int spin) { PX_BEGIN(px); vehicles_turret_lock_px(v, spin); PX_END(px, PR_VEH); }   /* timed: stage PR_VEH (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- update of Sarge's vehicle: unstick */
 static struct { BYTE *v; int stuck_ms; DWORD last_log; } U;
 
-void __fastcall vehicles_update(BYTE *v)
-{
-    if (!v || v != sarge_vehicle() || !V_ANIM(v)) { VEHICLE_UPDATE(v); return; }
+static void __fastcall vehicles_update_px(BYTE *v) {
+    if (!v || v != sarge_vehicle() || !V_ANIM(v)) { PX_GAME(VEHICLE_UPDATE(v)); return; }
     if (U.v != v) { memset(&U, 0, sizeof U); U.v = v; }
     BYTE *g = GAME;
     int frame_ms = g ? GAME_FRAME_MS(g) : 16;
@@ -508,7 +507,7 @@ void __fastcall vehicles_update(BYTE *v)
     }
     int cheat_was = CHEAT_MOVE;
     if (cheat) CHEAT_MOVE = 1;
-    VEHICLE_UPDATE(v);
+    PX_GAME(VEHICLE_UPDATE(v));
     if (cheat) CHEAT_MOVE = cheat_was;
     int moved = V_X(v) != x0 || V_Y(v) != y0 || V_HULL(v) != h0;
     if (intent && !moved) U.stuck_ms += frame_ms > 0 && frame_ms < 200 ? frame_ms : 16;
@@ -524,6 +523,7 @@ void __fastcall vehicles_update(BYTE *v)
              V_X(v), V_Y(v), V_HULL(v), V_TURRET(v) & 255, fv, V_VEL(v), spin, INPUT, U.stuck_ms, V_FRAMES_STUCK(v),
              ov_now, ov_new, obj_now, obj_new, cheat ? " CHEAT" : "", refused ? " REFUSED" : "");
 }
+void __fastcall vehicles_update(BYTE *v) { PX_BEGIN(px); vehicles_update_px(v); PX_END(px, PR_VEH); }   /* timed: stage PR_VEH (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- aim report (diagnostic, log >= 2) */
 /* the shot's start as VehicleFireWeapon 0x416c60 takes it (FUN_00416c00): the turret ANIM (or the hull ANIM

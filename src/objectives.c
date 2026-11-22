@@ -92,14 +92,14 @@ static void refresh(void)
 
 DashMsgFn objectives_dash_message_original;
 
-void __fastcall objectives_dash_message(const char *msg, void *unit)
-{
+static void __fastcall objectives_dash_message_px(const char *msg, void *unit) {
     if (g_cfg.pin_objective && msg) {
         refresh();
         if (g_text[0] && !lstrcmpA(strip(msg), g_text)) return;     /* pinned instead */
     }
-    objectives_dash_message_original(msg, unit);
+    PX_GAME(objectives_dash_message_original(msg, unit));
 }
+void __fastcall objectives_dash_message(const char *msg, void *unit) { PX_BEGIN(px); objectives_dash_message_px(msg, unit); PX_END(px, PR_UI); }   /* timed: stage PR_UI (exclusive, common.h) */
 
 /* The message box's font and colour (hud.c reports text drawn there), reused for the pinned box. */
 static int g_font = -1, g_colour, g_any_font = -1, g_any_colour;
@@ -223,9 +223,9 @@ static void draw_pinned(Surf *b)
     g_box = (RECT){ PIN_X, PIN_Y, PIN_X + PIN_W, PIN_Y + h };
     g_box_time = GetTickCount();
     int clip[2] = { PIN_W - 8, PIN_LINE + 2 };
-    hud_draw_string_original(b, PIN_X + 4, PIN_Y + 4, "OBJECTIVE", g_font, clip, g_colour);
+    PX_GAME(hud_draw_string_original(b, PIN_X + 4, PIN_Y + 4, "OBJECTIVE", g_font, clip, g_colour));
     for (int i = 0; i < n; i++)
-        hud_draw_string_original(b, PIN_X + 4, PIN_Y + 4 + (i + 1) * PIN_LINE, lines[i], g_font, clip, g_colour);
+        PX_GAME(hud_draw_string_original(b, PIN_X + 4, PIN_Y + 4 + (i + 1) * PIN_LINE, lines[i], g_font, clip, g_colour));
     if (ov)                                           /* the text's pixels: interface (shown as the game drew them) */
         for (int y = 0; y < h; y++) {
             const BYTE *row = b->bits + (size_t)(PIN_Y + y) * b->pitch + PIN_X;

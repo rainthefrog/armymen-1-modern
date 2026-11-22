@@ -126,7 +126,7 @@ static int line_free(int x0, int y0, int x1, int y1)
 
 static int in_map(int x, int y) { return x >= 0 && y >= 0 && x < GRID * CELL && y < GRID * CELL; }
 
-int path_find(int sx, int sy, int tx, int ty, POINT *out, int max)
+static int path_find_body(int sx, int sy, int tx, int ty, POINT *out, int max)
 {
     g_nroute_fence = 0;
     if (!in_map(sx, sy) || !in_map(tx, ty) || max < 1) return 0;
@@ -223,7 +223,7 @@ int path_find(int sx, int sy, int tx, int ty, POINT *out, int max)
 #define SIDE_A 1
 #define SIDE_B 2
 int path_regions_reachable(int sx, int sy, int tx, int ty);
-int path_reachable(int sx, int sy, int tx, int ty, int budget_ms)
+static int path_reachable_body(int sx, int sy, int tx, int ty, int budget_ms)
 {
     if (!in_map(sx, sy) || !in_map(tx, ty)) return 0;
     /* the whole-map areas, when built: "same area" is trusted; "different" is checked with the floods below
@@ -571,69 +571,145 @@ static float vest(int a, int b)                                 /* octile distan
 }
 
 /* Route for a vehicle of `type` from (sx, sy) to (tx, ty): waypoints into out, returns their count. */
-int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int max)
+/* 2026-11-21 (stutter hunt 2): the search as a resumable job so it can also run in SLICES. vsearch_begin = set-up;
+ * vsearch_run = the phases, each resumable: 0 the straight-line test, 1 the A* expansions, 2 the route back and the
+ * string pulling (one vline_ok per step), 3 done. The state stays in the statics above / VS. path_find_vehicle runs
+ * them all at once (exactly as before); path_find_vehicle_begin / _step (missionpath.c's wide routes at mission start:
+ * one search was 50-105 ms in ONE frame on the user's PC, "partial after 25233 tiles") give the same result over
+ * several frames, at most about budget_ms each. */
+#define VS_OUT_MAX 256
+static struct {
+    int type, sx, sy, tx, ty, start, goal, expanded, found, nearest, w, h, max, phase, result;
+    float nearest_h;
+    int nc, i, j, n; double cx, cy;                     /* phase 2: string pulling */
+    POINT out[VS_OUT_MAX];
+} VS;
+static int vs_chain[VGRID * VGRID / 4];
+static unsigned g_vsearch_gen;                  /* +1 per search begun: a sliced search sees when another one ran */
+static void vsearch_begin(int type, int sx, int sy, int tx, int ty, int max)
 {
+    g_vsearch_gen++;
+    VS.type = type; VS.sx = sx; VS.sy = sy; VS.tx = tx; VS.ty = ty; VS.max = max < VS_OUT_MAX ? max : VS_OUT_MAX;
+    VS.phase = 0; VS.result = 0;
     const short *sz = (const short *)(intptr_t)(VEH_SIZES + 8 * (type >= 0 && type < 6 ? type : 0));
     for (int i = 0; i < 4; i++) g_vbox[i] = sz[i];
     if (!g_vbox[0] && !g_vbox[1]) { g_vbox[0] = 50; g_vbox[1] = 34; g_vbox[2] = 22; g_vbox[3] = 23; }
     g_vself_x = sx; g_vself_y = sy; g_vself_f = -1;
     memset(g_vobj, 0, sizeof g_vobj); memset(g_vcrush, 0, sizeof g_vcrush); g_vcrush_used = 0;                           /* objects may have moved / been destroyed */
     int w = TILES_W, h = TILES_H;
-    if (w <= 0 || h <= 0 || w > VGRID || h > VGRID || !MOVE_LAYER || max < 1) return 0;
-    if (vline_ok(sx, sy, tx, ty)) {
-        out[0] = (POINT){ tx, ty };
-        if (g_cfg.log >= 2) mlog("path: vehicle %d,%d -> %d,%d: straight", sx, sy, tx, ty);
-        return 1;
-    }
-    memset(g_vtest, 0, sizeof g_vtest); memset(g_vblock, 0, sizeof g_vblock);
-    memset(g_vclosed, 0, sizeof g_vclosed); memset(g_vseen, 0, sizeof g_vseen);
-    g_vnheap = 0;
-    int start = (sy / VTILE) * VGRID + sx / VTILE, goal = (ty / VTILE) * VGRID + tx / VTILE;
-    g_vcost[start] = 0; g_vfrom[start] = -1; g_vseen[start] = 1;
-    vpush(start, vest(start, goal));
-    int expanded = 0, found = 0, nearest = start;
-    float nearest_h = vest(start, goal);
-    while (g_vnheap > 0 && expanded < VEH_MAX_EXPAND) {
-        int c = vpop();
-        if (g_vclosed[c]) continue;
-        g_vclosed[c] = 1; expanded++;
-        if (c == goal) { found = 1; break; }
-        float hh = vest(c, goal);
-        if (hh < nearest_h) { nearest_h = hh; nearest = c; }
-        int cx = c % VGRID, cy = c / VGRID;
-        for (int d = 0; d < 8; d++) {
-            int nx = cx + VDX[d], ny = cy + VDY[d];
-            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-            int n = ny * VGRID + nx;
-            if (g_vclosed[n] || !vcell_ok(n, d)) continue;
-            float g = g_vcost[c] + (d >= 4 ? 1.4142f : 1.0f);
-            if (g_vseen[n] && g_vcost[n] <= g) continue;
-            g_vseen[n] = 1; g_vcost[n] = g; g_vfrom[n] = c;
-            vpush(n, g + vest(n, goal));
+    VS.w = w; VS.h = h;
+    if (w <= 0 || h <= 0 || w > VGRID || h > VGRID || !MOVE_LAYER || VS.max < 1) { VS.phase = 3; VS.result = 0; }
+}
+static int vs_time_up(const LARGE_INTEGER *q0, double budget_ms)
+{
+    if (budget_ms < 0) return 0;
+    static LARGE_INTEGER qf; LARGE_INTEGER qn;
+    if (!qf.QuadPart) QueryPerformanceFrequency(&qf);
+    QueryPerformanceCounter(&qn);
+    return (double)(qn.QuadPart - q0->QuadPart) * 1000.0 / (double)qf.QuadPart >= budget_ms;
+}
+static int vsearch_run(double budget_ms)        /* 1 = done (VS.result points in VS.out); 0 = the budget (ms, < 0 = none) ran out */
+{
+    LARGE_INTEGER q0; QueryPerformanceCounter(&q0);
+    int sx = VS.sx, sy = VS.sy, tx = VS.tx, ty = VS.ty;
+    if (VS.phase == 0) {
+        if (vline_ok(sx, sy, tx, ty)) {
+            VS.out[0] = (POINT){ tx, ty };
+            if (g_cfg.log >= 2) mlog("path: vehicle %d,%d -> %d,%d: straight", sx, sy, tx, ty);
+            VS.phase = 3; VS.result = 1;
+            return 1;
         }
+        memset(g_vtest, 0, sizeof g_vtest); memset(g_vblock, 0, sizeof g_vblock);
+        memset(g_vclosed, 0, sizeof g_vclosed); memset(g_vseen, 0, sizeof g_vseen);
+        g_vnheap = 0;
+        int start = (sy / VTILE) * VGRID + sx / VTILE, goal = (ty / VTILE) * VGRID + tx / VTILE;
+        g_vcost[start] = 0; g_vfrom[start] = -1; g_vseen[start] = 1;
+        vpush(start, vest(start, goal));
+        VS.start = start; VS.goal = goal; VS.expanded = 0; VS.found = 0; VS.nearest = start; VS.nearest_h = vest(start, goal);
+        VS.phase = 1;
     }
-    int end = found ? goal : nearest;
-    if (end == start) { mlog("path: vehicle %d,%d -> %d,%d: no route (%d tiles searched)", sx, sy, tx, ty, expanded); return 0; }
-    static int chain[VGRID * VGRID / 4];
-    int nc = 0;
-    for (int c = end; c != -1 && nc < (int)(sizeof chain / sizeof *chain); c = g_vfrom[c]) chain[nc++] = c;
-    int n = 0, i = nc - 1;
-    double cx = sx, cy = sy;
-    while (i > 0 && n < max) {
-        int j;
-        for (j = 0; j < i; j++) {
-            double px = (chain[j] % VGRID) * VTILE + 8, py = (chain[j] / VGRID) * VTILE + 8;
+    if (VS.phase == 1) {
+        int w = VS.w, h = VS.h, goal = VS.goal;
+        while (g_vnheap > 0 && VS.expanded < VEH_MAX_EXPAND) {
+            if ((VS.expanded & 127) == 0 && vs_time_up(&q0, budget_ms)) return 0;
+            int c = vpop();
+            if (g_vclosed[c]) continue;
+            g_vclosed[c] = 1; VS.expanded++;
+            if (c == goal) { VS.found = 1; break; }
+            float hh = vest(c, goal);
+            if (hh < VS.nearest_h) { VS.nearest_h = hh; VS.nearest = c; }
+            int cx = c % VGRID, cy = c / VGRID;
+            for (int d = 0; d < 8; d++) {
+                int nx = cx + VDX[d], ny = cy + VDY[d];
+                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                int n = ny * VGRID + nx;
+                if (g_vclosed[n] || !vcell_ok(n, d)) continue;
+                float g = g_vcost[c] + (d >= 4 ? 1.4142f : 1.0f);
+                if (g_vseen[n] && g_vcost[n] <= g) continue;
+                g_vseen[n] = 1; g_vcost[n] = g; g_vfrom[n] = c;
+                vpush(n, g + vest(n, goal));
+            }
+        }
+        int end = VS.found ? VS.goal : VS.nearest;
+        if (end == VS.start) { mlog("path: vehicle %d,%d -> %d,%d: no route (%d tiles searched)", sx, sy, tx, ty, VS.expanded); VS.phase = 3; VS.result = 0; return 1; }
+        VS.nc = 0;
+        for (int c = end; c != -1 && VS.nc < (int)(sizeof vs_chain / sizeof *vs_chain); c = g_vfrom[c]) vs_chain[VS.nc++] = c;
+        VS.n = 0; VS.i = VS.nc - 1; VS.j = 0; VS.cx = sx; VS.cy = sy;
+        VS.phase = 2;
+    }
+    if (VS.phase == 2) {
+        int found = VS.found;
+        while (VS.i > 0 && VS.n < VS.max) {
+            for (; VS.j < VS.i; VS.j++) {
+                if (vs_time_up(&q0, budget_ms)) return 0;           /* (before each line test: they are the cost here) */
+                double px = (vs_chain[VS.j] % VGRID) * VTILE + 8, py = (vs_chain[VS.j] / VGRID) * VTILE + 8;
+                if (VS.j == 0 && found) { px = tx; py = ty; }
+                if (vline_ok(VS.cx, VS.cy, px, py)) break;
+            }
+            int j = VS.j;
+            if (j == VS.i) j = VS.i - 1;
+            double px = (vs_chain[j] % VGRID) * VTILE + 8, py = (vs_chain[j] / VGRID) * VTILE + 8;
             if (j == 0 && found) { px = tx; py = ty; }
-            if (vline_ok(cx, cy, px, py)) break;
+            VS.out[VS.n++] = (POINT){ (LONG)px, (LONG)py };
+            VS.cx = px; VS.cy = py; VS.i = j; VS.j = 0;
         }
-        if (j == i) j = i - 1;
-        double px = (chain[j] % VGRID) * VTILE + 8, py = (chain[j] / VGRID) * VTILE + 8;
-        if (j == 0 && found) { px = tx; py = ty; }
-        out[n++] = (POINT){ (LONG)px, (LONG)py };
-        cx = px; cy = py; i = j;
+        mlog("path: vehicle type %d (box %d,%d,%d,%d) %d,%d -> %d,%d: %s after %d tiles, %d waypoints, %d fence / bush tiles driven over", VS.type, g_vbox[0], g_vbox[1], g_vbox[2], g_vbox[3], sx, sy, tx, ty, found ? "found" : "partial", VS.expanded, VS.n, g_vcrush_used);
+        VS.phase = 3; VS.result = VS.n;
     }
-    mlog("path: vehicle type %d (box %d,%d,%d,%d) %d,%d -> %d,%d: %s after %d tiles, %d waypoints, %d fence / bush tiles driven over", type, g_vbox[0], g_vbox[1], g_vbox[2], g_vbox[3], sx, sy, tx, ty, found ? "found" : "partial", expanded, n, g_vcrush_used);
-    return n;
+    return 1;
+}
+static int vsearch_copy(POINT *out, int max)
+{
+    int n = VS.result < max ? VS.result : max;
+    if (n > 0) memcpy(out, VS.out, sizeof(POINT) * n);
+    return n > 0 ? n : 0;
+}
+static int path_find_vehicle_body(int type, int sx, int sy, int tx, int ty, POINT *out, int max)
+{
+    vsearch_begin(type, sx, sy, tx, ty, max);
+    vsearch_run(-1);
+    return vsearch_copy(out, max);
+}
+/* sliced: begin, then step once per frame until it returns >= 0 (the route's point count, as path_find_vehicle).
+ * A search begun elsewhere meanwhile (vehicles.c) shares the statics: the sliced one then starts over. */
+static struct { int on, type, sx, sy, tx, ty, max; unsigned gen; } VR;
+static int path_find_vehicle_begin_body(int type, int sx, int sy, int tx, int ty, int max)
+{
+    VR.on = 1; VR.type = type; VR.sx = sx; VR.sy = sy; VR.tx = tx; VR.ty = ty; VR.max = max;
+    vsearch_begin(type, sx, sy, tx, ty, max);
+    VR.gen = g_vsearch_gen;
+    return 1;
+}
+static int path_find_vehicle_step_body(double budget_ms, POINT *out, int max)
+{
+    if (!VR.on) return 0;
+    if (VR.gen != g_vsearch_gen) {                       /* another search used the statics: start over */
+        vsearch_begin(VR.type, VR.sx, VR.sy, VR.tx, VR.ty, VR.max);
+        VR.gen = g_vsearch_gen;
+    }
+    if (!vsearch_run(budget_ms)) return -1;              /* next frame */
+    VR.on = 0;
+    return vsearch_copy(out, max < VR.max ? max : VR.max);
 }
 
 
@@ -762,6 +838,7 @@ static int ha_node_for(float x, float y, int h, float g)
  * can_spin: the vehicle turns without moving. step: px per motion. Returns 0 if it cannot start. */
 int path_vehicle_plan_begin(int type, int sx, int sy, int facing, int tx, int ty, int can_spin, int step)
 {
+    g_vsearch_gen++;                            /* shares the tile search statics: a sliced path_find_vehicle starts over */
     const short *sz = (const short *)(intptr_t)(VEH_SIZES + 8 * (type >= 0 && type < 6 ? type : 0));
     for (int i = 0; i < 4; i++) g_vbox[i] = sz[i];
     if (!g_vbox[0] && !g_vbox[1]) { g_vbox[0] = 50; g_vbox[1] = 34; g_vbox[2] = 22; g_vbox[3] = 23; }
@@ -807,8 +884,9 @@ static int ha_start(void)
 }
 
 /* Run the search for up to budget_ms. Returns 0 = still searching, 1 = found, 2 = gave up (closest pose), -1 = none. */
-int path_vehicle_plan_step(double budget_ms)
+static int path_vehicle_plan_step_body(double budget_ms)
 {
+    g_vsearch_gen++;                            /* (as in path_vehicle_plan_begin) */
     if (!g_ha_running) return -1;
     LARGE_INTEGER t0, t, fq; QueryPerformanceCounter(&t0); QueryPerformanceFrequency(&fq);
     /* other routes (missionpath.c driven legs) share the footprint state between slices: this plan's back */
@@ -977,3 +1055,13 @@ void path_regions_step(void) { PROF_BEGIN(t); path_regions_step_body(); PROF_END
 
 /* missionpath.c: the same straight-walk test as the click route (Sarge's width, every pixel) */
 int path_line_free(int x0, int y0, int x1, int y1) { return line_free(x0, y0, x1, y1); }
+
+/* timed (trace stage "path", 2026-11-21): the outermost search only (they call each other) */
+static int g_path_depth;
+#define PATH_TIMED(call) do { if (g_path_depth) return call; g_path_depth++; PROF_BEGIN(t); int r_ = call; PROF_END(t, PR_PATH); g_path_depth--; return r_; } while (0)
+int path_find(int sx, int sy, int tx, int ty, POINT *out, int max) { PATH_TIMED(path_find_body(sx, sy, tx, ty, out, max)); }
+int path_reachable(int sx, int sy, int tx, int ty, int budget_ms) { PATH_TIMED(path_reachable_body(sx, sy, tx, ty, budget_ms)); }
+int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int max) { PATH_TIMED(path_find_vehicle_body(type, sx, sy, tx, ty, out, max)); }
+int path_find_vehicle_begin(int type, int sx, int sy, int tx, int ty, int max) { PATH_TIMED(path_find_vehicle_begin_body(type, sx, sy, tx, ty, max)); }
+int path_find_vehicle_step(double budget_ms, POINT *out, int max) { PATH_TIMED(path_find_vehicle_step_body(budget_ms, out, max)); }
+int path_vehicle_plan_step(double budget_ms) { PATH_TIMED(path_vehicle_plan_step_body(budget_ms)); }

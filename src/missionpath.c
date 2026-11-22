@@ -374,6 +374,8 @@ static void progress(void)
 #define W_HEAP      (WG * WG * 8)          /* lazy pushes: a full-map search filled 2 x cells and stopped as "closed off" */
 #define WIDE_TYPE   0                    /* VEH_SIZES entry used for the wide route (jeep) */
 #define WIDE_CALLS  6                    /* vehicle-planner pieces per walking leg before the fine search */
+#define WIDE_BUDGET_MS 6.0               /* per frame for one wide search (as W_BUDGET_MS) */
+static int g_wide_on;                    /* a sliced wide search is running (reset with every new build) */
 #define NEAR_COST   6.0f                 /* extra cost of a route cell next to an obstacle */
 #define W_LOOKAHEAD 48                   /* cells: the straightening looks at most this far ahead */
 static BYTE g_wfree[WG * WG];            /* 0 unknown, 1 free, 2 blocked - kept for the whole route build */
@@ -856,10 +858,21 @@ static void leg_step(void)
         static int leg_npts, leg_cx, leg_cy;
         if (g_leg_calls == 0) { leg_npts = g_npts; leg_cx = g_cx; leg_cy = g_cy; }   /* the leg's start (to drop the wide try) */
         volatile int n = 0;
+        /* 2026-11-21 (stutter hunt 2): the search runs in slices of WIDE_BUDGET_MS a frame (pathfind.c
+         * path_find_vehicle_begin / _step) - in one call it took 50-105 ms in ONE frame on the user's PC (a via point
+         * the jeep cannot reach: "partial after 25233 tiles"). Same search, same result, spread over frames. */
+        static int wide_key[4];                                 /* the sliced search (g_wide_on): from, to */
+        int key[4] = { g_cx, g_cy, tx, ty };
+        if (g_wide_on && memcmp(key, wide_key, sizeof key)) g_wide_on = 0;   /* another leg / mission meanwhile */
         path_vehicle_crush(0);                                  /* Sarge cannot cross fences a vehicle runs over */
-        if (GUARD_TRY(gd, "mission path, wide (missionpath.c)")) { n = path_find_vehicle(WIDE_TYPE, g_cx, g_cy, tx, ty, out, 96); guard_leave(&gd); }
-        else n = -1;
+        if (GUARD_TRY(gd, "mission path, wide (missionpath.c)")) {
+            if (!g_wide_on) { path_find_vehicle_begin(WIDE_TYPE, g_cx, g_cy, tx, ty, 96); g_wide_on = 1; memcpy(wide_key, key, sizeof key); }
+            n = path_find_vehicle_step(WIDE_BUDGET_MS, out, 96);
+            guard_leave(&gd);
+        } else { n = -1; g_wide_on = 0; }
         path_vehicle_crush(1);
+        if (g_wide_on && n == -1) return;                         /* not done yet: on next frame */
+        g_wide_on = 0;
         g_leg_calls++;
         int before = dist2(g_cx, g_cy, tx, ty);
         if (n > 0) { for (int i = 0; i < n; i++) add(out[i].x, out[i].y, 0, 0); g_cx = out[n - 1].x; g_cy = out[n - 1].y; }
@@ -1135,7 +1148,7 @@ void missionpath_frame(void)
     BYTE *g = GAME, *s = SARGE_ITEM;
     if (g && s && game_in_play() && GAME_TYPE(g) == 0) debug_skip_mission(g);
     if (!g || !s || !game_in_play() || GAME_TYPE(g) != 0) {    /* between missions (Play Again too): built anew */
-        if (!game_in_play()) { g_key = -1; g_phase = 0; g_npts = 0; }
+        if (!game_in_play()) { g_key = -1; g_phase = 0; g_npts = 0; g_wide_on = 0; }
         return;
     }
     if (!g_cfg.mission_path) return;
@@ -1155,7 +1168,7 @@ void missionpath_frame(void)
         }
         g_last_mission = m; g_left_play = 0;
         g_key = key; g_sarge = s; g_phase = 0; g_frames = 0; g_npts = 0; g_nwp = 0; g_leg = 0; g_leg_calls = 0; g_dphase = 0; g_dpieces = 0;
-        g_nmem = 0; g_cur = 0; g_vstage = 0; g_vtry = 0; g_relax = 0;
+        g_nmem = 0; g_cur = 0; g_vstage = 0; g_vtry = 0; g_relax = 0; g_wide_on = 0;
         g_cx = *(short *)(s + 4); g_cy = *(short *)(s + 6);
         memset(g_wfree, 0, sizeof g_wfree); memset(g_wclr, 0, sizeof g_wclr); g_wphase = 0;   /* the cell answers belong to this map */
         add(g_cx, g_cy, 0, 0);

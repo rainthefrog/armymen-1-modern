@@ -634,8 +634,10 @@ static void release_textures(void)
     g_tex_w = g_tex_h = 0;
 }
 
+static int g_refs_shadow_ok;                      /* refs_upload: g_refs_shadow mirrors the g_refs texture */
 static void release_world_inputs(void)
 {
+    g_refs_shadow_ok = 0;
     RELEASE(g_refs_srv, ID3D11ShaderResourceView); RELEASE(g_refs, ID3D11Texture2D);
     RELEASE(g_fbytes_srv, ID3D11ShaderResourceView); RELEASE(g_fbytes, ID3D11Texture2D);
     RELEASE(g_ents_srv, ID3D11ShaderResourceView); RELEASE(g_ents, ID3D11Texture2D);
@@ -658,8 +660,59 @@ static ID3D11BlendState *g_blend_pm;
 static int g_ovl_w, g_ovl_h;
 typedef struct { ID3D11Texture2D *tex; ID3D11ShaderResourceView *srv; int w, h; } Layer;   /* draw_layer */
 static Layer g_radio_layer;                                                              /* radio.c messages */
+/* ---------------------------------------------------------------- GPU time of a frame (2026-11-21, stutter hunt 2)
+ * D3D11 timestamp queries around gpu_draw's passes: what the graphics card itself spends on our frame (the trace's
+ * "gpu" is only the CPU time of SUBMITTING them). Read back a few frames later without waiting (GetData with
+ * DONOTFLUSH); g_gt_gpu_ms = the newest finished one, -1 = none (no queries, or a disjoint interval). The present
+ * itself and the desktop compositor are not inside it. */
+#define GT_RING 4
+static ID3D11Query *g_tq_dis[GT_RING], *g_tq_a[GT_RING], *g_tq_b[GT_RING];
+static int g_tq_put, g_tq_get, g_tq_off;
+volatile double g_gt_gpu_ms = -1;
+static void gtimer_release(void)
+{
+    for (int i = 0; i < GT_RING; i++) { RELEASE(g_tq_dis[i], ID3D11Query); RELEASE(g_tq_a[i], ID3D11Query); RELEASE(g_tq_b[i], ID3D11Query); }
+    g_tq_put = g_tq_get = 0; g_tq_off = 0; g_gt_gpu_ms = -1;
+}
+static void gtimer_collect(ID3D11DeviceContext *ctx)
+{
+    while (g_tq_get < g_tq_put) {
+        int i = g_tq_get % GT_RING;
+        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj; UINT64 a, b;
+        if (ID3D11DeviceContext_GetData(ctx, (ID3D11Asynchronous *)g_tq_dis[i], &dj, sizeof dj, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) return;
+        if (ID3D11DeviceContext_GetData(ctx, (ID3D11Asynchronous *)g_tq_a[i], &a, sizeof a, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) return;
+        if (ID3D11DeviceContext_GetData(ctx, (ID3D11Asynchronous *)g_tq_b[i], &b, sizeof b, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) return;
+        g_gt_gpu_ms = !dj.Disjoint && dj.Frequency && b >= a ? (double)(b - a) * 1000.0 / (double)dj.Frequency : -1;
+        g_tq_get++;
+    }
+}
+static void gtimer_begin(ID3D11Device *dev, ID3D11DeviceContext *ctx)
+{
+    if (g_tq_off) return;
+    gtimer_collect(ctx);
+    if (g_tq_put - g_tq_get >= GT_RING) return;            /* all in flight: this frame is not timed */
+    int i = g_tq_put % GT_RING;
+    if (!g_tq_dis[i]) {
+        D3D11_QUERY_DESC qd = { D3D11_QUERY_TIMESTAMP_DISJOINT, 0 }, qt = { D3D11_QUERY_TIMESTAMP, 0 };
+        if (FAILED(ID3D11Device_CreateQuery(dev, &qd, &g_tq_dis[i])) || FAILED(ID3D11Device_CreateQuery(dev, &qt, &g_tq_a[i])) ||
+            FAILED(ID3D11Device_CreateQuery(dev, &qt, &g_tq_b[i]))) { mlog("gpu: no timestamp queries - the trace has no GPU time"); gtimer_release(); g_tq_off = 1; return; }
+    }
+    ID3D11DeviceContext_Begin(ctx, (ID3D11Asynchronous *)g_tq_dis[i]);
+    ID3D11DeviceContext_End(ctx, (ID3D11Asynchronous *)g_tq_a[i]);
+}
+static void gtimer_end(ID3D11DeviceContext *ctx)
+{
+    if (g_tq_off || g_tq_put - g_tq_get >= GT_RING) return;
+    int i = g_tq_put % GT_RING;
+    if (!g_tq_dis[i]) return;
+    ID3D11DeviceContext_End(ctx, (ID3D11Asynchronous *)g_tq_b[i]);
+    ID3D11DeviceContext_End(ctx, (ID3D11Asynchronous *)g_tq_dis[i]);
+    g_tq_put++;
+}
+
 void gpu_release(void)
 {
+    gtimer_release();
     release_textures();
     RELEASE(g_ps_overlay, ID3D11PixelShader);
     RELEASE(g_imask_srv, ID3D11ShaderResourceView);
@@ -1027,8 +1080,72 @@ static int make_tex(ID3D11Device *dev, int w, int h, DXGI_FORMAT f, int rt, ID3D
  * Uploads per frame: the map's CHANGED rectangles only (g_maprefs stays on the GPU), the screen's own
  * references inside the override box only, the override mask and the shown bytes (1 byte per pixel). */
 /* timing trace (present.c): where the display thread's gpu submission goes, last frame (ms / pixels) */
-volatile double g_gt_wget, g_gt_wup, g_gt_atlas; volatile int g_gt_dirty_px, g_gt_move_px;
+volatile double g_gt_wget, g_gt_wup, g_gt_atlas; volatile int g_gt_dirty_px, g_gt_move_px, g_gt_up_kb;   /* up_kb: KB handed to UpdateSubresource in draw_world */
 static double gt_now(void) { static LARGE_INTEGER f; LARGE_INTEGER t; if (!f.QuadPart) QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t); return (double)t.QuadPart * 1000.0 / (double)f.QuadPart; }
+/* The screen's own references (2026-11-21, stutter hunt 2). Uploaded was the whole override box every frame - with
+ * the HUD at the bottom and anything drawn near the top that is the whole screen: 1024 x 540 x 8 = 4.3 MB a frame
+ * (Wine trace upKB ~4800 with the mask), and the user's trace had single uploads stalling 10-22 ms. The shader reads
+ * them only where the override mask is 1 or 3 (ref_at), so now: per row the span of such pixels, compared with a
+ * CPU copy of what the texture holds (g_refs_shadow), and only rows that differ go up, in bands of consecutive rows.
+ * Standing still (HUD, parked objects) almost nothing is uploaded; scrolling still uploads what moved.
+ * [display] hd_refs_diff=0: the whole box every frame (the old way). Returns the bytes uploaded. */
+static uint64_t *g_refs_shadow; static size_t g_refs_shadow_cap;
+static size_t refs_upload(ID3D11DeviceContext *ctx, const HdWorldIn *in, RECT ob, int w, int h)
+{
+    static int diff = -1;
+    if (diff < 0) diff = GetPrivateProfileIntA("display", "hd_refs_diff", 1, mod_ini_path()) != 0;
+    const BYTE *refs = (const BYTE *)in->screen_refs;
+    size_t pitch = (size_t)in->screen_pitch, n = (size_t)w * h;
+    if (diff && pitch == (size_t)w * 8 && n > g_refs_shadow_cap) {
+        free(g_refs_shadow); g_refs_shadow = malloc(n * 8); g_refs_shadow_cap = g_refs_shadow ? n : 0; g_refs_shadow_ok = 0;
+    }
+    if (!diff || pitch != (size_t)w * 8 || !g_refs_shadow) {           /* the old way: the whole box */
+        D3D11_BOX b = { (UINT)ob.left, (UINT)ob.top, 0, (UINT)ob.right, (UINT)ob.bottom, 1 };
+        ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_refs, 0, &b, refs + (size_t)ob.top * pitch + (size_t)ob.left * 8, (UINT)pitch, 0);
+        g_refs_shadow_ok = 0;
+        return (size_t)(ob.right - ob.left) * (ob.bottom - ob.top) * 8;
+    }
+    if (!g_refs_shadow_ok) {                              /* first frame (new texture): all of it, the copy = the texture */
+        ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_refs, 0, NULL, refs, (UINT)pitch, 0);
+        memcpy(g_refs_shadow, refs, n * 8);
+        g_refs_shadow_ok = 1;
+        return n * 8;
+    }
+    #define RB_MAX 48
+    RECT band[RB_MAX]; int nb = 0;
+    const uint64_t *cur = (const uint64_t *)refs;
+    for (int y = ob.top; y < ob.bottom; y++) {
+        const BYTE *ov = in->over + (size_t)y * w;
+        int a = ob.left, e = ob.right;
+        while (a < e && ov[a] != 1 && ov[a] != 3) a++;   /* the span the shader reads here */
+        while (e > a && ov[e - 1] != 1 && ov[e - 1] != 3) e--;
+        if (a >= e) continue;
+        size_t o = (size_t)y * w + a;
+        if (!memcmp(g_refs_shadow + o, cur + o, (size_t)(e - a) * 8)) continue;   /* the texture has them already */
+        if (nb && band[nb - 1].bottom == y) {                                     /* on from the band above */
+            if (a < band[nb - 1].left) band[nb - 1].left = a;
+            if (e > band[nb - 1].right) band[nb - 1].right = e;
+            band[nb - 1].bottom = y + 1;
+        } else if (nb < RB_MAX) band[nb++] = (RECT){ a, y, e, y + 1 };
+        else {                                                                    /* full: the last band reaches down */
+            RECT *r = &band[nb - 1];
+            if (a < r->left) r->left = a;
+            if (e > r->right) r->right = e;
+            r->bottom = y + 1;
+        }
+    }
+    #undef RB_MAX
+    size_t bytes = 0;
+    for (int i = 0; i < nb; i++) {
+        RECT r = band[i];
+        D3D11_BOX b = { (UINT)r.left, (UINT)r.top, 0, (UINT)r.right, (UINT)r.bottom, 1 };
+        ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_refs, 0, &b, refs + (size_t)r.top * pitch + (size_t)r.left * 8, (UINT)pitch, 0);
+        for (int y = r.top; y < r.bottom; y++) memcpy(g_refs_shadow + (size_t)y * w + r.left, cur + (size_t)y * w + r.left, (size_t)(r.right - r.left) * 8);
+        bytes += (size_t)(r.right - r.left) * (r.bottom - r.top) * 8;
+    }
+    return bytes;
+}
+
 static void draw_world(ID3D11Device *dev, ID3D11DeviceContext *ctx, Params *p, int w, int h, RECT dest, ID3D11RenderTargetView *rtv)
 {
     static HdWorldIn in;
@@ -1070,6 +1187,7 @@ static void draw_world(ID3D11Device *dev, ID3D11DeviceContext *ctx, Params *p, i
         in.nmoves = 0;
     }
     double tu0 = gt_now();
+    size_t upb = 0;                                       /* bytes uploaded (trace "upKB") */
     int rows = (in.nents + 255) / 256;
     if (!g_ents || rows != g_ents_rows) {
         RELEASE(g_ents_srv, ID3D11ShaderResourceView); RELEASE(g_ents, ID3D11Texture2D);
@@ -1079,6 +1197,7 @@ static void draw_world(ID3D11Device *dev, ID3D11DeviceContext *ctx, Params *p, i
     }
     if (ents) {                                           /* changed: whole rows (the last one partly) */
         int full = in.nents / 256, rest = in.nents % 256;
+        upb += (size_t)in.nents * 8;
         if (full) { D3D11_BOX b = { 0, 0, 0, 256, (UINT)full, 1 }; ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_ents, 0, &b, ents, 256 * 8, 0); }
         if (rest) { D3D11_BOX b = { 0, (UINT)full, 0, (UINT)rest, (UINT)full + 1, 1 }; ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_ents, 0, &b, ents + (size_t)full * 512, 256 * 8, 0); }
     }
@@ -1100,13 +1219,11 @@ static void draw_world(ID3D11Device *dev, ID3D11DeviceContext *ctx, Params *p, i
         RECT r = in.dirty[i];
         D3D11_BOX b = { (UINT)r.left, (UINT)r.top, 0, (UINT)r.right, (UINT)r.bottom, 1 };
         ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_maprefs, 0, &b, in.dirty_refs[i], (UINT)(r.right - r.left) * 8, 0);
+        upb += (size_t)(r.right - r.left) * (r.bottom - r.top) * 8;
     }
     RECT ob = in.over_box, vr = { 0, 0, w, h };
-    if (IntersectRect(&ob, &ob, &vr)) {                   /* the screen's own references: drawn-over parts only */
-        D3D11_BOX b = { (UINT)ob.left, (UINT)ob.top, 0, (UINT)ob.right, (UINT)ob.bottom, 1 };
-        const BYTE *src = (const BYTE *)in.screen_refs + (size_t)ob.top * in.screen_pitch + (size_t)ob.left * 8;
-        ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_refs, 0, &b, src, (UINT)in.screen_pitch, 0);
-    }
+    if (IntersectRect(&ob, &ob, &vr))                     /* the screen's own references: drawn-over parts only */
+        upb += refs_upload(ctx, &in, ob, w, h);
     {   /* override mask: only where it was set this frame or the last (elsewhere the texture stays 0) */
         RECT cur = in.over_box, up;
         if (IsRectEmpty(&cur)) SetRectEmpty(&cur);
@@ -1114,11 +1231,13 @@ static void draw_world(ID3D11Device *dev, ID3D11DeviceContext *ctx, Params *p, i
         if (IntersectRect(&up, &up, &vr)) {
             D3D11_BOX b = { (UINT)up.left, (UINT)up.top, 0, (UINT)up.right, (UINT)up.bottom, 1 };
             ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_over, 0, &b, in.over + (size_t)up.top * w + up.left, (UINT)w, 0);
+            upb += (size_t)(up.right - up.left) * (up.bottom - up.top);
         }
         g_over_prev = cur;
     }
-    if (!g_idx_ok) ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_fbytes, 0, NULL, in.bytes, (UINT)w, 0);
+    if (!g_idx_ok) { ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)g_fbytes, 0, NULL, in.bytes, (UINT)w, 0); upb += (size_t)w * h; }
     g_gt_wup = gt_now() - tu0;
+    g_gt_up_kb = (int)(upb >> 10);
     { int px = 0; for (int i = 0; i < in.ndirty; i++) px += (in.dirty[i].right - in.dirty[i].left) * (in.dirty[i].bottom - in.dirty[i].top); g_gt_dirty_px = px; px = 0; for (int i = 0; i < in.nmoves; i++) px += (in.move_dst[i].right - in.move_dst[i].left) * (in.move_dst[i].bottom - in.move_dst[i].top); g_gt_move_px = px; }
     memset(p->lk, 0, sizeof p->lk); memset(p->lo, 0, sizeof p->lo);
     int nl = g_maprefs ? in.nlinks : 0;
@@ -1208,6 +1327,7 @@ int gpu_draw(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *bb, i
              int sub_on, float subx, float suby, float zoom, float zcx, float zcy, const TargetZones *zones)
 {
     if (g_state <= 0 || !ensure_texture(dev, w, h)) return 0;
+    gtimer_begin(dev, ctx);                                /* GPU time of this frame (trace "gpums") */
     { double ta = gt_now(); hdworld_upload(ctx); g_gt_atlas = gt_now() - ta; }
     ID3D11RenderTargetView *rtv = NULL;
     if (FAILED(ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource *)bb, NULL, &rtv))) return 0;
@@ -1310,6 +1430,7 @@ int gpu_draw(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *bb, i
     { ID3D11ShaderResourceView *none = NULL; ID3D11DeviceContext_PSSetShaderResources(ctx, 19, 1, &none); }
     if (hd_n > 0) draw_sprites(dev, ctx, &p, w, h, dest, hd_n, hd_ops, hd_idmap);
     if (!video) draw_overlay(dev, ctx, dest, w, h);                /* menu labels (menutext.c), also over a paused mission */
+    gtimer_end(ctx);
     ID3D11RenderTargetView_Release(rtv);
     return 1;
 }

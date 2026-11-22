@@ -77,8 +77,7 @@ static void shot_track(BYTE *proj, const SPoint *p, int stopped);
 static const SPoint *am2_ground(BYTE *proj, const SPoint *p, int *raise_to);
 static int g_am2_height = NO_HEIGHT;                /* height_rules=am2: the round's height (aimed line) during this test */
 
-int __fastcall bullets_collide(void *point, void **hit)
-{
+static int __fastcall bullets_collide_px(void *point, void **hit) {
     BYTE *pr = PROJECTILE;
     if (pr && *(DWORD *)(pr + 0x78)) note_fired(*(DWORD *)(pr + 0x78));
     const SPoint *p = point;
@@ -93,7 +92,7 @@ int __fastcall bullets_collide(void *point, void **hit)
     if (pr && an) note_threat(pr, p, 0);
     const SPoint *saved = g_point;
     g_point = p;
-    int r = bullets_collide_original((void *)p, hit);
+    int r = PX_CALL(bullets_collide_original((void *)p, hit));
     if (!r) r = leg_retry(p, hit);
     g_point = saved;
     if (raise != NO_HEIGHT) { ANIM_Z(an) = z0; g_true_height = NO_HEIGHT; }
@@ -101,6 +100,7 @@ int __fastcall bullets_collide(void *point, void **hit)
     if (pr && g_cfg.log >= 2) shot_track(pr, p, r ? (*hit ? 2 : 1) : 0);
     return r;
 }
+int __fastcall bullets_collide(void *point, void **hit) { PX_BEGIN(px); int r_ = bullets_collide_px(point, hit); PX_END(px, PR_BULLETS); return r_; }   /* timed: stage PR_BULLETS (exclusive, common.h) */
 
 #define GRENADE_WEAPON 2                 /* game table ARMY_GRENADE */
 static int is_bullet(int weapon)
@@ -339,23 +339,23 @@ static int blocks_tracer(BYTE *obj)
            c == PRISON_CAMP || c == BUILDING || c == PILL_BOX || c == POWER_PLANT || c == RADAR_BUILDING;
 }
 
-int __fastcall bullets_hit_object(BYTE *obj, int height)
-{
+static int __fastcall bullets_hit_object_px(BYTE *obj, int height) {
     static int faults;                                  /* guarded faults in the rules: after 3 the game's rules only */
     BYTE *proj = PROJECTILE;
     int w = proj ? PROJ_WEAPON(proj) : 0, off = (g_cfg.height_rules == HEIGHTS_STANCE || g_cfg.height_rules == HEIGHTS_AM2) && direct_fire(w);
     if ((!g_cfg.shoot_over && !g_cfg.corner_shots && !off) || faults >= 3 || !obj || !proj || !g_point || (!is_bullet(w) && w != GRENADE_WEAPON && !off))
-        return bullets_hit_object_original(obj, height);
+        return PX_CALL(bullets_hit_object_original(obj, height));
     volatile int rule = RULE_GAME;
     Guard g;
     if (GUARD_TRY(g, "bullet rules (bullets.c)")) { rule = bullet_rule(obj, proj); guard_leave(&g); }
     else if (++faults >= 3) mlog("bullets: the mod's bullet rules are off for this session (3 guarded faults)");
     if (rule == RULE_PASS) return 0;
     if (rule == RULE_STOP) return 1;
-    if (off && blocks_tracer(obj)) return bullets_hit_object_original(obj, -0x7fff);
-    if (off && g_am2_height != NO_HEIGHT) return bullets_hit_object_original(obj, g_am2_height);   /* am2: low objects by the aimed height */
-    return bullets_hit_object_original(obj, height);
+    if (off && blocks_tracer(obj)) return PX_CALL(bullets_hit_object_original(obj, -0x7fff));
+    if (off && g_am2_height != NO_HEIGHT) return PX_CALL(bullets_hit_object_original(obj, g_am2_height));   /* am2: low objects by the aimed height */
+    return PX_CALL(bullets_hit_object_original(obj, height));
 }
+int __fastcall bullets_hit_object(BYTE *obj, int height) { PX_BEGIN(px); int r_ = bullets_hit_object_px(obj, height); PX_END(px, PR_BULLETS); return r_; }   /* timed: stage PR_BULLETS (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- shooting downhill
  * StopsMissile (0x435c80, __fastcall ecx = item, edx = projectile, stack height, distance, ret 8)
@@ -391,8 +391,7 @@ static void note_for_modern(BYTE *item, BYTE *proj)
 
 static int direct_fire(int weapon) { return is_bullet(weapon) || weapon == 4 || weapon == 6; }
 
-int __fastcall bullets_stops(BYTE *item, BYTE *proj, int height, int distance)
-{
+static int __fastcall bullets_stops_px(BYTE *item, BYTE *proj, int height, int distance) {
     if (g_true_height != NO_HEIGHT) height = g_true_height;     /* vehicle_hills / flat_ground raised ANIM_Z only for the ground test */
     /* 2026-11-20 (user: elevation rules are hard "without visual queues" -> "Both"): every army's direct fire hits what
      * its tracer crosses (was the player's only); the ground still stops shots (cliffs, ridges: modern.c shows it).
@@ -405,10 +404,11 @@ int __fastcall bullets_stops(BYTE *item, BYTE *proj, int height, int distance)
             else { int h = GET_ITEM_HEIGHT(item); if (height > h) height = h; }
         }
     }
-    int stops = bullets_stops_original(item, proj, height, distance);
+    int stops = PX_CALL(bullets_stops_original(item, proj, height, distance));
     if (stops && item && proj) { note_for_modern(item, proj); if (item == SARGE_UNIT) note_threat(proj, NULL, 1); }
     return stops;
 }
+int __fastcall bullets_stops(BYTE *item, BYTE *proj, int height, int distance) { PX_BEGIN(px); int r_ = bullets_stops_px(item, proj, height, distance); PX_END(px, PR_BULLETS); return r_; }   /* timed: stage PR_BULLETS (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- vehicles on hills (group 4, [gameplay] height_rules = modded)
  * 2026-11-20, user: "all vehicles should be able to shoot enemies on 'higher' or 'lower' [ground] without issue. was
@@ -543,7 +543,7 @@ static int leg_retry(const SPoint *p, void **hit)
     if (!found) return 0;
     const SPoint *saved = g_point;                           /* the game's own test, at his torso (not guarded) */
     g_point = &c.body;
-    int r = bullets_collide_original(&c.body, hit);
+    int r = PX_CALL(bullets_collide_original(&c.body, hit));
     g_point = saved;
     return r;
 }
@@ -961,8 +961,7 @@ static int rear_hit(BYTE *item, int *diff)
     *diff = d;
     return d < REAR_ARC || d > 0x100 - REAR_ARC;
 }
-void __fastcall bullets_item_damage(BYTE *item, int damage, int type, void *at, DWORD from)
-{
+static void __fastcall bullets_item_damage_px(BYTE *item, int damage, int type, void *at, DWORD from) {
     if (damage > 0) aware_note_damage(item, from);     /* aware.c: splash / vehicle hits by Sarge count as "hit by Sarge" */
     int mode = g_cfg.height_rules;
     if ((mode == HEIGHTS_STANCE || mode == HEIGHTS_AM2) && item && damage > 0) {
@@ -981,24 +980,26 @@ void __fastcall bullets_item_damage(BYTE *item, int damage, int type, void *at, 
             damage = d;
         }
     }
-    bullets_item_damage_original(item, damage, type, at, from);
+    PX_GAME(bullets_item_damage_original(item, damage, type, at, from));
 }
+void __fastcall bullets_item_damage(BYTE *item, int damage, int type, void *at, DWORD from) { PX_BEGIN(px); bullets_item_damage_px(item, damage, type, at, from); PX_END(px, PR_BULLETS); }   /* timed: stage PR_BULLETS (exclusive, common.h) */
 
 typedef int (__fastcall *PoseFn)(void *avatar);
 #define GET_POSE          ((PoseFn)0x43a140)       /* avatar (Sarge +0x268, trooper +0x26c) -> 0xb kneel 0xc stand 0xd prone */
-int __fastcall bullets_damage_pose(void *avatar)
-{
-    int p = GET_POSE(avatar);
+static int __fastcall bullets_damage_pose_px(void *avatar) {
+    int p = PX_CALL(GET_POSE(avatar));
     return (g_cfg.height_rules == HEIGHTS_STANCE || g_cfg.height_rules == HEIGHTS_AM2) && p == POSE_PRONE ? POSE_STAND : p;
 }
+int __fastcall bullets_damage_pose(void *avatar) { PX_BEGIN(px); int r_ = bullets_damage_pose_px(avatar); PX_END(px, PR_BULLETS); return r_; }   /* timed: stage PR_BULLETS (exclusive, common.h) */
 
 typedef int (__fastcall *GameDoubleFn)(int damage, int dir, BYTE *item);
 #define GAME_DIRECTION_X2 ((GameDoubleFn)0x432050)
-int __fastcall bullets_game_double(int damage, int dir, BYTE *item)   /* call 0x435b10: ecx damage, edx dir, stack item; ret 4 */
+static int __fastcall bullets_game_double_px(int damage, int dir, BYTE *item)   /* call 0x435b10: ecx damage, edx dir, stack item; ret 4 */
 {
     if (g_cfg.height_rules == HEIGHTS_STANCE || g_cfg.height_rules == HEIGHTS_AM2) return damage;   /* rear x2 instead */
-    return GAME_DIRECTION_X2(damage, dir, item);
+    return PX_CALL(GAME_DIRECTION_X2(damage, dir, item));
 }
+int __fastcall bullets_game_double(int damage, int dir, BYTE *item) { PX_BEGIN(px); int r_ = bullets_game_double_px(damage, dir, item); PX_END(px, PR_BULLETS); return r_; }   /* timed: stage PR_BULLETS (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- prone is harder to spot (heights off)
  * ItemUpdateSeen 0x44a360 (__fastcall ecx = viewer, edx = item looked at) marks an item seen by the viewer's army
@@ -1013,8 +1014,7 @@ int __fastcall bullets_game_double(int damage, int dir, BYTE *item)   /* call 0x
 #define PRONE_SIGHT_PCT   60
 typedef int (__fastcall *CanSeeFn)(BYTE *viewer, unsigned tile);
 #define CAN_SEE_FROM_ITEM ((CanSeeFn)0x44af10)
-int __cdecl bullets_can_see(BYTE *viewer, unsigned tile, BYTE *target)
-{
+static int __cdecl bullets_can_see_px(BYTE *viewer, unsigned tile, BYTE *target) {
     if (g_cfg.height_rules == HEIGHTS_STANCE && viewer && target && MAP_TILES_W) {
         int t = UID_RAW_TYPE(*(DWORD *)target);
         if ((t == 5 || t == 6) && *(short *)(target + 0x1c) > 0 && item_prone(target)) {
@@ -1031,8 +1031,9 @@ int __cdecl bullets_can_see(BYTE *viewer, unsigned tile, BYTE *target)
             }
         }
     }
-    return aware_filter_seen(viewer, target, CAN_SEE_FROM_ITEM(viewer, tile));   /* aware.c: only units that noticed Sarge */
+    return aware_filter_seen(viewer, target, PX_CALL(CAN_SEE_FROM_ITEM(viewer, tile)));   /* aware.c: only units that noticed Sarge */
 }
+int __cdecl bullets_can_see(BYTE *viewer, unsigned tile, BYTE *target) { PX_BEGIN(px); int r_ = bullets_can_see_px(viewer, tile, target); PX_END(px, PR_BULLETS); return r_; }   /* timed: stage PR_BULLETS (exclusive, common.h) */
 __asm__(".globl _bullets_sight_stub\n"
         "_bullets_sight_stub:\n"                  /* at 0x44a47d: ecx viewer, edx tile, esi the item looked at */
         "    push %esi\n"

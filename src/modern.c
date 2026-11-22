@@ -932,7 +932,8 @@ static void modern_draw_body(Surf *b)
 
     g_nbarred = 0;
     static double mt[6]; static DWORD mt_at; LARGE_INTEGER q0, q1, qf; QueryPerformanceFrequency(&qf);
-    #define MT(i, code) do { QueryPerformanceCounter(&q0); code; QueryPerformanceCounter(&q1); mt[i] += (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart; } while (0)
+    static const int MT_STAGE[4] = { PR_O_BARS, PR_O_BARS, PR_O_MPATH, PR_O_MDRAW };   /* the trace's stages (present.c) */
+    #define MT(i, code) do { QueryPerformanceCounter(&q0); code; QueryPerformanceCounter(&q1); mt[i] += (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart; prof_add(MT_STAGE[i], q1.QuadPart - q0.QuadPart); } while (0)
     if (modern_on(MOD_HEALTH_BARS)) { MT(0, each_enemy(health_bar)); MT(1, target_health_bars()); }
     if (g_cfg.ally_health_bars) { allies_each(health_bar); ally_vehicles(health_bar); }   /* allies.c (2026-11-21): the player's hurt soldiers, same pips; + vehicles */
     {   /* a captured enemy vehicle: a green driver in the seat (2026-11-20, user: "just drawing the driver in there") -
@@ -1058,7 +1059,7 @@ static void modern_draw_body(Surf *b)
             }
             g_nunder = 0;
             g_route = 0;
-            QueryPerformanceCounter(&q1); mt[3] += (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart;
+            QueryPerformanceCounter(&q1); mt[3] += (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart; prof_add(PR_O_MDRAW, q1.QuadPart - q0.QuadPart);
             for (int i = 1; i < n; i++) {               /* the numbers: on top (a pad inside a building hid them) */
                 if (!mp[i].wp) continue;
                 int wx, wy; to_screen(mp[i].x, mp[i].y, &wx, &wy);

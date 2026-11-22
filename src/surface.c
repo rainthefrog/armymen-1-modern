@@ -233,22 +233,30 @@ static void log_wide_blit(const char *kind, const Surf *d, const Surf *s, const 
          (long)s->w, (long)s->h, sr->left, sr->top, sr->right, sr->bottom, d, d->w, d->h, x, y);
 }
 
-static HRESULT WINAPI s_blt(void *p, LPRECT dr, void *src, LPRECT sr, DWORD flags, LPDDBLTFX fx)
+static HRESULT s_blt_body(void *p, LPRECT dr, void *src, LPRECT sr, DWORD flags, LPDDBLTFX fx, void *caller)
 {
     if (src) { RECT r = sr ? *sr : (RECT){ 0, 0, S(src)->w, S(src)->h };
-               log_wide_blit("Blt", S(p), S(src), &r, dr ? dr->left : 0, dr ? dr->top : 0, __builtin_return_address(0)); }
-    return do_blt(S(p), dr, S(src), sr, flags, fx, __builtin_return_address(0));
+               log_wide_blit("Blt", S(p), S(src), &r, dr ? dr->left : 0, dr ? dr->top : 0, caller); }
+    return do_blt(S(p), dr, S(src), sr, flags, fx, caller);
+}
+/* timed (trace stage "dd", 2026-11-21): the game's blits between its own surfaces - our DirectDraw copy incl. the
+ * hdworld reference bookkeeping (refs). Not the ones onto the screen (a frame end there waits for the display). */
+static HRESULT WINAPI s_blt(void *p, LPRECT dr, void *src, LPRECT sr, DWORD flags, LPDDBLTFX fx)
+{
+    void *caller = __builtin_return_address(0);
+    if (S(p)->is_primary) return s_blt_body(p, dr, src, sr, flags, fx, caller);
+    PX_BEGIN(px); HRESULT r = s_blt_body(p, dr, src, sr, flags, fx, caller); PX_END(px, PR_DD); return r;
 }
 static HRESULT WINAPI s_blt_batch(void *p, LPDDBLTBATCH b, DWORD n, DWORD f) { return DDERR_UNSUPPORTED; }
 
-static HRESULT WINAPI s_blt_fast(void *p, DWORD x, DWORD y, void *src, LPRECT psr, DWORD flags)
+static HRESULT s_blt_fast_body(void *p, DWORD x, DWORD y, void *src, LPRECT psr, DWORD flags, void *caller)
 {
     Surf *d = S(p), *s = S(src);
     if (!s) return DDERR_INVALIDPARAMS;
     RECT sr = { 0, 0, s->w, s->h };
     if (psr) sr = *psr;
     RECT dr = { (LONG)x, (LONG)y, (LONG)x + (sr.right - sr.left), (LONG)y + (sr.bottom - sr.top) };
-    log_wide_blit("BltFast", d, s, &sr, x, y, __builtin_return_address(0));
+    log_wide_blit("BltFast", d, s, &sr, x, y, caller);
     if (d->is_primary) {                             /* windowed: desktop -> game pixels */
         RECT g = screen_to_game(d, dr);
         OffsetRect(&dr, g.left - dr.left, g.top - dr.top);
@@ -265,6 +273,12 @@ static HRESULT WINAPI s_blt_fast(void *p, DWORD x, DWORD y, void *src, LPRECT ps
     unlock_if_primary(d);
     after_write(d, 0);
     return DD_OK;
+}
+static HRESULT WINAPI s_blt_fast(void *p, DWORD x, DWORD y, void *src, LPRECT psr, DWORD flags)   /* timed like s_blt */
+{
+    void *caller = __builtin_return_address(0);
+    if (S(p)->is_primary) return s_blt_fast_body(p, x, y, src, psr, flags, caller);
+    PX_BEGIN(px); HRESULT r = s_blt_fast_body(p, x, y, src, psr, flags, caller); PX_END(px, PR_DD); return r;
 }
 
 static HRESULT WINAPI s_delete_attached(void *p, DWORD f, void *a) { return DDERR_UNSUPPORTED; }

@@ -13,6 +13,7 @@
 #include <ddraw.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <intrin.h>                    /* __rdtsc (PX_BEGIN / PX_END) */
 
 typedef struct DDraw DDraw;
 typedef struct Surf Surf;
@@ -406,6 +407,8 @@ int path_find(int sx, int sy, int tx, int ty, POINT *out, int max);   /* pathfin
 int path_reachable(int sx, int sy, int tx, int ty, int budget_ms);   /* pathfind.c: 1 yes, 0 no, -1 undecided */
 void path_regions_step(void);           /* pathfind.c: one slice of the whole-map walkable areas (per gameplay frame) */
 int path_find_vehicle(int type, int sx, int sy, int tx, int ty, POINT *out, int max);   /* pathfind.c: route by the vehicle footprint */
+int path_find_vehicle_begin(int type, int sx, int sy, int tx, int ty, int max);   /* the same search in slices (2026-11-21): */
+int path_find_vehicle_step(double budget_ms, POINT *out, int max);                /* -1 = not done yet (next frame), else as path_find_vehicle */
 void path_vehicle_crush(int on);                    /* pathfind.c: 1 (default) fence / bush tiles are driven over; 0 for walking routes */
 /* vehicles.c / pathfind.c (2026-11-20): vehicle routes with reversing, smooth turret, getting unstuck */
 typedef struct { short x, y, facing; signed char dir; } VehPose;   /* dir 1 forward, -1 backward, 0 turn on the spot */
@@ -699,12 +702,35 @@ int objectives_marks(ObjMark *out, int max);  /* objectives.c: mission targets t
 int view_is_video(void);                    /* view.c */
 
 /* ---- game-thread profile (present.c prof_add; printed per frame by the timing trace) */
-/* PR_H_*: parts of PR_HUD (2026-11-20, stutter hunt): weapons, modern (+ mission path), objectives (+ zones, interior), corners, minimap, rest */
+/* PR_H_*: parts of PR_HUD (2026-11-20, stutter hunt): weapons, modern (+ mission path), objectives (+ zones, interior), corners, minimap, rest
+ * 2026-11-21 (stutter hunt 2): parts of PR_CONTROLS (c.keys = the game's own keyboard dispatcher, c.apply = modern
+ * controls, c.gp = gameplay_frame, c.mod = modern_frame incl. aware_frame), parts of PR_OVERLAY (o.bars = health bars,
+ * o.mpath = mission path build, o.mdraw = its drawing), path = our path searches (nested wherever they run), and
+ * the gameplay hooks the game calls from its own update (aware / patrol / bullets / veh / mines / allies): those
+ * are EXCLUSIVE - the game's original functions they call (PX_GAME) are not counted, so they say what OUR code
+ * costs. Top-level time (a stage not inside another one) is summed so the trace can print "rest" = work minus
+ * all of ours = the game's own code. */
 enum { PR_CONTROLS, PR_REGIONS, PR_CAMERA, PR_FIELD, PR_CELLS, PR_BLIT, PR_GHOST, PR_HUD, PR_OVERLAY, PR_SHOWN,
-       PR_H_WEAP, PR_H_MODERN, PR_H_OBJ, PR_H_CORNERS, PR_H_MINIMAP, PR_H_REST, PR_N };
+       PR_H_WEAP, PR_H_MODERN, PR_H_OBJ, PR_H_CORNERS, PR_H_MINIMAP, PR_H_REST,
+       PR_C_KEYS, PR_C_APPLY, PR_C_GAMEPLAY, PR_C_MODERN, PR_O_BARS, PR_O_MPATH, PR_O_MDRAW, PR_PATH,
+       PR_AWARE, PR_PATROL, PR_BULLETS, PR_VEH, PR_MINES, PR_ALLIES, PR_CHOOKS, PR_UI, PR_DD, PR_N };
+int present_thread_priority(void);               /* present.c: [display] thread_priority (1 = game / display threads raised) */
 void prof_add(int k, LONGLONG ticks);
-#define PROF_BEGIN(v) LARGE_INTEGER v; QueryPerformanceCounter(&v)
-#define PROF_END(v, k) do { LARGE_INTEGER pr_b_; QueryPerformanceCounter(&pr_b_); prof_add(k, pr_b_.QuadPart - v.QuadPart); } while (0)
+void prof_add_top(LONGLONG ticks);                 /* QPC ticks of a top-level stage (present.c) */
+extern int g_prof_depth;                           /* game thread: open PROF stages */
+extern unsigned long long g_px_child;              /* cycles spent in children of the open PX stage (below) */
+/* (a PROF stage inside a PX stage is a child of it: its cycles are added to g_px_child) */
+#define PROF_BEGIN(v) LARGE_INTEGER v; QueryPerformanceCounter(&v); unsigned long long v##_c = __rdtsc(); g_prof_depth++
+#define PROF_END(v, k) do { LARGE_INTEGER pr_b_; QueryPerformanceCounter(&pr_b_); prof_add(k, pr_b_.QuadPart - v.QuadPart); \
+                            g_px_child += __rdtsc() - v##_c; if (--g_prof_depth == 0) prof_add_top(pr_b_.QuadPart - v.QuadPart); } while (0)
+/* exclusive hook stages (CPU cycles, __rdtsc: a few ns per call; present.c converts them with a QPC calibration):
+ *   PX_BEGIN(t); ... PX_GAME(original(...)); / r = PX_CALL(original(...)); ... PX_END(t, PR_X);
+ * every return path between BEGIN and END must pass PX_END (the hooks: body renamed NAME_px, NAME = timed wrapper) */
+void prof_add_cyc(int k, unsigned long long cyc, int top);
+#define PX_BEGIN(v) unsigned long long v##_t0 = __rdtsc(), v##_sv = g_px_child; g_px_child = 0
+#define PX_END(v, k) do { unsigned long long px_el_ = __rdtsc() - v##_t0; prof_add_cyc(k, px_el_ - g_px_child, g_prof_depth == 0); g_px_child = v##_sv + px_el_; } while (0)
+#define PX_GAME(code) do { unsigned long long px_g0_ = __rdtsc(), px_gs_ = g_px_child; code; g_px_child = px_gs_ + (__rdtsc() - px_g0_); } while (0)
+#define PX_CALL(expr) ({ unsigned long long px_g0_ = __rdtsc(), px_gs_ = g_px_child; __typeof__(expr) px_r_ = (expr); g_px_child = px_gs_ + (__rdtsc() - px_g0_); px_r_; })
 
 /* screenbtn.c */
 typedef int (__fastcall *SBtnStateFn)(BYTE *btn, int state);
