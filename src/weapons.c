@@ -552,23 +552,39 @@ void weapons_quick_swap(void)
     if (g_cfg.log >= 2) mlog("weapons: quick swap -> %d", g_cur_seen);
 }
 
-/* Steps through the boxes holding a weapon in screen order A1 A2 A3 B1 B2 B3; notches > 0 = wheel up. */
+/* Steps through the boxes holding a weapon in screen order A1 A2 A3 B1 B2 B3, and the medkit box (2026-11-22: a stop
+ * of its own - in its free box, or after B3 when it is the small header box); notches > 0 = wheel up. */
+static int kit_box(BYTE *u);
+#define KIT_SMALL       (-2)           /* kit_box: the small box in the column header (below) */
+static int kit_at(BYTE *u, int x, int y);
 void weapons_wheel(int notches)
 {
     BYTE *u = SARGE;
     if (!notches || !u || SARGE_VEHICLE(u) || (INPUT & INPUT_FIRE)) return;
-    allies_cancel("mouse wheel");                 /* allies.c: the wheel always puts the medkit away (also with one weapon) */
-    if (!six()) return;
+    if (!six()) {                                 /* three slots: only the medkit is stepped here (the game has no wheel) */
+        if (allies_heal_mode()) allies_cancel("mouse wheel");
+        else if (kit_box(u) != -1) allies_select_heal(1, "mouse wheel");
+        return;
+    }
     valid(u);
     sync(u);
-    int n = boxes(), pos = current_box(u), step = notches > 0 ? -1 : 1;
-    for (int i = 1; i < n; i++) {
-        int b = ((pos + step * i) % n + n) % n;
-        if (box_weapon(u, b).type && activate(u, b)) {
+    int n = boxes(), kit = kit_box(u), step = notches > 0 ? -1 : 1;
+    int stops = n + (kit == KIT_SMALL);           /* stop n = the small kit box */
+    int kit_stop = kit == KIT_SMALL ? n : kit;     /* -1 = no kit */
+    int pos = allies_heal_mode() && kit_stop >= 0 ? kit_stop : current_box(u);
+    for (int i = 1; i < stops; i++) {
+        int b = ((pos + step * i) % stops + stops) % stops;
+        if (b == kit_stop) {
+            allies_select_heal(1, "mouse wheel");
+            if (g_cfg.log >= 2) mlog("weapons: wheel -> medkit box");
+            return;
+        }
+        if (b < n && box_weapon(u, b).type && activate(u, b)) {
             if (g_cfg.log >= 2) mlog("weapons: wheel -> box %c%d", box_col(b) ? 'B' : 'A', box_row(b) + 1);
             return;
         }
     }
+    allies_cancel("mouse wheel");                 /* nothing else to step to */
 }
 
 /* ---------------------------------------------------------------- HUD boxes */
@@ -653,6 +669,11 @@ static int box_at(int x, int y)
 void weapons_click_at(int x, int y)
 {
     BYTE *u = SARGE;
+    if (u && layout_view_is_gameplay() && kit_at(u, x, y)) {   /* the medkit box: select it (again: put it away, like H) */
+        if (allies_heal_mode()) allies_cancel("medkit box clicked again");
+        else allies_select_heal(1, "medkit box clicked");
+        return;
+    }
     int b = box_at(x, y);
     if (b < 0 || !six() || !u || SARGE_VEHICLE(u) || !layout_view_is_gameplay()) return;
     valid(u);
@@ -872,7 +893,8 @@ static void draw_columns(Surf *back, BYTE *u)
     }
     int cur = CUR_SLOT(u);
     int cur_box = cur >= 0 && cur < SLOTS ? g_slot_box[cur] : -1;
-    int keep = cur >= 0 && cur < SLOTS && cur_box == cur;      /* the game's highlight is right */
+    int heal = allies_heal_mode();                             /* the medkit box has the highlight (draw_kit_box) */
+    int keep = !heal && cur >= 0 && cur < SLOTS && cur_box == cur;   /* the game's highlight is right */
     RECT kr = keep ? box_rect(cur) : (RECT){ 0, 0, 0, 0 };
     static BYTE saved[BOX_H][BOX_W];
     if (keep && (kr.left < 0 || kr.top < 0 || kr.right > back->w || kr.bottom > back->h)) keep = 0;
@@ -882,6 +904,7 @@ static void draw_columns(Surf *back, BYTE *u)
     int repaint[SLOTS] = { 0 };
     for (int k = 1; k < SLOTS; k++)
         if (g_slot_box[k] != k) { repaint[k] = 1; paint_box(back, art, src, k); }
+    if (heal && cur >= 0 && cur < SLOTS && cur_box == cur && !repaint[cur]) { repaint[cur] = 1; paint_box(back, art, src, cur); }   /* its highlight off */
     if (keep) for (int y = 0; y < BOX_H; y++) memcpy(back->bits + (size_t)(kr.top + y) * back->pitch + kr.left, saved[y], BOX_W);
 
     for (int b = 0; b < boxes(); b++) {
@@ -890,7 +913,7 @@ static void draw_columns(Surf *back, BYTE *u)
         draw_icon(w, b);
         draw_ammo(back, w, b);
     }
-    if (!keep && cur_box > 0) frame_box(back, box_rect(cur_box), (BYTE)nearest_colour(40, 240, 40));
+    if (!heal && !keep && cur_box > 0) frame_box(back, box_rect(cur_box), (BYTE)nearest_colour(40, 240, 40));
 }
 
 /* The minesweeper's box (2026-11-21, mines.c detector): a lamp in its top-left corner - dark green = on, nothing in
@@ -976,39 +999,139 @@ int weapons_room_for_special(void)
     return first_free_box(u) >= 0;
 }
 
-/* Medkits carried (allies.c, 2026-11-21; moved 2026-11-21, user: "they should stack somewhere else in the UI that is
- * unobtrusive"): a small medkit (9x9: red cross on a plate) + "xN" at the right end of the VEHICLE HEALTH row of the
- * HUD (design MEDKIT_X / MEDKIT_Y, right of the vehicle pips, clear of the panel art and numbers; the row is unused on
- * foot, and the kits are hidden in a vehicle). Only while kits are carried; dim (dark plate, dull cross, khaki count)
- * while not selected, bright (white plate, red cross, yellow count) while the medkit is selected. Placed through
- * layout_place like the SPRINT label one row up, so it follows the HUD layout; drawn in game pixels (whole multiples). */
-#define MEDKIT_X 400
-#define MEDKIT_Y 424
-static void draw_medkit_badge(Surf *back, BYTE *u)
+/* ---------------------------------------------------------------- the medkit box
+ * 2026-11-22 (user: "health kit should probably be a menu slot instead of tacked on somewhere"): the carried medkits
+ * (allies.c) are a box of the weapon column like a weapon, no longer a badge beside the vehicle pips.
+ *   - Picture: the game's own HUD medkit icon - the HUD weapon widget's picture table (data +0x10, the same table the
+ *     game draws the heavy / special boxes from) entry HUD_PIC_MEDKIT (23; Hud_006 frame 7, the white cross with the
+ *     black count box, 57x20 like every weapon icon; Wine log 2026-11-22: entry 23 sits between the explosive (12) and
+ *     the minesweeper (20) pictures). Drawn with hud_draw_picture_raw like the B-column icons, so the HD HUD art
+ *     (hd\hud\Hud_006_d7) replaces it the same way. The kit count goes where a weapon shows its ammo (same font,
+ *     colour and offset as the game's ammo text, weapons_note_text).
+ *   - Which box: the LAST free one in screen order (B3, B2, B1, A3, A2 - A1 is the rifle). Weapons fill boxes from the
+ *     front (first_free_box), so the kit sits at the end of the wheel order and the two rarely meet; a box is never
+ *     taken from a weapon - a pickup goes into the kit's box as into any free box and the kit moves on.
+ *   - All six boxes hold weapons: a seventh SMALL box in the header strip of column B, over its "WEAPONS" label (a copy
+ *     of column A's, the one place in the column that holds no weapon box; 640 wide: column A's header). There is no
+ *     room for a 20-row icon there (12 rows between the plate's top edge and the first box), so the small box is a
+ *     black count box like the game's own with a 9x9 cross and the count. It is the last stop of the wheel.
+ *   - Selecting it (wheel stop, left click on it, H, gamepad shoulder buttons = the wheel) selects the medkit (heal mode,
+ *     allies.c); choosing a weapon puts it away (activate -> allies_cancel). While selected the kit box gets the
+ *     highlight frame and the weapon box loses the game's highlight (repainted from the panel art).
+ *   - No kits, in a vehicle, Sarge down, classic controls or [gameplay] ally_heal = 0: no box. */
+#define HUD_PIC_MEDKIT   23            /* the weapon widget picture table entry with the medkit icon */
+#define KIT_NONE        (-1)           /* KIT_SMALL (-2) = the small box in the column header: defined at weapons_wheel */
+#define KIT_SMALL_DX     9             /* small box: from the column's left edge (between the label screws) */
+#define KIT_SMALL_Y      386           /* design y (the plate's top edge is 384, the first box frame 398) */
+#define KIT_SMALL_W      50
+#define KIT_SMALL_H      12
+
+static int kit_shown(BYTE *u)
 {
-    int n = allies_kits();
-    if (!u || n <= 0 || SARGE_VEHICLE(u)) return;
-    int x0 = MEDKIT_X, y0 = MEDKIT_Y;
-    layout_place(&x0, &y0);
-    if (x0 < 0 || y0 < 0 || x0 + 20 > back->w || y0 + 9 > back->h) return;
-    int on = allies_heal_mode();
-    BYTE edge = (BYTE)nearest_colour(0, 0, 0);
-    BYTE plate = on ? (BYTE)nearest_colour(245, 245, 245) : (BYTE)nearest_colour(70, 78, 60);
-    BYTE cross = on ? (BYTE)nearest_colour(225, 25, 25) : (BYTE)nearest_colour(150, 50, 40);
-    BYTE ink = on ? (BYTE)nearest_colour(255, 220, 40) : (BYTE)nearest_colour(170, 165, 120);
-    for (int y = 0; y < 9; y++)
-        for (int x = 0; x < 9; x++) {
-            int e = x == 0 || x == 8 || y == 0 || y == 8;
-            int c = (x >= 3 && x <= 5 && y >= 2 && y <= 6) || (y >= 3 && y <= 5 && x >= 2 && x <= 6);
-            put_px(back, x0 + x, y0 + y, e ? edge : c ? cross : plate);
-        }
-    static const BYTE X3x5[5] = { 0, 5, 2, 5, 0 };   /* a small "x" */
-    int d = n > 9 ? 9 : n, tx = x0 + 11, ty = y0 + 2;
-    for (int row = 0; row < 5; row++)
-        for (int k = 0; k < 3; k++) {
-            if (X3x5[row] & (4 >> k)) put_px(back, tx + k, ty + row, ink);
-            if (DIGIT3x5[d][row] & (4 >> k)) put_px(back, tx + 4 + k, ty + row, ink);
-        }
+    return u && SARGE_HEALTH(u) > 0 && !SARGE_VEHICLE(u) && g_cfg.controls_modern && allies_kits() > 0;
+}
+static int kit_boxes(void) { return six() ? boxes() : SLOTS; }
+static int kit_box_free(BYTE *u, int b) { return six() ? box_free(u, b) : b > 0 && b < SLOTS && !SLOT_ITEM(u, b); }
+/* where the kit box is now: a box index, KIT_SMALL, or KIT_NONE */
+static int kit_box(BYTE *u)
+{
+    if (!kit_shown(u)) return KIT_NONE;
+    if (six()) { valid(u); sync(u); }
+    for (int b = kit_boxes() - 1; b >= 1; b--) if (kit_box_free(u, b)) return b;
+    return KIT_SMALL;
+}
+static RECT kit_small_rect(void)
+{
+    int dx, dy;
+    layout_offset(ANCHOR_HUD, &dx, &dy);
+    int x = column_x(six() && have_room() ? 1 : 0) + KIT_SMALL_DX, y = KIT_SMALL_Y + dy;
+    return (RECT){ x, y, x + KIT_SMALL_W, y + KIT_SMALL_H };
+}
+static RECT kit_box_rect(int k)
+{
+    if (k == KIT_SMALL) return kit_small_rect();
+    if (six()) return box_rect(k);
+    int dx, dy;                                   /* three boxes: the game slots, column A */
+    layout_offset(ANCHOR_HUD, &dx, &dy);
+    int x = column_x(0) + BOX_ICON_X - COL_SRC_X - 3, y = icon_y(k) + dy - 2;
+    return (RECT){ x, y, x + BOX_W, y + BOX_H };
+}
+/* is (x, y) (game-screen, may be enlarged) on the kit box? */
+static int kit_at(BYTE *u, int x, int y)
+{
+    int k = kit_box(u);
+    if (k == KIT_NONE) return 0;
+    RECT r = kit_box_rect(k);
+    layout_unscale(&x, &y);
+    POINT p = { x, y };
+    return PtInRect(&r, p);
+}
+int weapons_kit_at(int x, int y) { BYTE *u = SARGE; return u && layout_view_is_gameplay() && kit_at(u, x, y); }
+static void *kit_picture(void)
+{
+    BYTE *d = widget_data(2);
+    void **tab = d ? *(void ***)(d + 0x10) : NULL;
+    if (!tab || IsBadReadPtr(tab + HUD_PIC_MEDKIT, sizeof(void *))) return NULL;
+    return tab[HUD_PIC_MEDKIT];
+}
+static AmmoText *kit_text(void) { return g_ammo_text[2].seen ? &g_ammo_text[2] : g_ammo_text[1].seen ? &g_ammo_text[1] : NULL; }
+static void kit_count_text(Surf *back, int x, int y, int clip_w, int clip_h, int n)
+{
+    AmmoText *t = kit_text();
+    if (!hud_draw_string_original || clip_w <= 0) return;
+    char buf[8];
+    wsprintfA(buf, "%d", n % 100);
+    int clip[2] = { clip_w, clip_h };
+    PX_GAME(hud_draw_string_original(back, x, y, buf, t ? t->font : 0, clip, t ? t->colour : AMMO_COLOUR));
+}
+/* the game's highlight frame on the current weapon's box goes while the medkit is selected (the A box is repainted
+ * from the panel art with its weapon; six weapons: draw_columns does this itself) */
+static void unhighlight_slot(Surf *back, BYTE *u)
+{
+    void *art;
+    RECT src;
+    int cur = CUR_SLOT(u);
+    if (six() || cur < 0 || cur >= SLOTS || !hud_panel_art(&art, &src)) return;
+    paint_box(back, art, src, cur);
+    Weapon w = { SLOT_TYPE(u, cur), SLOT_ITEM(u, cur) };
+    draw_icon(w, cur);
+    draw_ammo(back, w, cur);
+}
+static void draw_kit_box(Surf *back, BYTE *u)
+{
+    int k = kit_box(u);
+    if (k == KIT_NONE) return;
+    int heal = allies_heal_mode(), n = allies_kits();
+    if (heal) unhighlight_slot(back, u);
+    BYTE hi = (BYTE)nearest_colour(40, 240, 40);
+    RECT r = kit_box_rect(k);
+    if (r.left < 0 || r.top < 0 || r.right > back->w || r.bottom > back->h) return;
+    if (k == KIT_SMALL) {
+        BYTE black = (BYTE)nearest_colour(0, 0, 0), edge = (BYTE)nearest_colour(20, 28, 18);
+        for (int y = r.top; y < r.bottom; y++)
+            for (int x = r.left; x < r.right; x++) put_px(back, x, y, black);
+        frame_box(back, r, heal ? hi : edge);
+        int x0 = r.left + 3, y0 = r.top + (KIT_SMALL_H - 9) / 2;
+        BYTE plate = (BYTE)nearest_colour(235, 235, 235), cross = (BYTE)nearest_colour(225, 25, 25);
+        for (int y = 0; y < 9; y++)
+            for (int x = 0; x < 9; x++) {
+                if ((x == 0 || x == 8) && (y == 0 || y == 8)) continue;        /* rounded plate corners */
+                int c = (x >= 3 && x <= 5 && y >= 1 && y <= 7) || (y >= 3 && y <= 5 && x >= 1 && x <= 7);
+                put_px(back, x0 + x, y0 + y, c ? cross : plate);
+            }
+        kit_count_text(back, x0 + 14, r.top + 2, r.right - 2 - (x0 + 14), BOX_H, n);   /* clip height as the ammo text: the font cell is taller than the box (12 rows clipped every digit) */
+        return;
+    }
+    int dx, dy;
+    layout_offset(ANCHOR_HUD, &dx, &dy);
+    int col = six() ? box_col(k) : 0, row = six() ? box_row(k) : k;
+    int ix = column_x(col) + BOX_ICON_X - COL_SRC_X, iy = icon_y(row) + dy;
+    void *pic = kit_picture();
+    if (pic) hud_draw_picture_raw(pic, ix, iy);
+    AmmoText *t = kit_text();
+    int tx = ix + (t ? t->dx : AMMO_TEXT_DX), ty = iy + (t ? t->dy : AMMO_TEXT_DY);
+    kit_count_text(back, tx, ty, column_x(col) + COL_SRC_W - tx, BOX_H, n);
+    if (heal) frame_box(back, r, hi);
 }
 
 /* Called with the finished game picture (before it is shown). */
@@ -1016,13 +1139,15 @@ void weapons_draw_markers(Surf *back)
 {
     BYTE *u = SARGE;
     draw_vehicle_unlimited(back);                 /* also with classic controls / five-weapon HUD */
-    if (back && HUD_WIDGETS && layout_view_is_gameplay() && u && SARGE_HEALTH(u) > 0) draw_medkit_badge(back, u);
-    if (!six() || !back || !HUD_WIDGETS || !layout_view_is_gameplay()) return;
+    if (!back || !HUD_WIDGETS || !layout_view_is_gameplay()) return;
     int alive = u && SARGE_HEALTH(u) > 0;
-    if (alive) { valid(u); sync(u); }
-    /* the column stays on screen while Sarge is dead or respawning (empty: the boxes are cleared) */
-    draw_columns(back, alive ? u : NULL);
-    if (alive) draw_sweeper_lamp(back, u);
+    if (six()) {
+        if (alive) { valid(u); sync(u); }
+        /* the column stays on screen while Sarge is dead or respawning (empty: the boxes are cleared) */
+        draw_columns(back, alive ? u : NULL);
+        if (alive) draw_sweeper_lamp(back, u);
+    }
+    if (alive) draw_kit_box(back, u);
 }
 
 /* Keys 1-6 (modern controls): use box b directly, screen order A1 A2 A3 B1 B2 B3 (b = key - 1). */

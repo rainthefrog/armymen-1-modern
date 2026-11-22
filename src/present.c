@@ -482,6 +482,18 @@ static void map_axis(int o, int src_len, int dst_len, int mode, int *i0, int *w)
  *   "rig: view L,T,R,B screen X,Y WxH"   (view = game pixels shown, screen rect = where they are on the desktop).
  * scripts/run-wine.sh reads the last such line to turn `g:x,y` (game pixels of what is on screen now) into
  * desktop coordinates. Off by default (user logs stay clean). */
+static RECT g_rig_d, g_rig_v;
+static int g_rig_ok;
+/* test aids (allies.c Ctrl+Shift+L): game pixels of the shown view -> desktop pixels, the rig's g:x,y arithmetic
+ * (only with [debug] rig_coords) */
+int present_game_to_screen(int *x, int *y)
+{
+    int vw = g_rig_v.right - g_rig_v.left, vh = g_rig_v.bottom - g_rig_v.top;
+    if (!g_rig_ok || vw <= 0 || vh <= 0) return 0;
+    *x = g_rig_d.left + (*x - g_rig_v.left) * (g_rig_d.right - g_rig_d.left) / vw;
+    *y = g_rig_d.top + (*y - g_rig_v.top) * (g_rig_d.bottom - g_rig_d.top) / vh;
+    return 1;
+}
 static void rig_coords_note(HWND hwnd, const ViewLayout *L)
 {
     static int on = -1;
@@ -491,6 +503,7 @@ static void rig_coords_note(HWND hwnd, const ViewLayout *L)
     POINT o = { L->dest.left, L->dest.top };
     if (!ClientToScreen(hwnd, &o)) return;
     RECT d = { o.x, o.y, o.x + (L->dest.right - L->dest.left), o.y + (L->dest.bottom - L->dest.top) };
+    g_rig_d = d; g_rig_v = L->view; g_rig_ok = 1;
     if (EqualRect(&d, &last_d) && EqualRect(&L->view, &last_v)) return;
     last_d = d; last_v = L->view;
     mlog("rig: view %ld,%ld,%ld,%ld screen %ld,%ld %ldx%ld", L->view.left, L->view.top, L->view.right, L->view.bottom,

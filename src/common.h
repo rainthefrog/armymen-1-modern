@@ -302,6 +302,7 @@ int layout_on_hud_panel(int x, int y);     /* layout.c: game point on the (split
 int layout_hud_top(void);                    /* layout.c: topmost row of any HUD pixel (cheap pre-test) */
 int weapons_hud_gap(void);                 /* weapons.c: the gap it needs (0 = none) */
 int weapons_ui_at(int x, int y);            /* weapons.c: game point is on the spare-weapon column */
+int weapons_kit_at(int x, int y);           /* weapons.c: game point is on the medkit box (tips.c) */
 void weapons_click_at(int x, int y);       /* weapons.c: left click on a HUD weapon box uses it */
 void weapons_drop_at(int x, int y);        /* weapons.c: right click on a HUD weapon box drops it */
 typedef void (__fastcall *TouchFn)(BYTE *unit, void *item, int arg);
@@ -887,7 +888,10 @@ int drops_hover_label(const char **name, int *wx, int *wy);   /* drops.c: kind o
 unsigned gameplay_run(int *scenario, int *mission);   /* gameplay.c: changes on every mission (re)start (also Play Again / same mission again) */
 void __fastcall allies_trooper_join(BYTE *trooper, BYTE *unit);   /* call 0x43b4e5 -> FUN_0043b5f0 (trooper joins his unit) */
 int __fastcall allies_pickup_test(BYTE *item, BYTE *sarge);       /* call 0x439855 -> FUN_00439700 (may Sarge pick this up) */
-int allies_kits(void);                      /* medkits carried (weapons.c HUD badge) */
+int allies_kits(void);                      /* medkits carried (weapons.c HUD medkit box) */
+int allies_select_heal(int on, const char *why);   /* weapons.c: the medkit box chosen (1) / put away (0); 1 = selected now */
+void allies_debug_kit(int hurt);             /* controls.c test aids (cheat_keys): Ctrl+L a kit, Ctrl+Shift+L hurt the nearest soldier */
+int present_game_to_screen(int *x, int *y);   /* present.c: view game pixels -> desktop (rig_coords; test aids) */
 int allies_heal_mode(void);                 /* the medkit is selected */
 void allies_toggle_heal(void);              /* controls.c: the heal key (ACT_HEAL) */
 int allies_cancel(const char *why);         /* put the medkit away (right click, weapon chosen ...); 1 = it was selected */
