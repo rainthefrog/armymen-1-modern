@@ -136,6 +136,22 @@ void clock_frame_shown(int gameplay)
         double corr = drift > 250.0 * g_speed ? drift : drift * 0.1;
         if (drift <= 250.0 * g_speed) corr = corr > lim ? lim : corr < -lim ? -lim : corr;
         step += corr;
+        /* never more than one refresh AHEAD of real time (2026-11-21, win-pause hunt): frames that come faster than
+         * the refresh (display not pacing - seen in Wine at ~100 frames/s on a "60 Hz" desktop; vsync off without
+         * fps_limit is skipped above) each stepped at least 3/4 refresh, so the locked time ran ahead of real time
+         * without limit (17 s after 80 s of play in Wine). The first stand-still after that - the game's own 100 ms
+         * wait when play resumes, the deadlines around the mission end - unlocks the clock (no frame for 100 ms),
+         * and since game time never goes backwards it stood still until real time had caught up: seconds of frozen
+         * picture ("stall" in PeekMessage of the run loop 0x4014e0, FUN_00424c70 waiting for gpGame +0x34). */
+        if (g_lock_ms + step > g_ms + one) {
+            static DWORD said, held;
+            step = g_ms + one - g_lock_ms;
+            held++;
+            if (GetTickCount() - said > 10000) {     /* rare on a paced display: say it, at most every 10 s */
+                said = GetTickCount();
+                mlog("clock: frames faster than the refresh (%.2f ms) - game time held to real time (%lu frames)", g_period, held);
+            }
+        }
         if (step < 0) step = 0;
         if (!g_paused) g_lock_ms += step;
     }
@@ -233,3 +249,17 @@ void clock_set_paused(int paused) { set_speed(g_speed, paused); }
 int clock_is_paused(void) { return g_paused; }
 double clock_speed_now(void) { return g_speed; }
 void clock_set_speed(double s) { set_speed(s, g_paused); }
+
+
+/* present.c (freeze report): how far the time last handed to the game is ahead of the game clock (ms; > 0 = the game
+ * waits for the clock - it never goes backwards), whether the clock is paused (Pause key) and that last time. */
+int clock_ahead_ms(int *paused, DWORD *handed)
+{
+    EnterCriticalSection(&g_cs);
+    advance();
+    int ahead = g_have_t ? (int)(LONG)(g_last_t - (g_base + (DWORD)(unsigned long long)g_ms)) : 0;
+    if (paused) *paused = g_paused;
+    if (handed) *handed = g_last_t;
+    LeaveCriticalSection(&g_cs);
+    return ahead;
+}

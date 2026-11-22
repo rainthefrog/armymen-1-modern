@@ -498,6 +498,9 @@ static LRESULT CALLBACK wndproc_hook(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     LRESULT handled;
     /* Alt+F4 closes the game (user 2026-11-17: it did not; GOG's IgnoreAltTab shim swallowed it - passed on by
      * system_keys_proc - and the game's own window procedure does not close on it) */
+    /* the game PAUSES while its window is inactive (WM_ACTIVATEAPP 0 -> gpGame flags 1, the frame loop stops: no
+     * picture, no sound bookkeeping) - logged, so a frozen stretch in a log can be matched (2026-11-21, win-pause hunt) */
+    if (msg == WM_ACTIVATEAPP) mlog("window: %s", wp ? "game active again" : "game INACTIVE (another program in front) - the game pauses itself");
     if (screenbtn_message(h, msg, wp)) return 0;
     if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_MOUSEMOVE) modmenu_slider_mouse(msg, lp);                       /* screenbtn.c: a pressed button acts (release / timer) */
     if (msg == WM_SYSKEYDOWN && wp == VK_F4) { mlog("window: Alt+F4 - closing"); PostMessageA(h, WM_CLOSE, 0, 0); return 0; }
