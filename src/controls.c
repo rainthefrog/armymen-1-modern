@@ -1734,6 +1734,16 @@ static int g_sprint_latched;                  /* sprint toggle (Shift / left sti
 static float g_stamina = 1.0f; static int g_exhausted;
 static DWORD g_pad_aim_at;                    /* the right stick aimed recently: the reticle ignores the mouse */
 static int g_hover_kind = -1, g_hover_range; static BYTE *g_hover_thing;
+static unsigned g_hover_run;                  /* gameplay_run() when g_hover_thing was set */
+/* The hovered thing dies with its mission (crash 2026-11-21: Play Again on mission 8, modern_draw_body read the
+ * health of the previous run's target). A hover from another run, or one no longer readable, is dropped. */
+static void hover_check(void)
+{
+    if (!g_hover_thing) return;
+    if (gameplay_run(NULL, NULL) != g_hover_run || IsBadReadPtr(g_hover_thing, 0x40)) {
+        g_hover_kind = -1; g_hover_thing = NULL; g_hover_range = 0;
+    }
+}
 static int g_block_left, g_block_right;       /* a press used for a command: no fire / walk until released */
 void controls_block_left(void) { g_block_left = 1; }        /* panel.c: a click on our own UI (resize icon) */
 
@@ -1762,7 +1772,7 @@ float controls_stamina(void) { return g_stamina; }
 
 static void note_hover(int kind, BYTE *thing, BYTE *u, BYTE *veh)
 {
-    g_hover_kind = kind; g_hover_thing = thing; g_hover_range = 0;
+    g_hover_kind = kind; g_hover_thing = thing; g_hover_range = 0; g_hover_run = gameplay_run(NULL, NULL);
     if (kind == HOVER_TARGET || kind == HOVER_FAR_ENEMY) {
         BYTE *shooter = veh ? veh : u;
         int *w = *(int **)(shooter + 0x20);
@@ -1771,12 +1781,14 @@ static void note_hover(int kind, BYTE *thing, BYTE *u, BYTE *veh)
 }
 int controls_hover_range(int *range)
 {
+    hover_check();
     if (g_hover_range <= 0 || (g_hover_kind != HOVER_TARGET && g_hover_kind != HOVER_FAR_ENEMY)) return 0;
     *range = g_hover_range;
     return 1;
 }
 BYTE *controls_hover_target(void)    /* modern.c: the target under the pointer (item with health at +0x1c / +0x1e), else NULL */
 {
+    hover_check();
     return g_hover_kind == HOVER_TARGET || g_hover_kind == HOVER_FAR_ENEMY ? g_hover_thing : NULL;
 }
 int controls_reticle(int *x, int *y) { if (!S.have_cursor) return 0; *x = S.cursor_x; *y = S.cursor_y; return 1; }
@@ -2761,6 +2773,7 @@ static int aim_shot_at_cursor(BYTE *unit, const char *when)
     short muzzle[2];
     GAME_MUZZLE_POSITION(unit, muzzle);
     int vx = S.cursor_x + CAMERA_X - muzzle[0], vy = S.cursor_y + CAMERA_Y - muzzle[1];
+    hover_check();
     if (modern_on(MOD_AIM_ASSIST) && g_hover_kind == HOVER_TARGET && g_hover_thing) {   /* aim assist: the target's body */
         int raw = (int)((*(DWORD *)g_hover_thing >> 22) & 0xf);
         vx = *(short *)(g_hover_thing + 4) - muzzle[0];

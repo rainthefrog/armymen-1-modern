@@ -595,6 +595,22 @@ static void each_enemy(EnemyFn fn)
     }
 }
 
+/* the player's own vehicles (2026-11-21, user: "not seeing the health bar on ally vehicle"): allies_each walks only
+ * soldiers (it also feeds medkit picking, so vehicles stay out of it). The one Sarge drives is left out (his HUD). */
+static void ally_vehicles(EnemyFn fn)
+{
+    if (!LEGION_STATUS(0)) return;
+    BYTE *leg = ARMY_RECORD(0);
+    if (!leg) return;
+    BYTE *s = SARGE, *mine = s ? (BYTE *)(intptr_t)SARGE_VEHICLE(s) : NULL;
+    int nv = *(signed char *)(leg + 0x50);
+    for (int i = 0; i < nv && i < 50; i++) {
+        BYTE *v = *(BYTE **)(leg + 0x54 + 4 * i);
+        if (!v || IsBadReadPtr(v, 0x20) || *(short *)(v + 0x1c) <= 0 || v == mine) continue;
+        fn(v, *(short *)(v + 4), *(short *)(v + 6), *(short *)(v + 6) - 30, 1);
+    }
+}
+
 /* Health bars in the world (MOD_HEALTH_BARS), over every HURT enemy soldier / vehicle (each_enemy) and,
  * since 2026-11-19 (user: "also display health bars for targets"), over every hurt TARGET object too:
  * the things the one-button mouse shoots at (controls_is_target: shooting-range boards, enemy-owned
@@ -918,7 +934,7 @@ static void modern_draw_body(Surf *b)
     static double mt[6]; static DWORD mt_at; LARGE_INTEGER q0, q1, qf; QueryPerformanceFrequency(&qf);
     #define MT(i, code) do { QueryPerformanceCounter(&q0); code; QueryPerformanceCounter(&q1); mt[i] += (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart; } while (0)
     if (modern_on(MOD_HEALTH_BARS)) { MT(0, each_enemy(health_bar)); MT(1, target_health_bars()); }
-    if (g_cfg.ally_health_bars) allies_each(health_bar);   /* allies.c (2026-11-21): the player's hurt soldiers, same pips */
+    if (g_cfg.ally_health_bars) { allies_each(health_bar); ally_vehicles(health_bar); }   /* allies.c (2026-11-21): the player's hurt soldiers, same pips; + vehicles */
     {   /* a captured enemy vehicle: a green driver in the seat (2026-11-20, user: "just drawing the driver in there") -
          * head and shoulders, a little behind the vehicle's centre along its hull facing, drawn on top */
         int vx, vy, f;
