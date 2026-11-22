@@ -343,6 +343,7 @@ int controls_pointer(int *x, int *y);                              /* controls.c
 void controls_frame_shown(void);                                   /* controls.c: frame flipped: keep its sub-pixel offset */
 int controls_shown_subpx(float *x, float *y);                      /* controls.c: sub-pixel offset of the frame on screen */
 void clock_frame_shown(int gameplay);                              /* clock.c: a frame is on screen (lock to display) */
+int clock_ahead_ms(int *paused, DWORD *handed);                                     /* clock.c: last game time handed out minus the game clock (freeze report) */
 double clock_frame_period(void);                                  /* clock.c: ms per frame (window's monitor, or fps_limit) */
 int clock_tracing(void);                                           /* clock.c: Ctrl+Shift+T timing trace running */
 void clock_trace_frame(const char *line);                          /* clock.c: one trace line */

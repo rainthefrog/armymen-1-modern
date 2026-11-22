@@ -742,14 +742,21 @@ static DWORD WINAPI display_thread(LPVOID unused)
  * N ms it stops the game thread for a moment, reads its instruction pointer and the code addresses on its stack
  * (return addresses, roughly the call chain), lets it go on and logs them (up to 4 samples per frame): "exe
  * 0x00412345" = the game's code (look it up in the binary), "mod+0x1234" = this DLL (i686-w64-mingw32-addr2line /
- * nm on ddraw.dll), other = Windows. Nothing runs and no thread exists while it is off. */
+ * nm on ddraw.dll), other = Windows. While it is off the helper thread only looks every 100 ms for the freeze report. */
+#define GAME_OBJ            (*(BYTE **)0x4b3f70)   /* gpGame */
+#define GAME_FLAGS          0x08                  /* gpGame +8: pause flags; FUN_00424c70 stops the frame on & 0x307 */
+#define GAME_WAIT           0x34                  /* gpGame +0x34: GetTickCount deadline (>= 500) or frame countdown */
+#define GAME_FLAG_INACTIVE  0x1                   /* set on WM_ACTIVATEAPP(0) (0x408bd5), cleared on (1) */
+#define GAME_FLAG_MENULOOP  0x6                   /* WM_ENTERMENULOOP (0x408cc0: 2, FUN_00408800: 4) */
+#define SCREEN_STATE_NOW()  (*(BYTE **)0x6a5944 && !IsBadReadPtr(*(BYTE **)0x6a5944, 8) ? *(int *)(*(BYTE **)0x6a5944 + 4) : -1)   /* as layout.c */
+#define FREEZE_REPORT_MS    1000
 static HANDLE g_game_thread;
 static volatile LONG g_stall_seq;               /* counts game frames */
 static volatile LONGLONG g_stall_t0;            /* QPC when the frame in work began (the last take), 0 = none */
 static DWORD WINAPI stall_thread(LPVOID arg)
 {
-    int limit = (int)(intptr_t)arg, shots = 0;
-    LONG seen = -1;
+    int limit = (int)(intptr_t)arg, shots = 0, frz_said = 0;
+    LONG seen = -1, frz_seq = -1;
     LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
     BYTE *exe = (BYTE *)GetModuleHandleA(NULL), *mod = (BYTE *)g_self;
     /* code only (BaseOfCode .. + SizeOfCode): text and numbers on the stack often look like addresses inside the image */
@@ -758,13 +765,33 @@ static DWORD WINAPI stall_thread(LPVOID arg)
     DWORD exe_lo = eo ? (DWORD)(uintptr_t)exe + eo->BaseOfCode : 0, exe_size = eo ? eo->SizeOfCode : 0;
     DWORD mod_lo = mo ? (DWORD)(uintptr_t)mod + mo->BaseOfCode : 0, mod_size = mo ? mo->SizeOfCode : 0;
     while (!g_quit) {
-        Sleep(5);
+        Sleep(limit > 0 ? 5 : 100);                            /* (100 ms: only the freeze report) */
         LONG seq = g_stall_seq; LONGLONG t0 = g_stall_t0;
         if (seq != seen) { seen = seq; shots = 0; }
-        if (!t0 || shots >= 4 || !layout_view_is_gameplay()) continue;
+        if (!t0) continue;
         LARGE_INTEGER now; QueryPerformanceCounter(&now);
         int ms = (int)((now.QuadPart - t0) * 1000 / fq.QuadPart);
-        if (ms < limit || ms > 5000) continue;                 /* (seconds long = a pause or a menu, not a stall) */
+        /* FREEZE REPORT (always on, 2026-11-21, win-pause hunt; user: "a long pause at the end of the level to pull up
+         * the success text" - frames of 8.5 s and 16.4 s with nothing of ours in them). A gameplay frame older than
+         * 1 s logs once WHY the game does not go on, read from the game's own state: FUN_00407460 (the frame) does
+         * nothing at all while FUN_00424c70 returns 1 - gpGame +8 flags & 0x307 (1 = window inactive,
+         * WM_ACTIVATEAPP 0x408bcd; 2 / 4 = menu loop, WM_ENTERMENULOOP 0x408cba; 0x100 / 0x200 = game menus) or
+         * gpGame +0x34 a GetTickCount deadline not reached yet (>= 500; < 500 = a frame countdown). "clock ahead" =
+         * how far the game time last handed out is ahead of the game clock (it never goes backwards: the game waits
+         * that long - the Wine stall of this hunt, clock.c). fg = the window in front is the game's or another. */
+        if (seq != frz_seq) { frz_seq = seq; frz_said = 0; }
+        if (!frz_said && ms >= FREEZE_REPORT_MS && layout_view_is_gameplay() && SCREEN_STATE_NOW() == -1) {   /* (not a screen over play: mission over / pause menu wait for a click) */
+            frz_said = 1;
+            BYTE *g = GAME_OBJ;
+            DWORD flags = g ? *(DWORD *)(g + GAME_FLAGS) : 0, wait = g ? *(DWORD *)(g + GAME_WAIT) : 0;
+            int paused = 0; DWORD handed = 0; int ahead = clock_ahead_ms(&paused, &handed);
+            HWND fg = GetForegroundWindow();
+            mlog("freeze: no game frame for %d ms: game flags 0x%lx%s%s, wait %s %ld, clock ahead %d ms%s, window in front: %s",
+                 ms, flags, flags & GAME_FLAG_INACTIVE ? " (window inactive)" : "", flags & GAME_FLAG_MENULOOP ? " (menu loop)" : "",
+                 wait >= 500 && wait != (DWORD)-1 ? "until" : "frames", wait >= 500 && wait != (DWORD)-1 ? (long)(wait - handed) : (long)wait,
+                 ahead, paused ? " (clock paused)" : "", g_dd && fg == g_dd->hwnd ? "the game" : fg ? "another window" : "none");
+        }
+        if (!limit || shots >= 4 || !layout_view_is_gameplay() || ms < limit || ms > 5000) continue;                /* (seconds long = a pause or a menu, not a stall) */
         CONTEXT c; c.ContextFlags = CONTEXT_CONTROL;
         DWORD code[12]; int nc = 0; DWORD eip = 0;
         if (SuspendThread(g_game_thread) == (DWORD)-1) continue;
@@ -794,16 +821,16 @@ static DWORD WINAPI stall_thread(LPVOID arg)
 static void stall_waiting(void) { g_stall_t0 = 0; }      /* game thread: the frame is done, it waits for the display (not work) */
 static void stall_frame(void)                   /* game thread, after that wait: the next frame begins */
 {
-    static int limit = -1;
-    if (limit < 0) {
-        limit = GetPrivateProfileIntA("debug", "stall_sample_ms", 0, mod_ini_path());
-        if (limit > 0 && DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_game_thread, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-            HANDLE t = CreateThread(NULL, 0, stall_thread, (LPVOID)(intptr_t)limit, 0, NULL);
-            if (t) CloseHandle(t);
-            mlog("stall sampler on: game frames over %d ms ([debug] stall_sample_ms)", limit);
-        } else limit = 0;
+    static int started;
+    if (!started) {                             /* the helper thread always runs (freeze report); sampling only with the key */
+        started = 1;
+        int limit = GetPrivateProfileIntA("debug", "stall_sample_ms", 0, mod_ini_path());
+        if (limit > 0 && !DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_game_thread, 0, FALSE, DUPLICATE_SAME_ACCESS)) limit = 0;
+        if (limit < 0) limit = 0;
+        HANDLE t = CreateThread(NULL, 0, stall_thread, (LPVOID)(intptr_t)limit, 0, NULL);
+        if (t) CloseHandle(t);
+        if (limit) mlog("stall sampler on: game frames over %d ms ([debug] stall_sample_ms)", limit);
     }
-    if (!limit) return;
     LARGE_INTEGER now; QueryPerformanceCounter(&now);
     g_stall_t0 = now.QuadPart;
     InterlockedIncrement(&g_stall_seq);
