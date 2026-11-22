@@ -814,7 +814,9 @@ static void layout_draw_battlefield_body(void)
     roofs_new_frame();
     hdsprites_new_frame();                          /* a new game picture: the old picture notes are gone */
     layout_draw_battlefield_original();
-    roofs_draw_ghost((Surf *)BACK_BUFFER_SURF);         /* Sarge seen through what covers him (roofs.c) */
+    /* Sarge seen through what covers him: roofs_draw_ghost, now inside the original right before the air layer
+     * (roofs.c roofs_air_pass, call 0x42d6bf) - after it, he was drawn over the helicopter (2026-11-21) */
+    if (!g_cfg.air_layer) roofs_draw_ghost((Surf *)BACK_BUFFER_SURF);   /* [display] air_layer=0: the old place */
     Surf *b = (Surf *)BACK_BUFFER_SURF;
     if (b && b->bits) fog_draw(b);
 }

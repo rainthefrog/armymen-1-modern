@@ -336,8 +336,103 @@ static void layer_fronts_done(void *rect)
     }
 }
 
+/* ---------------------------------------------------------------- aircraft drawn as map objects (2026-11-21)
+ * User (mission 9, screenshot of the landed extraction helicopter): "helicopter should be above soldiers". The
+ * helicopter of Desert 4-2 / Alpine 4-2 is not a vehicle: it is a set of OBJECTS (raw type 9, category MISC 23) that
+ * the mission moves along a path - Wine 2026-11-21: one part in layer 0 (its shadow), the body in layer 1 (y-sorted
+ * with the soldiers), the rotor in the air layer (roofs_air_cell). Landed, soldiers south of its middle sort over the
+ * body - in the original 8-bit picture too - and the bank fix's layer-2 redraw does not change that.
+ * From the game's data: an object whose world position (ANIMCELL +0x10 / +0x12) changes is an aircraft (nothing
+ * else on the ground ever moves its objects). Its cells in layers 1 and 2 are not drawn in place but after the
+ * region's layer 2 (and the figures the fronts rule redraws), with the same clip: above every figure, as the user
+ * wants, landed or flying. Its layer-0 part (the shadow) stays under the figures. Its pixels get FL_AIR (hdworld.c):
+ * top painter depth on the upscaled battlefield. It is not cover for the x-ray ghost (a soldier under it is hidden,
+ * not drawn through it). The camera follows it while it flies (roofs_aircraft_focus, controls.c).
+ * Reset on every mission run. [display] air_layer = 1 (0 = the game's order). */
+#define MAX_AIRCRAFT  64                 /* MISC objects watched (the helipad and other still ones too) */
+#define MAX_DEFER     16
+typedef struct { BYTE *owner; DWORD uid; short x, y; int moved; DWORD moved_at; int wrect[4]; } Aircraft;
+static Aircraft g_aircraft[MAX_AIRCRAFT];
+static unsigned g_aircraft_run;
+static BYTE *g_defer[MAX_DEFER]; static int g_ndefer;
+static int g_drawing_deferred;
+
+static Aircraft *aircraft_slot(BYTE *owner, int make)
+{
+    unsigned run = gameplay_run(NULL, NULL);
+    if (run != g_aircraft_run) { memset(g_aircraft, 0, sizeof g_aircraft); g_aircraft_run = run; }
+    DWORD uid = *(DWORD *)owner;
+    Aircraft *free_slot = NULL;
+    for (int i = 0; i < MAX_AIRCRAFT; i++) {
+        if (g_aircraft[i].owner == owner && g_aircraft[i].uid == uid) return &g_aircraft[i];
+        if (!g_aircraft[i].owner && !free_slot) free_slot = &g_aircraft[i];
+    }
+    if (!make) return NULL;
+    for (int i = 0; i < MAX_AIRCRAFT && !free_slot; i++) if (!g_aircraft[i].moved) free_slot = &g_aircraft[i];   /* full: a still one goes */
+    if (!free_slot) return NULL;
+    memset(free_slot, 0, sizeof *free_slot);
+    free_slot->owner = owner; free_slot->uid = uid;
+    return free_slot;
+}
+
+/* An object cell about to be drawn: note its position; 1 = it belongs to an aircraft (has moved). */
+static int aircraft_cell(BYTE *cell, BYTE *owner)
+{
+    if (!g_cfg.air_layer || !cell || !owner) return 0;
+    int t = RAW_TYPE(*(DWORD *)owner);
+    if (t < 7 || t > 9) return 0;
+    short x = *(short *)(cell + 0x10), y = *(short *)(cell + 0x12);
+    Aircraft *a = aircraft_slot(owner, 0);
+    if (!a) {
+        /* objects are many and still: a slot only for a MISC object (category 23 - the helicopters) */
+        if (*(short *)(owner + 0x68) != 23) return 0;
+        a = aircraft_slot(owner, 1);
+        if (!a) return 0;
+        a->x = x; a->y = y;
+        return 0;
+    }
+    if (x != a->x || y != a->y) {
+        if (!a->moved && g_cfg.log >= 1) mlog("roofs: object %p (uid %08lx, category %d) moves %d,%d -> %d,%d: aircraft, drawn above the figures",
+                                              owner, a->uid, *(short *)(owner + 0x68), a->x, a->y, x, y);
+        a->moved = 1; a->moved_at = GetTickCount(); a->x = x; a->y = y;
+    }
+    if (a->moved) memcpy(a->wrect, CELL_WRECT(cell), sizeof a->wrect);
+    return a->moved;
+}
+
+/* The aircraft the camera should show: one that moved within the last ms milliseconds (flying); its middle. */
+int roofs_aircraft_focus(int *x, int *y, DWORD ms)
+{
+    if (!g_cfg.air_layer || g_aircraft_run != gameplay_run(NULL, NULL)) return 0;
+    DWORD now = GetTickCount();
+    const Aircraft *best = NULL;
+    for (int i = 0; i < MAX_AIRCRAFT; i++) {
+        const Aircraft *a = &g_aircraft[i];
+        if (!a->owner || !a->moved || now - a->moved_at > ms) continue;
+        if (IsBadReadPtr(a->owner, 4) || *(DWORD *)a->owner != a->uid) continue;
+        if (!best || a->moved_at > best->moved_at) best = a;
+    }
+    if (!best) return 0;
+    *x = (best->wrect[0] + best->wrect[2]) / 2; *y = (best->wrect[1] + best->wrect[3]) / 2;
+    return 1;
+}
+
+static void draw_deferred(void *rect)
+{
+    for (int i = 0; i < g_ndefer; i++) {
+        BYTE *c = g_defer[i];
+        if (IsBadReadPtr(c, CELL_BYTES) || !(*(DWORD *)c & 1)) continue;
+        g_drawing_deferred = 1;
+        hdworld_cell_air(1);
+        roofs_draw_cell_body(c, rect);
+        hdworld_cell_air(0);
+        g_drawing_deferred = 0;
+    }
+    g_ndefer = 0;
+}
+
 void __fastcall roofs_layer_0(void *rect, void *list) { g_layer = 0; DRAW_LAYER(rect, list); g_layer = -1; }
-void __fastcall roofs_layer_1(void *rect, void *list) { g_nlfig = 0; g_layer = 1; DRAW_LAYER(rect, list); g_layer = -1; }
+void __fastcall roofs_layer_1(void *rect, void *list) { g_nlfig = 0; g_ndefer = 0; g_layer = 1; DRAW_LAYER(rect, list); g_layer = -1; }
 void __fastcall roofs_layer_2(void *rect, void *list)
 {
     g_nlfront = 0; g_layer = 2; DRAW_LAYER(rect, list); g_layer = -1;
@@ -347,12 +442,22 @@ void __fastcall roofs_layer_2(void *rect, void *list)
         if (GUARD_TRY(g, "building fronts (roofs.c)")) { layer_fronts_done(rect); guard_leave(&g); }
         else { g_layer_redraw = 0; hdworld_skip_shadows(0); faults++; }
     }
+    if (g_ndefer) {                              /* aircraft parts of layers 1 / 2: on top of everything in the region */
+        Guard g;
+        if (GUARD_TRY(g, "aircraft over the figures (roofs.c)")) { draw_deferred(rect); guard_leave(&g); }
+        else { g_drawing_deferred = 0; hdworld_cell_air(0); g_ndefer = 0; }
+    }
     g_nlfig = g_nlfront = 0;
 }
 
 static void roofs_draw_cell_body(BYTE *cell, void *clip)
 {
     BYTE *owner = cell ? CELL_OWNER(cell) : NULL;
+    int air = aircraft_cell(cell, owner);        /* a moving object (helicopter): above the figures */
+    if (air && !g_drawing_deferred && !g_layer_redraw && (g_layer == 1 || g_layer == 2) && g_ndefer < MAX_DEFER) {
+        g_defer[g_ndefer++] = cell;              /* drawn after the region's layer 2 (draw_deferred) */
+        return;
+    }
     int low = owner && is_low_owner(owner);
     /* the turret: an owner-less cell at hull animation + 0xe4 (vehicle +0x9c = hull; seen in Wine 2026-11-17) -
      * its upscaled image sorts above the hull (user: "tank needs to draw the turret on top of the base") */
@@ -385,7 +490,7 @@ static void roofs_draw_cell_body(BYTE *cell, void *clip)
         memcpy(f->rect, CELL_WRECT(cell), sizeof f->rect);
         return;
     }
-    if (type == 7 || type == 8 || type == 9) {
+    if ((type == 7 || type == 8 || type == 9) && !air) {   /* an aircraft is not cover (it is above them) */
         for (int i = 0; i < MAX_FIGS; i++) {
             Fig *f = &g_figs[i];
             if (!f->cell || !rects_overlap(CELL_WRECT(cell), f->rect)) continue;
@@ -592,6 +697,47 @@ int roofs_cell_hit(BYTE *c, int wx, int wy)
 }
 
 void __fastcall roofs_draw_cell(BYTE *cell, void *clip) { PROF_BEGIN(t); roofs_draw_cell_body(cell, clip); PROF_END(t, PR_CELLS); }   /* timed (trace) */
+
+/* ---------------------------------------------------------------- the air layer (2026-11-21)
+ * User: "layering issues with the helicopter too" (mission 9, helicopter extraction). The game keeps a FOURTH
+ * layer list (0x4e35a4; FUN_0042d2e0 / FUN_0042ccf0 file a cell by its +0x38 layer 0..3) for what is in the air:
+ * the helicopter, the planes, shells and grenades in flight, smoke. FUN_0042d610 (draw the battlefield) draws it
+ * LAST: map regions (layers 0..2 onto the map surface) -> BltFast map -> back buffer -> FUN_0042e460 (lock the back
+ * buffer) -> FUN_0042ea80 (layer-3 cells sorted, each drawn by FUN_0042f120 at call 0x42ebab straight into the back
+ * buffer). So in the original nothing on the ground is ever drawn over it. Two mod paths broke that:
+ *   1. the ghost redraw (roofs_draw_ghost: Sarge / firing enemies drawn again over what covers them) ran after
+ *      FUN_0042d610, i.e. after the air layer: Sarge under the helicopter was drawn over it (solid where his cover
+ *      is low or none, a 50 % ghost under tall cover). It now runs right before the air pass (call 0x42d6bf).
+ *   2. the upscaled battlefield (gpu.c) gives each sprite pixel a painter depth from its image's sort row; an air
+ *      sprite got the same kind of depth as a ground one, so a tree / building / soldier lower on the screen drew
+ *      its upscaled edge over it, and ground shadows darkened it. Its pixels now carry FL_AIR (hdworld.c) = top
+ *      depth, no ground shadow on them.
+ * A landed helicopter (if the game files it in layer 1) is not affected: it is not drawn by this call.
+ * [display] air_layer = 1 (0 = the old order: ghost after the air layer, air sprites sorted like ground ones). */
+#define AIR_PASS ((VoidFnPtr)0x42e460)           /* lock the back buffer, draw layer 3 (FUN_0042ea80), unlock */
+void __fastcall roofs_air_cell(BYTE *cell, void *clip)
+{
+    if (g_cfg.log >= 2 && cell && !IsBadReadPtr(cell, CELL_BYTES)) {
+        int *w = CELL_WRECT(cell);
+        static BYTE *seen[8]; static int ns; int k;
+        for (k = 0; k < ns && seen[k] != cell; k++) ;
+        if (k == ns && ns < 8) {                  /* log=2: the first few (what the air layer holds) */
+            seen[ns++] = cell;
+            BYTE *o = CELL_OWNER(cell); DWORD uid = o && !IsBadReadPtr(o, 4) ? *(DWORD *)o : 0;
+            mlog("roofs: air layer cell %p owner %p uid %08x (raw %d) pos %d,%d wrect %d,%d-%d,%d", cell, o, uid, RAW_TYPE(uid),
+                 *(short *)(cell + 0x10), *(short *)(cell + 0x12), w[0], w[1], w[2], w[3]);
+        }
+    }
+    hdworld_cell_air(g_cfg.air_layer);
+    DRAW_CELL_BACK(cell, clip);
+    hdworld_cell_air(0);
+}
+/* call 0x42d6bf in FUN_0042d610: the figures seen through their cover belong to the ground - before the air */
+void roofs_air_pass(void)
+{
+    if (g_cfg.air_layer) roofs_draw_ghost(*(Surf **)0x4e2e4c);       /* the back buffer (layout.c BACK_BUFFER_SURF) */
+    AIR_PASS();
+}
 
 void roofs_draw_ghost(Surf *b) { PROF_BEGIN(t); roofs_draw_ghost_body(b); PROF_END(t, PR_GHOST); }   /* timed (trace) */
 

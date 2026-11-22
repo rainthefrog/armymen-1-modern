@@ -2719,7 +2719,9 @@ static void cheat_keys(void)
     /* Ctrl+Y (testing): Sarge to [debug] teleport_to = x,y (world px) - to stage a spot the rig cannot walk to */
     static int y_was;
     int yk = fg && ctrl && key_down('Y');
-    if (yk && !y_was && u && !SARGE_VEHICLE(u)) {
+    /* not while Sarge is off the map (UNDEPLOY GreenSarge, e.g. in the extraction helicopter: position 0,0) - placing
+     * him then crashed in the game (0x4396c8, Wine 2026-11-21) */
+    if (yk && !y_was && u && !SARGE_VEHICLE(u) && SARGE_X(u) > 0 && SARGE_Y(u) > 0) {
         char s[32] = ""; static int presses;
         GetPrivateProfileStringA("debug", "teleport_to", "", s, sizeof s, mod_ini_path());
         const char *comma = strchr(s, ',');
@@ -3338,6 +3340,8 @@ void controls_reset(void)
 #define MAP_W          (*(int *)0x4e2ffc)      /* anything outside it (clamp in FUN_0040e100) */
 #define MAP_H          (*(int *)0x4e3000)
 #define CAM_SNAP_DIST  600                     /* farther than this (new map, respawn): jump, no easing */
+#define AIR_FOCUS_HOLD_MS 1500                 /* an aircraft that moved this recently is flying: the camera shows it */
+#define AIR_FOCUS_EASE_MS 900                  /* camera Sarge <-> aircraft: this long (smoothstep) */
 #define HUD_COVER_H    94                      /* rows of the battlefield the HUD panel covers */
 #define LOB_CAMERA_LEAD 0.5                    /* camera lead toward the pointer with a grenade / mortar: at least */
 #define LOB_CAMERA_LEAD_MAX 4.0                /* ... at most */
@@ -3759,6 +3763,48 @@ static void controls_camera_body(void)
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    /* Aircraft focus (2026-11-21, user, mission 9: "looks like the pause on mission end is related to the helicopter -
+     * is it supposed to focus on the helicopter? its not"). The extraction helicopter (Desert 4-2, Alpine 4-2: map
+     * objects the mission script moves, roofs.c roofs_aircraft_focus) flies in, lands, takes Sarge (UNDEPLOY
+     * GreenSarge) and the win only comes once it has left the map (script "Gone"): the original camera
+     * (FUN_0040dcd0 centre 0x4e3050, moved only by Sarge's scroll code FUN_0040e100 / FUN_0040e2d0) never looks at
+     * it: the view stayed on Sarge while it flew in, and after boarding (Sarge at 0,0) jumped to the map corner. Now, while it flies (it moved within AIR_FOCUS_HOLD_MS), the camera
+     * glides to it (weight fw eased over AIR_FOCUS_EASE_MS) and back to Sarge once it stands (landed, Sarge still on
+     * the ground). [display] air_layer = 0: off. */
+    static double fw;                          /* 0 = Sarge, 1 = the aircraft */
+    static double fax, fay, sgx, sgy;          /* the aircraft's middle; Sarge's last position (also once he boarded) */
+    static int sg_have;
+    static LARGE_INTEGER flast;
+    {
+        int ax, ay;
+        static unsigned sg_run;                /* a new mission: Sarge's last spot is from the old one */
+        if (gameplay_run(NULL, NULL) != sg_run) { sg_run = gameplay_run(NULL, NULL); sg_have = 0; fw = 0; }
+        /* Sarge taken off the map (UNDEPLOY GreenSarge when he boards: position 0,0 - the log's screen -224,-224): the modern camera followed
+         * that position into the map's top-left corner (Wine 2026-11-21, before this change too) - now it stays on the
+         * aircraft he boarded (any that moved in this mission), else on his last spot */
+        int off = u && (SARGE_X(u) <= 0 || SARGE_Y(u) <= 0);
+        int foc = roofs_aircraft_focus(&ax, &ay, off ? 0xffffffffu : AIR_FOCUS_HOLD_MS) && layout_view_is_gameplay();
+        double fdt = flast.QuadPart ? (double)(now.QuadPart - flast.QuadPart) * 1000.0 / (double)freq.QuadPart : 0;
+        flast = now;
+        if (fdt > 250) fdt = 250;
+        if (foc) { fax = ax; fay = ay; }
+        double was = fw;
+        fw = clampd(fw + (foc ? fdt : -fdt) / AIR_FOCUS_EASE_MS, 0, 1);
+        if (u && SARGE_X(u) > 0 && SARGE_Y(u) > 0) { sgx = SARGE_X(u); sgy = SARGE_Y(u); sg_have = 1; }
+        if ((fw > 0) != (was > 0) && g_cfg.log >= 1) mlog("camera: %s the aircraft at %d,%d", fw > 0 ? "follows" : "leaves", (int)fax, (int)fay);
+        if (off && g_cfg.log >= 2) { static DWORD at; if (GetTickCount() - at > 500) { at = GetTickCount(); mlog("camera: Sarge off the map (%d,%d): held at %.0f,%.0f, aircraft %d, menu cursor %d", SARGE_X(u), SARGE_Y(u), sgx, sgy, foc, MENU_CURSOR_SHOWN ? 1 : 0); } }
+        if ((fw > 0 || off) && (!g_cfg.controls_modern || !u || off) && sg_have && layout_view_is_gameplay() && (off || !MENU_CURSOR_SHOWN) && VIEW_W > 0 && VIEW_H > 0) {
+            /* classic controls / no Sarge on the map: the centre eased between Sarge's last spot and the aircraft */
+            double s = fw * fw * (3 - 2 * fw);
+            double cx = sgx + (fax - sgx) * s, cy = sgy + (fay - sgy) * s;
+            if (g_cfg.width > LAYOUT_DESIGN_W) cy += HUD_COVER_H / 2;
+            CAM_CENTRE_X = (short)floor(clamp_centre(cx, BOUND_L, MAP_W, VIEW_W, 0) + 0.5);
+            CAM_CENTRE_Y = (short)floor(clamp_centre(cy, BOUND_T, MAP_H, VIEW_H, controls_map_bottom_room()) + 0.5);
+            have = 0; fhave = 0; g_subpx_on = 0;
+            PX_GAME(controls_camera_original());
+            return;
+        }
+    }
     if (!g_cfg.controls_modern || !u || MENU_CURSOR_SHOWN || !layout_view_is_gameplay() ||
         VIEW_W <= 0 || VIEW_H <= 0) {
         have = 0; fhave = 0;
@@ -3810,6 +3856,11 @@ static void controls_camera_body(void)
     last = now;
     BYTE *veh = (BYTE *)(uintptr_t)SARGE_VEHICLE(u);     /* in a vehicle: follow the vehicle the same way */
     double ux = veh ? VEH_X(veh) : SARGE_X(u), uy = veh ? VEH_Y(veh) : SARGE_Y(u);
+    if (fw > 0) {                              /* aircraft focus (above): the followed point glides to it, no lead */
+        double s = fw * fw * (3 - 2 * fw);
+        ux += (fax - ux) * s; uy += (fay - uy) * s;
+        tlx *= 1 - s; tly *= 1 - s;
+    }
     /* Smooth estimate of where the unit really is between its whole-pixel steps (alpha-beta filter on
      * the high-resolution clock), kept within 0.9 px of the stored position. The camera follows the
      * estimate; the leftover fraction of the integer camera is shown as a sub-pixel shift of the
