@@ -49,7 +49,8 @@ enum { W_ITEM, W_PAD, W_POINT };
 /* join (2026-11-21, user: "some of the missions (like cross the bridge) should be combined with the next one (go to the weapon
  * depot) and some should be split like get the tank and the cross the bridge"): this waypoint's leg is SHOWN together with
  * the next leg (one continuous path); each still advances on its own. Splits = extra W_POINT stops in the table. */
-typedef struct { int mission, stage, kind; const char *name; int pad, x, y; const char *need; const char *drive; int post; const char *until; int join; } Way;
+typedef struct { int mission, stage, kind; const char *name; int pad, x, y; const char *need; const char *drive; int post; const char *until; int join; const char *escort; } Way;
+/* escort (2026-11-21): while this waypoint is the current one, the lane is that VEHICLE's own route (ESCORTS below). */
 /* need: as objectives.c TARGETS ("word" / "!word" in the briefing text; Alpine 1 scripts swapped, open point A).
  * drive: the leg TO this waypoint is driven in that vehicle (path_find_vehicle with its footprint).
  * post (2026-11-21): a unit that HOLDS ITS POST - the script orders it "GOTO <its own name>" (des4_2:25-31,
@@ -68,9 +69,9 @@ static const Way WAYS[] = {
     { 4, 0, W_POINT, 0, 0, 483, 494, 0, 0, 0, "TanRifle20|TanRifle21|TanRifle22" },   /* done: the three killed */
     { 4, 1, W_PAD, 0, 11 },             { 4, 2, W_PAD, 0, 10 },                          /* des2_1:150-160 */
     { 5, 0, W_ITEM, "BigBase" },        { 5, 1, W_PAD, 0, 10 },                          /* des2_2:63-65, 130-133 (Key1 drops at it) */
-    { 6, 0, W_PAD, 0, 10 },             { 6, 1, W_POINT, 0, 0, 2390, 2700 }, { 6, 2, W_PAD, 0, 11 },   /* des3_1:11-14, 117-133 */
-    { 7, 0, W_ITEM, "Bank" },           { 7, 1, W_PAD, 0, 10 },                          /* des3_2:63-65, 92 */
-    { 8, 0, W_PAD, 0, 55 },             { 8, 1, W_PAD, 0, 0 }, { 8, 2, W_POINT, 0, 0, 3970, 2550 },   /* des4_1: escort to Path55, SargeGoal, end (best reading) */
+    { 6, 0, W_PAD, 0, 10 },             { 6, 1, W_POINT, 0, 0, 2390, 2700, 0, 0, 0, 0, 0, "GreenHalftrack1" }, { 6, 2, W_PAD, 0, 11 },   /* des3_1:11-14, 117-133 */
+    { 7, 0, W_ITEM, "Bank" },           { 7, 1, W_PAD, 0, 10, 0, 0, 0, 0, 0, 0, 0, "GreenHalftrack1" },   /* des3_2:63-65, 92, 168-170 */
+    { 8, 0, W_PAD, 0, 55, 0, 0, 0, 0, 0, 0, 0, "GreenHalftrack3" }, { 8, 1, W_PAD, 0, 0 }, { 8, 2, W_POINT, 0, 0, 3970, 2550 },   /* des4_1: escort to Path55, SargeGoal, end (best reading) */
     POST(9, 0, "TanMortar3"), POST(9, 0, "TanMortar4"), POST(9, 0, "TanRifle33"), POST(9, 0, "TanRifle34"),
     POST(9, 0, "TanGrenadier7"), POST(9, 0, "TanGrenadier9"), POST(9, 0, "TanRifle35"), { 9, 1, W_PAD, 0, 99 },   /* des4_2:55-68 */
     { 10, 0, W_ITEM, "truck", 0, 0, 0, "truck" },                                         /* alp1_2:85-88 */
@@ -143,18 +144,29 @@ static int wp_join(int k)                /* a member of waypoint k has join: its
     for (int i = 0; i < g_nmem; i++) if (g_mem_wp[i] == k && g_mem[i]->join) return 1;
     return 0;
 }
+static int escort_lane(const MissionPt **pts);          /* escort section below: the vehicle's lane (0 = not active) */
+static int escort_wp_done(int k, const char **why);     /* -1: k is no escort waypoint now (normal rules), else 0 / 1 */
+static int g_build_serial, g_esc_shown;                  /* for missionpath_points_key */
 int missionpath_points(const MissionPt **pts)
 {
     *pts = g_pts;
+    g_esc_shown = 0;
     if (!g_cfg.mission_path || g_phase != 2) return 0;
     if (g_cfg.mission_path_all) return g_npts;
     if (g_cur >= g_nwp) return 0;
+    { int n = escort_lane(pts); if (n >= 2) { g_esc_shown = 1; return n; } *pts = g_pts; }
     int end = g_cur;
     while (end + 1 < g_nwp && wp_join(end)) end++;          /* joined legs: one continuous path */
     int a = g_leg_first[g_cur], b = g_leg_first[end + 1];
     if (a < 0 || b <= a || b >= g_npts) return 0;
     *pts = g_pts + a;
     return b - a + 1;
+}
+/* which leg is shown (modern.c restarts the lane draw-in when it changes): the escort lane's first point moves with the
+ * vehicle every frame, so the old "other first point" test would restart the draw-in all the time */
+int missionpath_points_key(void)
+{
+    return (g_build_serial << 12) ^ (g_cur << 2) ^ (g_esc_shown ? 1 : 0) ^ (g_cfg.mission_path_all ? 2 : 0);
 }
 
 static void add(int x, int y, int dashed, int wp)
@@ -323,6 +335,7 @@ static int names_done(const char *list)                 /* "a|b": every one foun
 }
 static int wp_done(int k, const char **why)
 {
+    { int e = escort_wp_done(k, why); if (e >= 0) return e; }
     int sx, sy, how = sarge_at(&sx, &sy);
     if (!how) return 0;
     int r = how == 2 ? REACH_VEH : REACH_PX, near_wp = dist2(sx, sy, g_wx[k], g_wy[k]) <= r * r, all = 1, any = 0;
@@ -355,6 +368,305 @@ static void progress(void)
             else mlog("missionpath: waypoint %d done (%s): the last one - no leg shown", g_cur, why);
         }
     }
+}
+
+/* ---------------------------------------------------------------- escort: the lane follows the vehicle (2026-11-21)
+ * User: "for the following the halftrack mission - have the mission path follow the halftrack path and don't start the
+ * next leg until the halftrack gets there". The half-track missions (Army Men\Maps):
+ *   - mission 8 (des4_1, the escort): GreenHalftrack3 is sent pad to pad by the script (ORDER GOTO Path15, on_Path16 ->
+ *     Path22, on_Path23 -> Path26, 27 -> 29, 30 -> 35, 36 -> 39, 40 -> 45, 46 -> 48, 49 -> 50; on_Path55 = MadeIt;
+ *     des4_1:269-347; a goal not reached is ordered again 5 s later);
+ *   - mission 6 (des3_1:132-136): GreenHalftrack1 GOTO (2390, 2700), the win is the half-track on pad 11 (TripLine);
+ *   - mission 7 (des3_2:168-170): GreenHalftrack1 GOTO (509, 3760), the win is the half-track AND Sarge on pad 10.
+ * While the escort waypoint is the current one and the vehicle is alive, the lane shown is:
+ *   1. the vehicle's position (VEHICLE +4 / +6), then the route the GAME's vehicle AI follows now: VEHICLE +0xe4 aiGoal
+ *      (SPOINT, the script ORDER's goal: FUN_0041d940 stores it; 0 = none, cleared on arrival in FUN_00430140),
+ *      VEHICLE +0xe0 = the AI controller (0x1e4 bytes, FUN_00430040; +0x1c0 back pointer to the vehicle) whose route
+ *      record starts at +0 (FUN_004377c0 / FUN_004378f0 / FUN_00437b20): +0x00 goal SPOINT, +0x04 done flag, +0x0c the
+ *      next route point, +0x10 count of the points after it, +0x14 those points (SPOINTs, <= 97; the game's planner
+ *      FUN_0042b0d0 fills them, FUN_00437b20 pops the next one), then the goal itself;
+ *   2. then the script's later goals in order (ESCORTS), each piece planned once by the vehicle tile planner
+ *      (path_find_vehicle with the vehicle's footprint) when the escort starts - the game gives those orders later;
+ *   3. where the vehicle has no route now (waiting for the next order, the 5 s retry, the soldiers boarding) or its
+ *      goal is not one of the script goals: a piece from it (or its goal) to the next script goal, planned the same way
+ *      (resumable, one call per frame, again when the vehicle moved > ESC_REPLAN_PX).
+ *   Rebuilt every frame (the vehicle moves); no variation (it is the vehicle's real path). The goal index only moves on:
+ *   to a script goal the vehicle is ordered to, or past the one it stands on.
+ * DONE: the vehicle on its finish pad (the script's own win test), plus Sarge on it where the script asks that too;
+ *   Sarge reaching the waypoint does not count. If the vehicle is destroyed / gone: the normal leg and rules. */
+typedef struct { int pad, x, y; } EscGoal;               /* pad >= 0: that pad's centre, else the point */
+typedef struct { int mission; const char *vehicle; int n; EscGoal goal[12]; int finish_pad, sarge_too; } Escort;
+static const Escort ESCORTS[] = {
+    { 6, "GreenHalftrack1", 1, { { -1, 2390, 2700 } }, 11, 0 },
+    { 7, "GreenHalftrack1", 1, { { -1, 509, 3760 } }, 10, 1 },
+    { 8, "GreenHalftrack3", 10, { { 15 }, { 22 }, { 26 }, { 29 }, { 35 }, { 39 }, { 45 }, { 48 }, { 50 }, { 55 } }, 55, 0 },
+};
+#define ESC_MAX        13                /* script goals + the waypoint */
+#define ESC_PTS        1200
+#define ESC_MATCH_PX   64                /* the vehicle's goal is this script goal (the game snaps the goal to a legal tile) */
+#define ESC_AT_PX      48                /* the vehicle is at a point goal */
+#define ESC_REPLAN_PX  48
+#define ESC_REPLAN_MS  500
+#define ESC_LOG_MS     2000
+#define AI_CTRL(v)     (*(BYTE **)((v) + 0xe0))
+#define AI_GOAL(v)     (*(DWORD *)((v) + 0xe4))
+#define RT_GOAL(c)     (*(DWORD *)((c) + 0x00))
+#define RT_DONE(c)     (*(BYTE *)((c) + 0x04))
+#define RT_NEXT(c)     (*(DWORD *)((c) + 0x0c))
+#define RT_COUNT(c)    (*(int *)((c) + 0x10))
+#define RT_PTS(c)      ((const DWORD *)((c) + 0x14))
+#define RT_VEHICLE(c)  (*(BYTE **)((c) + 0x1c0))
+#define RT_MAX         97
+#define CTRL_SIZE      0x1e4
+#define SPX(p)         ((short)((p) & 0xffff))
+#define SPY(p)         ((short)((p) >> 16))
+
+typedef struct { MissionPt *pts; int max, n, cx, cy, tx, ty, calls, fin; } Plan;   /* a chained tile-planner run */
+static const Escort *g_esc; static int g_esc_wp = -1, g_esc_type, g_esc_ng, g_esc_idx, g_esc_dead, g_esc_logged_on;
+static int g_esc_gx[ESC_MAX], g_esc_gy[ESC_MAX], g_esc_gpad[ESC_MAX];
+static MissionPt g_tail[ESC_PTS]; static int g_tail_first[ESC_MAX + 1], g_tail_seg; static Plan g_tplan;   /* goal i-1 -> goal i */
+static MissionPt g_bbuf[2][ESC_PTS / 2]; static int g_bshow = -1, g_bshow_n, g_bshow_to, g_bshow_fx, g_bshow_fy;   /* bridge shown */
+static Plan g_bplan; static int g_bplan_on, g_bplan_to, g_bplan_fx, g_bplan_fy; static DWORD g_bplan_t;          /* bridge being planned */
+static MissionPt g_lane[ESC_PTS]; static int g_lane_n; static DWORD g_esc_log_t;
+
+static void plan_begin(Plan *p, MissionPt *buf, int max, int fx, int fy, int tx, int ty)
+{
+    p->pts = buf; p->max = max; p->n = 0; p->cx = fx; p->cy = fy; p->tx = tx; p->ty = ty; p->calls = 0; p->fin = 0;
+}
+static void plan_add(Plan *p, int x, int y, int dashed)
+{
+    if (p->n >= p->max) return;
+    if (p->n && p->pts[p->n - 1].x == x && p->pts[p->n - 1].y == y) return;
+    p->pts[p->n++] = (MissionPt){ (short)x, (short)y, (BYTE)dashed, 0 };
+}
+static void plan_step(Plan *p, int type)                 /* one path_find_vehicle call; p->fin when the piece is finished */
+{
+    if (p->fin) return;
+    POINT out[96]; volatile int n = 0; Guard gd;
+    if (GUARD_TRY(gd, "mission path, escort (missionpath.c)")) { n = path_find_vehicle(type, p->cx, p->cy, p->tx, p->ty, out, 96); guard_leave(&gd); }
+    else n = -1;
+    p->calls++;
+    int before = dist2(p->cx, p->cy, p->tx, p->ty);
+    if (n > 0) { for (int i = 0; i < n; i++) plan_add(p, out[i].x, out[i].y, 0); p->cx = out[n - 1].x; p->cy = out[n - 1].y; }
+    int after = dist2(p->cx, p->cy, p->tx, p->ty), reached = after <= 32 * 32;
+    if (reached || n <= 0 || before - after < MIN_PROGRESS * MIN_PROGRESS || p->calls >= LEG_CALLS) {
+        if (!reached && g_cfg.log >= 1) mlog("missionpath: escort piece to %d,%d ends at %d,%d (%s) - rest dashed", p->tx, p->ty, p->cx, p->cy,
+                                             n <= 0 ? "no route" : p->calls >= LEG_CALLS ? "out of pieces" : "no progress");
+        if (reached && p->n) p->n--;                      /* the last point becomes the target itself */
+        plan_add(p, p->tx, p->ty, !reached);
+        p->fin = 1;
+    }
+}
+
+/* the escort vehicle now: NULL when this mission has none or it is destroyed / gone (then g_esc_dead) */
+static BYTE *esc_vehicle(void)
+{
+    if (!g_esc || g_esc_dead) return NULL;
+    int x, y, raw = 0; BYTE *v = NULL;
+    int s = objectives_item_ground(g_esc->vehicle, &x, &y, &raw, &v);
+    if (s == 1 && v && raw == 3 && *(short *)(v + 0x1c) > 0) return v;
+    if (s == -1 || s == -2) {
+        g_esc_dead = 1;
+        if (g_cfg.log >= 1) mlog("missionpath: escort %s %s - the normal leg and rules for waypoint %d", g_esc->vehicle, s == -1 ? "destroyed" : "gone", g_esc_wp + 1);
+    }
+    return NULL;
+}
+static void escort_setup(void)                           /* the route is ready (built or reused): find this mission's escort */
+{
+    g_esc = NULL; g_esc_wp = -1; g_esc_dead = 0; g_esc_idx = 0; g_tail_seg = 0; g_lane_n = 0; g_esc_logged_on = 0;
+    g_bshow = -1; g_bplan_on = 0;
+    BYTE *g = GAME;
+    if (!g) return;
+    int m = GAME_MISSION(g);
+    for (int i = 0; i < g_nmem && g_esc_wp < 0; i++) if (g_mem[i]->escort) {
+        for (int e = 0; e < (int)(sizeof ESCORTS / sizeof *ESCORTS); e++)
+            if (ESCORTS[e].mission == m && !lstrcmpA(ESCORTS[e].vehicle, g_mem[i]->escort)) { g_esc = &ESCORTS[e]; g_esc_wp = g_mem_wp[i]; }
+    }
+    if (!g_esc) return;
+    int x, y, raw = 0; BYTE *v = NULL;
+    if (objectives_item_ground(g_esc->vehicle, &x, &y, &raw, &v) != 1 || !v || raw != 3) {
+        if (g_cfg.log >= 1) mlog("missionpath: escort %s not on the map - normal leg", g_esc->vehicle);
+        g_esc = NULL; g_esc_wp = -1; return;
+    }
+    g_esc_type = VEH_TYPE(v) - 1;
+    g_esc_ng = 0;
+    for (int i = 0; i < g_esc->n && g_esc_ng < ESC_MAX - 1; i++) {
+        const EscGoal *eg = &g_esc->goal[i]; int px = eg->x, py = eg->y;
+        if (eg->pad >= 0) {
+            const short *p = PAD_LOC(eg->pad);
+            if (!p[0] && !p[1]) { if (g_cfg.log >= 1) mlog("missionpath: escort pad %d has no location - skipped", eg->pad); continue; }
+            px = p[0] + 8; py = p[1] + 8; pad_centre(eg->pad, &px, &py);
+        }
+        g_esc_gx[g_esc_ng] = px; g_esc_gy[g_esc_ng] = py; g_esc_gpad[g_esc_ng] = eg->pad; g_esc_ng++;
+    }
+    int k = g_esc_wp;                                     /* the waypoint itself last, when it is not the last goal */
+    if (!g_esc_ng || dist2(g_esc_gx[g_esc_ng - 1], g_esc_gy[g_esc_ng - 1], g_wx[k], g_wy[k]) > ESC_AT_PX * ESC_AT_PX) {
+        g_esc_gx[g_esc_ng] = g_wx[k]; g_esc_gy[g_esc_ng] = g_wy[k]; g_esc_gpad[g_esc_ng] = g_esc->finish_pad; g_esc_ng++;
+    }
+    g_tail_first[0] = 0; g_tail_first[1] = 0; g_tail_seg = 1;
+    if (g_esc_ng > 1) plan_begin(&g_tplan, g_tail, ESC_PTS, g_esc_gx[0], g_esc_gy[0], g_esc_gx[1], g_esc_gy[1]);
+    if (g_cfg.log >= 1) {
+        char b[300]; int o = 0; b[0] = 0;
+        for (int i = 0; i < g_esc_ng && o < 260; i++) o += wsprintfA(b + o, " %d,%d%s", g_esc_gx[i], g_esc_gy[i], g_esc_gpad[i] >= 0 ? "(pad)" : "");
+        mlog("missionpath: escort %s (vehicle type %d) for waypoint %d, finish pad %d%s, script goals:%s", g_esc->vehicle, g_esc_type, g_esc_wp + 1,
+             g_esc->finish_pad, g_esc->sarge_too ? " (with Sarge)" : "", b);
+    }
+}
+static int esc_at_goal(int i, int x, int y)              /* x, y at / on script goal i */
+{
+    if (g_esc_gpad[i] >= 0 && on_pad(g_esc_gpad[i], x, y)) return 1;
+    return dist2(x, y, g_esc_gx[i], g_esc_gy[i]) <= ESC_AT_PX * ESC_AT_PX;
+}
+static int esc_goal_index(int x, int y)                  /* the script goal (from the current one on) this point is, else -1 */
+{
+    for (int i = g_esc_idx; i < g_esc_ng; i++)
+        if ((g_esc_gpad[i] >= 0 && on_pad(g_esc_gpad[i], x, y)) || dist2(x, y, g_esc_gx[i], g_esc_gy[i]) <= ESC_MATCH_PX * ESC_MATCH_PX) return i;
+    for (int i = g_esc_idx; i < g_esc_ng; i++) {          /* a pad goal whose padLocations tile (the game's GOTO point) is off its centre */
+        if (g_esc_gpad[i] < 0) continue;
+        const short *p = PAD_LOC(g_esc_gpad[i]);
+        if (dist2(x, y, p[0] + 8, p[1] + 8) <= ESC_MATCH_PX * ESC_MATCH_PX) return i;
+    }
+    return -1;
+}
+/* the game's route points (16 px tiles, 8-way steps) thinned for drawing: from each kept point, the farthest point
+ * with every point between within ESC_THIN_PX of the straight line is the next one kept; lane_add'ed (the first, the
+ * vehicle, is in the lane already); rp[n - 1] stays the last point */
+#define ESC_THIN_PX 20.0
+static void lane_add(int x, int y, int dashed);
+static void esc_thin(POINT *rp, int n)
+{
+    int j = 0;
+    while (j < n - 1) {
+        int k = j + 1;
+        for (int t = j + 2; t < n; t++) {
+            double sx = rp[t].x - rp[j].x, sy = rp[t].y - rp[j].y, l = sqrt(sx * sx + sy * sy); int ok = l > 0.5;
+            for (int m = j + 1; m < t && ok; m++) if (fabs((rp[m].x - rp[j].x) * sy - (rp[m].y - rp[j].y) * sx) / l > ESC_THIN_PX) ok = 0;
+            if (!ok) break;
+            k = t;
+        }
+        lane_add(rp[k].x, rp[k].y, 0);
+        j = k;
+    }
+}
+static void lane_add(int x, int y, int dashed)
+{
+    if (g_lane_n >= ESC_PTS) return;
+    if (g_lane_n && g_lane[g_lane_n - 1].x == x && g_lane[g_lane_n - 1].y == y) return;
+    g_lane[g_lane_n++] = (MissionPt){ (short)x, (short)y, (BYTE)dashed, 0 };
+}
+/* the piece from fx, fy to script goal `to`: the planned one when it fits, else planning starts (straight dashed meanwhile) */
+static void lane_bridge(int fx, int fy, int to)
+{
+    DWORD now = GetTickCount();
+    int fits = g_bshow >= 0 && g_bshow_to == to && dist2(fx, fy, g_bshow_fx, g_bshow_fy) <= ESC_REPLAN_PX * ESC_REPLAN_PX;
+    if (!fits && (!g_bplan_on || g_bplan_to != to) && (now - g_bplan_t >= ESC_REPLAN_MS || g_bshow < 0 || g_bshow_to != to)) {
+        int buf = g_bshow == 0 ? 1 : 0;
+        plan_begin(&g_bplan, g_bbuf[buf], ESC_PTS / 2, fx, fy, g_esc_gx[to], g_esc_gy[to]);
+        g_bplan_on = 1; g_bplan_to = to; g_bplan_fx = fx; g_bplan_fy = fy; g_bplan_t = now;
+    }
+    if (g_bshow >= 0 && g_bshow_to == to) {               /* the last planned piece (until the new one is ready) */
+        int s = 0;                                        /* from its point nearest to fx, fy: the part already driven is dropped */
+        for (int i = 1; i < g_bshow_n; i++) if (dist2(fx, fy, g_bbuf[g_bshow][i].x, g_bbuf[g_bshow][i].y) < dist2(fx, fy, g_bbuf[g_bshow][s].x, g_bbuf[g_bshow][s].y)) s = i;
+        for (int i = s; i < g_bshow_n; i++) lane_add(g_bbuf[g_bshow][i].x, g_bbuf[g_bshow][i].y, g_bbuf[g_bshow][i].dashed);
+    } else lane_add(g_esc_gx[to], g_esc_gy[to], 1);
+}
+static void lane_tail(int from)                          /* the planned pieces after script goal `from` */
+{
+    for (int s = from + 1; s < g_esc_ng; s++) {
+        if (s >= g_tail_seg) { lane_add(g_esc_gx[s], g_esc_gy[s], 1); continue; }   /* not planned yet: straight, dashed */
+        for (int i = g_tail_first[s]; i < g_tail_first[s + 1]; i++) lane_add(g_tail[i].x, g_tail[i].y, g_tail[i].dashed);
+    }
+}
+static void escort_frame(void)                           /* game thread, every play frame once the route is ready */
+{
+    g_lane_n = 0;
+    if (!g_esc || g_esc_ng < 1) return;
+    if (g_tail_seg < g_esc_ng && g_esc_ng > 1) {          /* the script pieces: one planner call per frame */
+        plan_step(&g_tplan, g_esc_type);                  /* piece s = g_tail[g_tail_first[s] .. g_tail_first[s + 1]) */
+        if (g_tplan.fin) {
+            int base = g_tail_first[g_tail_seg] + g_tplan.n;
+            g_tail_first[g_tail_seg + 1] = base;
+            if (g_cfg.log >= 1) mlog("missionpath: escort script piece %d (%d,%d -> %d,%d): %d points", g_tail_seg, g_esc_gx[g_tail_seg - 1], g_esc_gy[g_tail_seg - 1],
+                                     g_esc_gx[g_tail_seg], g_esc_gy[g_tail_seg], g_tplan.n);
+            g_tail_seg++;
+            if (g_tail_seg < g_esc_ng)                    /* the next piece continues in the same buffer */
+                plan_begin(&g_tplan, g_tail + base, ESC_PTS - base, g_esc_gx[g_tail_seg - 1], g_esc_gy[g_tail_seg - 1], g_esc_gx[g_tail_seg], g_esc_gy[g_tail_seg]);
+        }
+    }
+    if (g_bplan_on) {                                     /* the bridge being planned: one call per frame */
+        plan_step(&g_bplan, g_esc_type);
+        if (g_bplan.fin) {
+            g_bshow = g_bplan.pts == g_bbuf[0] ? 0 : 1; g_bshow_n = g_bplan.n; g_bshow_to = g_bplan_to; g_bshow_fx = g_bplan_fx; g_bshow_fy = g_bplan_fy;
+            g_bplan_on = 0;
+            if (g_cfg.log >= 1) mlog("missionpath: escort piece from %d,%d to goal %d (%d,%d): %d points", g_bplan_fx, g_bplan_fy, g_bplan_to + 1, g_esc_gx[g_bplan_to], g_esc_gy[g_bplan_to], g_bshow_n);
+        }
+    }
+    if (g_cur != g_esc_wp) return;                        /* the lane only while its waypoint is the current one */
+    BYTE *v = esc_vehicle();
+    if (!v) return;
+    int vx = *(short *)(v + 4), vy = *(short *)(v + 6);
+    while (g_esc_idx < g_esc_ng - 1 && esc_at_goal(g_esc_idx, vx, vy)) {
+        g_esc_idx++;
+        if (g_cfg.log >= 1) mlog("missionpath: escort %s at %d,%d passed script goal %d: next %d,%d", g_esc->vehicle, vx, vy, g_esc_idx, g_esc_gx[g_esc_idx], g_esc_gy[g_esc_idx]);
+    }
+    DWORD goal = AI_GOAL(v); BYTE *c = AI_CTRL(v);
+    int live = SPX(goal) != 0 && c && !IsBadReadPtr(c, CTRL_SIZE) && RT_VEHICLE(c) == v && !RT_DONE(c);
+    int gi = SPX(goal) ? esc_goal_index(SPX(goal), SPY(goal)) : -1;
+    if (gi > g_esc_idx) {
+        if (g_cfg.log >= 1) mlog("missionpath: escort %s ordered to %d,%d = script goal %d", g_esc->vehicle, SPX(goal), SPY(goal), gi + 1);
+        g_esc_idx = gi;
+    }
+    lane_add(vx, vy, 0);
+    int rn = 0;
+    if (live) {                                           /* the game's own route: next point, the points after it, the goal */
+        POINT rp[RT_MAX + 2];
+        rp[rn++] = (POINT){ vx, vy };
+        DWORD nx = RT_NEXT(c);
+        if (SPX(nx)) rp[rn++] = (POINT){ SPX(nx), SPY(nx) };
+        int cnt = RT_COUNT(c);
+        if (cnt < 0) cnt = 0;
+        if (cnt > RT_MAX) cnt = RT_MAX;
+        for (int i = 0; i < cnt; i++) { DWORD p = RT_PTS(c)[i]; if (SPX(p)) rp[rn++] = (POINT){ SPX(p), SPY(p) }; }
+        esc_thin(rp, rn);                                 /* the game's 16 px tile steps zig-zag: straight runs kept as one */
+        int ex = rp[rn - 1].x, ey = rp[rn - 1].y;
+        rn--;                                             /* (log: the game's points, without the vehicle) */
+        /* the game plans at most ~97 points ahead (FUN_0042b0d0, 2000 nodes) and plans on from there later: the rest to
+         * the goal is planned here (a straight line would cross the canyon walls) */
+        if (dist2(ex, ey, SPX(goal), SPY(goal)) > ESC_AT_PX * ESC_AT_PX && gi >= 0) lane_bridge(ex, ey, gi);
+        else lane_add(SPX(goal), SPY(goal), 0);
+        if (gi >= 0) lane_tail(gi);
+        else { lane_bridge(SPX(goal), SPY(goal), g_esc_idx); lane_tail(g_esc_idx); }
+    } else {
+        lane_bridge(vx, vy, g_esc_idx);
+        lane_tail(g_esc_idx);
+    }
+    if (g_lane_n >= 2) g_lane[g_lane_n - 1].wp = (BYTE)(g_esc_wp + 1);
+    if (!g_esc_logged_on && g_cfg.log >= 1) { g_esc_logged_on = 1; mlog("missionpath: escort lane on: leg %d follows %s from %d,%d", g_esc_wp + 1, g_esc->vehicle, vx, vy); }
+    DWORD now = GetTickCount();
+    if (g_cfg.log >= 1 && now - g_esc_log_t >= ESC_LOG_MS) {
+        g_esc_log_t = now;
+        char b[200]; int o = 0; b[0] = 0;
+        for (int i = 1; i < g_lane_n && i <= 8 && o < 170; i++) o += wsprintfA(b + o, " %d,%d%s", g_lane[i].x, g_lane[i].y, g_lane[i].dashed ? "d" : "");
+        mlog("missionpath: escort %s at %d,%d goal %d,%d (%s, game route %d points, script goal %d of %d): lane %d points:%s%s", g_esc->vehicle, vx, vy,
+             SPX(goal), SPY(goal), live ? "driving" : "no route", rn, g_esc_idx + 1, g_esc_ng, g_lane_n, b, g_lane_n > 9 ? " ..." : "");
+    }
+}
+static int escort_lane(const MissionPt **pts)
+{
+    if (!g_esc || g_esc_dead || g_cur != g_esc_wp || g_lane_n < 2) return 0;
+    *pts = g_lane;
+    return g_lane_n;
+}
+static int escort_wp_done(int k, const char **why)
+{
+    if (!g_esc || k != g_esc_wp) return -1;
+    BYTE *v = esc_vehicle();
+    if (!v) return -1;                                    /* destroyed: Sarge's normal rule */
+    int vx = *(short *)(v + 4), vy = *(short *)(v + 6), on = on_pad(g_esc->finish_pad, vx, vy);
+    if (!on && g_esc->finish_pad < 0) on = dist2(vx, vy, g_wx[k], g_wy[k]) <= ESC_AT_PX * ESC_AT_PX;
+    if (on && g_esc->sarge_too) { int sx, sy; on = sarge_at(&sx, &sy) && on_pad(g_esc->finish_pad, sx, sy); }
+    if (on) *why = g_esc->sarge_too ? "the escorted vehicle and Sarge on the finish pad" : "the escorted vehicle on the finish pad";
+    return on;
 }
 
 /* ---------------------------------------------------------------- the walking planner for the mission route
@@ -1130,6 +1442,7 @@ static void route_done(void)
     g_keep.nwp = g_nwp; memcpy(g_keep.wx, g_wx, sizeof g_wx); memcpy(g_keep.wy, g_wy, sizeof g_wy); memcpy(g_keep.wveh, g_wveh, sizeof g_wveh);
     memcpy(g_keep.first, g_leg_first, sizeof g_leg_first);
     g_keep.nmem = g_nmem; memcpy(g_keep.mem, g_mem, sizeof g_mem); memcpy(g_keep.mem_wp, g_mem_wp, sizeof g_mem_wp);
+    g_build_serial++; escort_setup();
 }
 static int route_reuse(int m, int sx, int sy)
 {
@@ -1140,6 +1453,7 @@ static int route_reuse(int m, int sx, int sy)
     g_nmem = g_keep.nmem; memcpy(g_mem, g_keep.mem, sizeof g_mem); memcpy(g_mem_wp, g_keep.mem_wp, sizeof g_mem_wp); memset(g_mem_done, 0, sizeof g_mem_done);
     g_phase = 2; g_cur = 0;
     if (g_cfg.log >= 1) mlog("missionpath: restart of mission %d: the same route (seed %08x, %d points, %d waypoints)", m, g_seed, g_npts, g_nwp);
+    g_build_serial++; escort_setup();
     return 1;
 }
 
@@ -1168,7 +1482,7 @@ void missionpath_frame(void)
         }
         g_last_mission = m; g_left_play = 0;
         g_key = key; g_sarge = s; g_phase = 0; g_frames = 0; g_npts = 0; g_nwp = 0; g_leg = 0; g_leg_calls = 0; g_dphase = 0; g_dpieces = 0;
-        g_nmem = 0; g_cur = 0; g_vstage = 0; g_vtry = 0; g_relax = 0; g_wide_on = 0;
+        g_nmem = 0; g_cur = 0; g_vstage = 0; g_vtry = 0; g_relax = 0; g_wide_on = 0; g_esc = NULL; g_esc_wp = -1; g_lane_n = 0;
         g_cx = *(short *)(s + 4); g_cy = *(short *)(s + 6);
         memset(g_wfree, 0, sizeof g_wfree); memset(g_wclr, 0, sizeof g_wclr); g_wphase = 0;   /* the cell answers belong to this map */
         add(g_cx, g_cy, 0, 0);
@@ -1184,5 +1498,5 @@ void missionpath_frame(void)
         return;
     }
     if (g_phase == 1) leg_step();
-    if (g_phase == 2) progress();
+    if (g_phase == 2) { progress(); escort_frame(); }
 }

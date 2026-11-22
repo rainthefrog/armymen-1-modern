@@ -782,6 +782,7 @@ int path_line_free(int x0, int y0, int x1, int y1);                 /* pathfind.
 void missionpath_install(void);                                    /* missionpath.c: [debug] start_mission (state 2 update entry) */
 void missionpath_frame(void);                                      /* missionpath.c: per gameplay frame (game thread): build once per mission */
 int missionpath_points(const MissionPt **pts);                     /* missionpath.c: the route (world px), 0 = none / not built yet */
+int missionpath_points_key(void);                                  /* missionpath.c: changes when another leg is shown (lane draw-in restart) */
 void missionpath_screen_note(void);                                /* missionpath.c: every frame (dd_present, game thread): menu seen / play left */
 /* capture.c: Sarge drives empty enemy vehicles ([gameplay] drive_enemy_vehicles) */
 typedef void (__fastcall *CaptureTwoFn)(BYTE *a, BYTE *b);
