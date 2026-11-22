@@ -1309,7 +1309,7 @@ static void __attribute__((noinline)) call_set_choice(int c, int s, int m)
     __asm__ volatile ("push %2\n\tcall *%3" : "+c"(c), "+d"(s) : "r"(m), "r"(SET_CHOICE) : "eax", "memory");
 }
 
-static int start_mission_now(int want)
+static int start_mission_now(int want, int want_scenario)
 {
     BYTE *g = GAME;
     if (!g || GAME_TYPE(g) != 0 || CAMPAIGN_COUNT <= 0 || CAMPAIGN_COUNT > 8) return 0;
@@ -1334,7 +1334,8 @@ static int start_mission_now(int want)
             if (SCEN_NMIS(scen) <= 0 || SCEN_NMIS(scen) > 4) continue;
             for (int m = 0; m < SCEN_NMIS(scen); m++) {
                 BYTE *mis = SCEN_MIS(scen, m);
-                if (MIS_ID(mis) != want) continue;
+                if (want_scenario ? (SCEN_ID(scen) != want_scenario || m) : MIS_ID(mis) != want) continue;
+                if (want_scenario) want = MIS_ID(mis);
                 if (m > 0) {                                     /* later part of a scenario: from its first part */
                     g_start_target = want;
                     mlog("missionpath: [debug] start_mission=%d is part %d of its scenario: starting mission %d, "
@@ -1369,19 +1370,37 @@ static int start_mission_now(int want)
     return 0;
 }
 
+/* savestate.c (2026-11-21): a quickload of another mission from the campaign select screen - the save's scenario
+ * is started here (its FIRST part: a later part needs the previous part's army save), the load follows in play */
+static volatile int g_req_scenario;
+void missionpath_request_scenario(int scenario) { g_req_scenario = scenario; }
+int missionpath_screen_state(void)
+{
+#define SCREEN_FULL     (*(BYTE **)0x6a5944)                          /* SCREEN*: +4 its state */
+    BYTE *sc = SCREEN_FULL;
+    return sc && !IsBadReadPtr(sc, 8) ? *(int *)(sc + 4) : -1;
+}
+
 static LONG __fastcall start_update(BYTE *screen)
 {
+    if (g_req_scenario) {
+        int s = g_req_scenario;
+        g_req_scenario = 0;
+        g_start_done = 1;
+        if (start_mission_now(0, s)) return 1;
+    }
     if (!g_start_done) {
         g_start_done = 1;                                       /* once per run: later visits are the normal screen */
         int want = GetPrivateProfileIntA("debug", "start_mission", 0, mod_ini_path());
-        if (want > 0 && start_mission_now(want)) return 1;
+        if (want > 0 && start_mission_now(want, 0)) return 1;
     }
     return ((ScrnUpdFn)SCRN_UPDATE_ORIG)(screen);
 }
 
 void missionpath_install(void)
 {
-    if (GetPrivateProfileIntA("debug", "start_mission", 0, mod_ini_path()) <= 0) return;
+    /* also for savestate.c's load of another mission (missionpath_request_scenario) */
+    if (GetPrivateProfileIntA("debug", "start_mission", 0, mod_ini_path()) <= 0 && !g_cfg.quicksave) return;
     DWORD cur = *(DWORD *)STATE_TABLE_UPDATE_2, mine = (DWORD)(uintptr_t)start_update;
     if (*(DWORD *)(STATE_TABLE_UPDATE_2 - 12) != 2 || cur != SCRN_UPDATE_ORIG) { mlog("missionpath: state table entry 2 unexpected - start_mission off"); return; }
     mlog("patch %-55s %s", "missionpath: [debug] start_mission (state 2 update)", write_mem(STATE_TABLE_UPDATE_2, &mine, 4) ? "applied" : "FAILED");

@@ -503,7 +503,7 @@ static Surf *surf_alloc(DDraw *dd, int w, int h, DWORD caps)
     all_add(s);
     s->vtbl = vt_surf;
     s->ref = 1;
-    surf_count_made++;
+    s->serial = ++surf_count_made;
     s->dd = dd;
     s->caps = caps;
     s->w = w; s->h = h;
@@ -629,4 +629,15 @@ HRESULT surf_create(DDraw *dd, DDSURFACEDESC *desc, Surf **out)
          s->has_ck ? " colorkey" : "", s);
     *out = s;
     return DD_OK;
+}
+
+/* savestate.c, a load from a save file: a surface the save had and this process has not made (same size / caps;
+ * the caller fills pixels, colour key, palette, reference count) */
+Surf *surf_new(DDraw *dd, int w, int h, DWORD caps) { return surf_alloc(dd, w, h, caps); }
+/* savestate.c: every surface this process holds, alive or zombie (ref <= 0) */
+int surf_list_all(Surf **out, int max)
+{
+    int n = 0;
+    for (int i = 0; i < g_nall && n < max; i++) out[n++] = g_all[i];
+    return n;
 }
