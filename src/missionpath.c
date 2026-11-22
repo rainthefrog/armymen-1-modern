@@ -393,7 +393,8 @@ static void progress(void)
  *   Rebuilt every frame (the vehicle moves); no variation (it is the vehicle's real path). The goal index only moves on:
  *   to a script goal the vehicle is ordered to, or past the one it stands on.
  * DONE: the vehicle on its finish pad (the script's own win test), plus Sarge on it where the script asks that too;
- *   Sarge reaching the waypoint does not count. If the vehicle is destroyed / gone: the normal leg and rules. */
+ *   Sarge reaching the waypoint does not count. If the vehicle is destroyed / gone the mission is lost (the game restarts
+ *   it): the last lane stays and the waypoint is never done - no switch to Sarge's own leg (user 2026-11-21). */
 typedef struct { int pad, x, y; } EscGoal;               /* pad >= 0: that pad's centre, else the point */
 typedef struct { int mission; const char *vehicle; int n; EscGoal goal[12]; int finish_pad, sarge_too; } Escort;
 static const Escort ESCORTS[] = {
@@ -467,7 +468,7 @@ static BYTE *esc_vehicle(void)
     if (s == 1 && v && raw == 3 && *(short *)(v + 0x1c) > 0) return v;
     if (s == -1 || s == -2) {
         g_esc_dead = 1;
-        if (g_cfg.log >= 1) mlog("missionpath: escort %s %s - the normal leg and rules for waypoint %d", g_esc->vehicle, s == -1 ? "destroyed" : "gone", g_esc_wp + 1);
+        if (g_cfg.log >= 1) mlog("missionpath: escort %s %s - its last lane stays, waypoint %d not done (the mission is lost)", g_esc->vehicle, s == -1 ? "destroyed" : "gone", g_esc_wp + 1);
     }
     return NULL;
 }
@@ -579,8 +580,10 @@ static void lane_tail(int from)                          /* the planned pieces a
 }
 static void escort_frame(void)                           /* game thread, every play frame once the route is ready */
 {
-    g_lane_n = 0;
+    int keep = g_lane_n;                                  /* 2026-11-21 (user): a destroyed escort loses the mission - */
+    g_lane_n = 0;                                         /* its last lane stays, no switch to Sarge's own leg */
     if (!g_esc || g_esc_ng < 1) return;
+    if (g_esc_dead) { g_lane_n = keep; return; }
     if (g_tail_seg < g_esc_ng && g_esc_ng > 1) {          /* the script pieces: one planner call per frame */
         plan_step(&g_tplan, g_esc_type);                  /* piece s = g_tail[g_tail_first[s] .. g_tail_first[s + 1]) */
         if (g_tplan.fin) {
@@ -603,7 +606,7 @@ static void escort_frame(void)                           /* game thread, every p
     }
     if (g_cur != g_esc_wp) return;                        /* the lane only while its waypoint is the current one */
     BYTE *v = esc_vehicle();
-    if (!v) return;
+    if (!v) { if (g_esc_dead) g_lane_n = keep; return; }
     int vx = *(short *)(v + 4), vy = *(short *)(v + 6);
     while (g_esc_idx < g_esc_ng - 1 && esc_at_goal(g_esc_idx, vx, vy)) {
         g_esc_idx++;
@@ -653,7 +656,7 @@ static void escort_frame(void)                           /* game thread, every p
 }
 static int escort_lane(const MissionPt **pts)
 {
-    if (!g_esc || g_esc_dead || g_cur != g_esc_wp || g_lane_n < 2) return 0;
+    if (!g_esc || g_cur != g_esc_wp || g_lane_n < 2) return 0;
     *pts = g_lane;
     return g_lane_n;
 }
@@ -661,7 +664,7 @@ static int escort_wp_done(int k, const char **why)
 {
     if (!g_esc || k != g_esc_wp) return -1;
     BYTE *v = esc_vehicle();
-    if (!v) return -1;                                    /* destroyed: Sarge's normal rule */
+    if (!v) return g_esc_dead ? 0 : -1;                  /* destroyed: never done (the game loses the mission and restarts it) */
     int vx = *(short *)(v + 4), vy = *(short *)(v + 6), on = on_pad(g_esc->finish_pad, vx, vy);
     if (!on && g_esc->finish_pad < 0) on = dist2(vx, vy, g_wx[k], g_wy[k]) <= ESC_AT_PX * ESC_AT_PX;
     if (on && g_esc->sarge_too) { int sx, sy; on = sarge_at(&sx, &sy) && on_pad(g_esc->finish_pad, sx, sy); }
