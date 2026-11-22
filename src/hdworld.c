@@ -603,8 +603,15 @@ void __fastcall hdworld_drle(int x, int y, const BYTE *d, int x0, int y0, int x1
 { hdworld_drle_original(x, y, d, x0, y0, x1, y1); note_sprite(x, y, d, x0, y0, x1, y1, 1, 0, NULL); }
 void __fastcall hdworld_remap(int x, int y, const BYTE *d, int x0, int y0, int x1, int y1, const BYTE *remap)
 { hdworld_remap_original(x, y, d, x0, y0, x1, y1, remap); note_sprite(x, y, d, x0, y0, x1, y1, 0, 0, remap); }
+/* roofs.c draws a figure a second time over a building front: its shadow was drawn with the first (before the
+ * front) - not again over the front (game thread only) */
+static int g_skip_shadows;
+void hdworld_skip_shadows(int on) { g_skip_shadows = on; }
 void __fastcall hdworld_shadow(int x, int y, const BYTE *d, int x0, int y0, int x1, int y1)
-{ hdworld_shadow_original(x, y, d, x0, y0, x1, y1); note_sprite(x, y, d, x0, y0, x1, y1, 0, 1, NULL); }
+{
+    if (g_skip_shadows) return;
+    hdworld_shadow_original(x, y, d, x0, y0, x1, y1); note_sprite(x, y, d, x0, y0, x1, y1, 0, 1, NULL);
+}
 
 /* ---------------------------------------------------------------- copies between surfaces */
 
