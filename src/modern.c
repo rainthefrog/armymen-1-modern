@@ -986,16 +986,18 @@ static void modern_draw_body(Surf *b)
         QueryPerformanceCounter(&q0);
         const MissionPt *mp; int n = missionpath_points(&mp);
         /* DRAW-IN (2026-11-21, user: "would be cool to animate it drawing in instead of just popping it in"): when a new
-         * leg is shown (other first point / count), the lane grows along the route from its start over LANE_DRAW_MS-ish
+         * leg is shown (missionpath_points_key changed; 2026-11-21: was "other first point / count" - the escort lane starts at the
+         * moving vehicle, so that restarted the draw-in every frame), the lane grows along the route from its start over LANE_DRAW_MS-ish
          * (length / LANE_DRAW_PX_S, clamped LANE_DRAW_MIN..MAX ms, eased out); waypoint rings appear when reached. */
         #define LANE_DRAW_PX_S 2200.0
         #define LANE_DRAW_MIN  500
         #define LANE_DRAW_MAX  1500
-        static const MissionPt *anim_first; static int anim_n; static DWORD anim_t0; static MissionPt anim_pts[2048];
+        static int anim_key = -1; static DWORD anim_t0; static MissionPt anim_pts[2048];
         if (n >= 2) {
             DWORD tnow = GetTickCount();
-            if (mp != anim_first || n != anim_n || mp[0].x != anim_pts[0].x || mp[0].y != anim_pts[0].y) {
-                anim_first = mp; anim_n = n; anim_t0 = tnow; anim_pts[0] = mp[0];
+            int key = missionpath_points_key();
+            if (key != anim_key) {
+                anim_key = key; anim_t0 = tnow;
             }
             double len = 0;
             for (int i = 0; i + 1 < n; i++) len += sqrt((double)(mp[i + 1].x - mp[i].x) * (mp[i + 1].x - mp[i].x) + (double)(mp[i + 1].y - mp[i].y) * (mp[i + 1].y - mp[i].y));
