@@ -185,7 +185,7 @@ static void merge_ammo(BYTE *u, void *item, int arg, int dup_box)
     int cur = CUR_SLOT(u);
     Weapon held = { SLOT_TYPE(u, c), SLOT_ITEM(u, c) };
     SLOT_TYPE(u, c) = NULL; SLOT_ITEM(u, c) = NULL;
-    weapons_touch_original(u, item, arg);
+    PX_GAME(weapons_touch_original(u, item, arg));
     if (SLOT_ITEM(u, c) != item) {               /* not picked up after all */
         SLOT_TYPE(u, c) = held.type; SLOT_ITEM(u, c) = held.item;
         return;
@@ -205,14 +205,13 @@ static void merge_ammo(BYTE *u, void *item, int arg, int dup_box)
     remember(u);
 }
 
-void __fastcall weapons_touch(BYTE *unit, void *item, int arg)
-{
+static void __fastcall weapons_touch_px(BYTE *unit, void *item, int arg) {
     BYTE *u = SARGE;
-    if (!six() || unit != u || !item || SARGE_VEHICLE(u)) { weapons_touch_original(unit, item, arg); return; }
+    if (!six() || unit != u || !item || SARGE_VEHICLE(u)) { PX_GAME(weapons_touch_original(unit, item, arg)); return; }
     valid(u);
     sync(u);
     int c = ITEM_CATEGORY(item), type = ITEM_TYPE(item);
-    if (c == 0) { weapons_touch_original(unit, item, arg); remember(u); return; }   /* auto rifle upgrade, ammo, health ... */
+    if (c == 0) { PX_GAME(weapons_touch_original(unit, item, arg)); remember(u); return; }   /* auto rifle upgrade, ammo, health ... */
 
     int dup = carried_box(u, type);
     if (dup >= 0) {                              /* the same weapon again: take its ammo */
@@ -261,7 +260,7 @@ void __fastcall weapons_touch(BYTE *unit, void *item, int arg)
         stashed = 1;
     }
     int old_box = g_slot_box[c];
-    weapons_touch_original(unit, item, arg);
+    PX_GAME(weapons_touch_original(unit, item, arg));
     if (SLOT_ITEM(u, c) != item) {               /* not picked up: put things back */
         if (stashed) { SLOT_TYPE(u, c) = before.type; SLOT_ITEM(u, c) = before.item; g_store[old_box] = (Weapon){ 0 }; }
         return;
@@ -271,6 +270,7 @@ void __fastcall weapons_touch(BYTE *unit, void *item, int arg)
     if (g_cfg.log >= 2) mlog("weapons: picked up type %d (kind %d) into box %c%d", type, c, box_col(b) ? 'B' : 'A', box_row(b) + 1);
     remember(u);
 }
+void __fastcall weapons_touch(BYTE *unit, void *item, int arg) { PX_BEGIN(px); weapons_touch_px(unit, item, arg); PX_END(px, PR_CHOOKS); }   /* timed: stage PR_CHOOKS (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- per frame */
 
@@ -629,7 +629,7 @@ static void draw_ammo(Surf *back, Weapon w, int b)
     int clip[2] = { column_x(col) + COL_SRC_W - x, BOX_H };
     if (clip[0] <= 0) return;
     if (ammo < 0) { draw_unlimited(back, x, y, t->colour); return; }
-    hud_draw_string_original(back, x, y, buf, t->font, clip, t->colour);
+    PX_GAME(hud_draw_string_original(back, x, y, buf, t->font, clip, t->colour));
 }
 
 /* The game drew each slot's weapon (and its ammo, and the highlight on the current slot) in that

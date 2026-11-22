@@ -855,8 +855,7 @@ int mines_frame(DWORD now, int walking, int *face_x, int *face_y)
     return stop;
 }
 
-void __fastcall mines_lay(BYTE *weapon, int army, DWORD point)
-{
+static void __fastcall mines_lay_px(BYTE *weapon, int army, DWORD point) {
     BYTE *u = SARGE;
     int mine = u && weapon && weapon == SARGE_WEAPON(u) && !IsBadReadPtr(weapon, 0x20) && W_TYPE(weapon) == TYPE_MINE;
     int asked = 0;
@@ -869,7 +868,7 @@ void __fastcall mines_lay(BYTE *weapon, int army, DWORD point)
         R.phase = 0;
     }
     int before = mine ? free_charges(weapon, NULL) : 0, ammo = mine ? W_AMMO(weapon) : 0;
-    MINE_LAY(weapon, army, point);
+    PX_GAME(MINE_LAY(weapon, army, point));
     if (mine) {
         int total, after = free_charges(weapon, &total);
         /* FUN_00447c30 takes the ammo off right after this call */
@@ -879,6 +878,7 @@ void __fastcall mines_lay(BYTE *weapon, int army, DWORD point)
              (short)LOWORD(game_point), (short)HIWORD(game_point), SARGE_X(u), SARGE_Y(u), before, after, total, ammo, ammo > 0 ? ammo - 1 : 0);
     }
 }
+void __fastcall mines_lay(BYTE *weapon, int army, DWORD point) { PX_BEGIN(px); mines_lay_px(weapon, army, point); PX_END(px, PR_MINES); }   /* timed: stage PR_MINES (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- the mine trigger (2026-11-21)
  * Rewrite of FUN_004398d0 (hook_jmp; caller FUN_00439800 "something moves", once per object found at the mover's
@@ -902,8 +902,7 @@ typedef int (__fastcall *IntFn)(int v);
 #define MINE_BLOW        ((ObjFn)0x439970)            /* the mine goes off: off the map (0x446390) + blast 0x434b90 */
 #define OBJ_LAID_AT(o)   (*(DWORD *)((o) + 0xcc))
 #define MINE_ARM_MS      6000                         /* 0x1770 */
-void __fastcall mines_step(BYTE *mine, DWORD *who)
-{
+static void __fastcall mines_step_px(BYTE *mine, DWORD *who) {
     int mod = sweeper_enabled();
     if (who) {
         int army = (int)((*who >> 26) & 7) - 1;
@@ -940,6 +939,7 @@ void __fastcall mines_step(BYTE *mine, DWORD *who)
         MINE_BLOW(mine);
     }
 }
+void __fastcall mines_step(BYTE *mine, DWORD *who) { PX_BEGIN(px); mines_step_px(mine, who); PX_END(px, PR_MINES); }   /* timed: stage PR_MINES (exclusive, common.h) */
 
 /* weapons.c (mine pack top-up, 2026-11-21): how many charges of this mine weapon really lie in the bag - its ammo may
  * never go above this (the top-up used to raise only the ammo count: "more ammo than free charges") */

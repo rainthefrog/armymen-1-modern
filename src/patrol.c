@@ -140,8 +140,7 @@ static void end_patrol(Patrol *p, const char *why)
     p->u = NULL;
 }
 
-void __fastcall patrol_order(BYTE *u, int order, DWORD goal, BYTE *target, int a3, int a4, int a5, int a6, int a7)
-{
+static void __fastcall patrol_order_px(BYTE *u, int order, DWORD goal, BYTE *target, int a3, int a4, int a5, int a6, int a7) {
     uintptr_t from = (uintptr_t)__builtin_return_address(0);
     Patrol *made = NULL;
     if (!g_issuing && u && !IsBadReadPtr(u, 0x100) && UID_TYPE(U_UID(u)) == TYPE_UNIT && enemy_army(UID_ARMY(U_UID(u)))) {
@@ -171,12 +170,13 @@ void __fastcall patrol_order(BYTE *u, int order, DWORD goal, BYTE *target, int a
             }
         }
     }
-    patrol_order_original(u, order, goal, target, a3, a4, a5, a6, a7);
+    PX_GAME(patrol_order_original(u, order, goal, target, a3, a4, a5, a6, a7));
     if (made && U_GOAL(u)) {                     /* the goal as the game stored it (its legal-spot search may move it a little) */
         made->goal = made->set_goal = U_GOAL(u);
         if (PX(made->goal) != PX(goal) || PY(made->goal) != PY(goal)) mlog("patrol: unit %08lx: the game put the march goal at %d,%d", made->uid, PX(made->goal), PY(made->goal));
     }
 }
+void __fastcall patrol_order(BYTE *u, int order, DWORD goal, BYTE *target, int a3, int a4, int a5, int a6, int a7) { PX_BEGIN(px); patrol_order_px(u, order, goal, target, a3, a4, a5, a6, a7); PX_END(px, PR_PATROL); }   /* timed: stage PR_PATROL (exclusive, common.h) */
 
 /* the unit has noticed / engages Sarge (or anyone): the game's fight logic takes over */
 static int engaged(BYTE *u)
@@ -242,7 +242,7 @@ static void scripted_start(DWORD now)
             p->a3 = 1; p->a4 = 3; p->a5 = 3; p->a6 = -2; p->a7 = 0;     /* the arguments the map's marches use (Desert 1 log) */
             p->leg = 0; p->leg_at = now;
             g_issuing = 1;
-            patrol_order_original(u, ORDER_GOTO, p->post, NULL, p->a3, p->a4, p->a5, p->a6, p->a7);
+            PX_GAME(patrol_order_original(u, ORDER_GOTO, p->post, NULL, p->a3, p->a4, p->a5, p->a6, p->a7));
             g_issuing = 0;
             p->set_goal = U_GOAL(u);
             mlog("patrol: %s (unit %08lx at %d,%d) PATROLS %d,%d <-> %d,%d (scripted; first leg end set at %d,%d)", sc->name, p->uid, U_X(u), U_Y(u),
@@ -278,7 +278,7 @@ void patrol_frame(void)
              p->uid, U_X(u), U_Y(u), p->leg ? "post" : "goal", now - p->leg_at, p->leg ? "goal" : "post", PX(next), PY(next), p->turns);
         p->leg_at = now;
         g_issuing = 1;
-        patrol_order_original(u, ORDER_GOTO, next, NULL, p->a3, p->a4, p->a5, p->a6, p->a7);
+        PX_GAME(patrol_order_original(u, ORDER_GOTO, next, NULL, p->a3, p->a4, p->a5, p->a6, p->a7));
         g_issuing = 0;
         p->set_goal = U_GOAL(u);
         int moved = dist_pt(PX(next), PY(next), p->set_goal);
@@ -286,7 +286,7 @@ void patrol_frame(void)
         if (moved > LEG_MOVED_PX) {                    /* no spot there: hold where it stands, as the game does at a march end */
             DWORD here = (DWORD)(WORD)U_X(u) | (DWORD)(WORD)U_Y(u) << 16;
             g_issuing = 1;
-            patrol_order_original(u, ORDER_GOTO, here, NULL, p->a3, p->a4, p->a5, p->a6, p->a7);
+            PX_GAME(patrol_order_original(u, ORDER_GOTO, here, NULL, p->a3, p->a4, p->a5, p->a6, p->a7));
             g_issuing = 0;
             end_patrol(p, "no legal spot at the leg end - holds where it stands");
         }

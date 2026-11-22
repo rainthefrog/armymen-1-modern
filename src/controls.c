@@ -1671,34 +1671,49 @@ HCURSOR controls_cursor(void)
  * the pointer moves to another 8 px cell (at most every 80 ms, 6 ms search budget) or Sarge has moved
  * on (every 500 ms); undecided counts as reachable. */
 static int path_blocked(int x, int y, int dx, int dy);
+/* 2026-11-21 (stutter hunt 2): the up to 5 searches of one question ran in ONE frame (5 x the 6 ms budget = 30 ms
+ * over a spot that is closed off); now ONE search per frame - the same questions, the same answer, at most 4 frames
+ * later (the pointer keeps the previous answer meanwhile). */
 static int pointer_unreachable(BYTE *u, int wx, int wy, DWORD now)
 {
     static int key = -1, skey = -1, res = 1;
     static DWORD at;
+    static struct { int on, i, sx, sy, wx, wy; } Q;         /* a question in progress: neighbour i next */
+    static const int OX[4] = { 12, -12, 0, 0 }, OY[4] = { 0, 0, 12, -12 };
     int k = (wy >> 3) * 512 + (wx >> 3), sk = (SARGE_Y(u) >> 3) * 512 + (SARGE_X(u) >> 3);
+    if (Q.on) {                                              /* the next spot beside Sarge (one search) */
+        for (; Q.i < 4; Q.i++) {
+            if (controls_blocked_at(Q.sx + OX[Q.i], Q.sy + OY[Q.i])) continue;
+            if (path_reachable(Q.sx + OX[Q.i], Q.sy + OY[Q.i], Q.wx, Q.wy, 6)) { res = 1; Q.on = 0; return 0; }
+            Q.i++;
+            if (Q.i < 4) return res == 0;                    /* more next frame (the previous answer meanwhile) */
+            break;
+        }
+        Q.on = 0; res = 0;                                   /* none of them: closed off */
+        return 1;
+    }
     if ((k != key && now - at >= 80) || (sk != skey && now - at >= 500)) {
         int sx = SARGE_X(u), sy = SARGE_Y(u);
-        res = path_reachable(sx, sy, wx, wy, 6);
+        int r = path_reachable(sx, sy, wx, wy, 6);
         /* 2026-11-20 (user: "sarge walks on a barricade or fence and the cursor shows he can't walk even though he
          * can"): the planner's grid is strict (fences, barricades blocked) - standing ON one, his start cell is
          * blocked and every target looked unreachable. Also reachable: a straight walk the game's own test allows,
-         * or a path from a free spot right beside him. */
-        if (!res && !path_blocked(sx, sy, wx - sx, wy - sy)) res = 1;
-        static const int OX[4] = { 12, -12, 0, 0 }, OY[4] = { 0, 0, 12, -12 };
-        for (int i = 0; i < 4 && !res; i++)
-            if (!controls_blocked_at(sx + OX[i], sy + OY[i]) && path_reachable(sx + OX[i], sy + OY[i], wx, wy, 6)) res = 1;
+         * or a path from a free spot right beside him (those: one per frame, above). */
+        if (!r && !path_blocked(sx, sy, wx - sx, wy - sy)) r = 1;
         key = k; skey = sk; at = now;
+        if (r) res = r;
+        else { Q.on = 1; Q.i = 0; Q.sx = sx; Q.sy = sy; Q.wx = wx; Q.wy = wy; }
     }
     return res == 0;
 }
 
 typedef void (__fastcall *PictureFn)(void *pic, int x, int y);
 #define DRAW_PICTURE_TO_SCREEN ((PictureFn)0x4130e0)
-void __fastcall controls_draw_gunsight(void *pic, int x, int y)
-{
+static void __fastcall controls_draw_gunsight_px(void *pic, int x, int y) {
     if (g_hide_reticle) return;
     DRAW_PICTURE_TO_SCREEN(pic, x, y);
 }
+void __fastcall controls_draw_gunsight(void *pic, int x, int y) { PX_BEGIN(px); controls_draw_gunsight_px(pic, x, y); PX_END(px, PR_CHOOKS); }   /* timed: stage PR_CHOOKS (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- modernization (modern.c switches)
  * The control features of the modernization plan, each behind its own switch (modern_on):
@@ -2681,12 +2696,12 @@ static void controls_dispatch_body(void)
 {
     menu_pause_frame();
     if (g_cfg.controls_modern) filter_keyboard();
-    controls_dispatch_original();
+    { PROF_BEGIN(tk); controls_dispatch_original(); PROF_END(tk, PR_C_KEYS); }   /* the game's own keyboard dispatcher */
     if (g_cfg.cheat_keys) cheat_keys();
     throw_track_frame();
-    if (g_cfg.controls_modern) apply_modern_controls();
-    gameplay_frame();                                /* gameplay.c: health regeneration */
-    modern_frame();                                  /* modern.c: mission stats, half damage */
+    if (g_cfg.controls_modern) { PROF_BEGIN(ta); apply_modern_controls(); PROF_END(ta, PR_C_APPLY); }
+    { PROF_BEGIN(tg); gameplay_frame(); PROF_END(tg, PR_C_GAMEPLAY); }   /* gameplay.c: health regeneration */
+    { PROF_BEGIN(tm); modern_frame(); PROF_END(tm, PR_C_MODERN); }       /* modern.c: mission stats, half damage, aware_frame */
     resize_poll();                                   /* resize.c: a fullscreen switch made in a menu */
     weapons_frame();                                 /* weapons.c: spare weapons after a drop */
 }
@@ -2717,9 +2732,8 @@ static void apply_wheel(BYTE *u)
  * reticle is a free cursor at the mouse pointer instead. */
 VoidFnPtr controls_aim_point_original;
 
-void __cdecl controls_aim_point(void)
-{
-    controls_aim_point_original();
+static void __cdecl controls_aim_point_px(void) {
+    PX_GAME(controls_aim_point_original());
     if (!g_cfg.controls_modern) return;
     BYTE *u = SARGE;
     if (!u) return;
@@ -2733,6 +2747,7 @@ void __cdecl controls_aim_point(void)
     *(short *)0x6968d4 = (short)S.cursor_x;
     *(short *)0x6968d6 = (short)S.cursor_y;
 }
+void __cdecl controls_aim_point(void) { PX_BEGIN(px); controls_aim_point_px(); PX_END(px, PR_CHOOKS); }   /* timed: stage PR_CHOOKS (exclusive, common.h) */
 
 
 /* Wrap of FUN_00447d80, which sets the direction a shot will travel (unit +0x25, 0..255) just before
@@ -2784,11 +2799,11 @@ static int aim_shot_at_cursor(BYTE *unit, const char *when)
     return 1;
 }
 
-void __fastcall controls_shot_direction(BYTE *unit)
-{
-    controls_shot_direction_original(unit);
+static void __fastcall controls_shot_direction_px(BYTE *unit) {
+    PX_GAME(controls_shot_direction_original(unit));
     aim_shot_at_cursor(unit, NULL);              /* aiming stance; logged only when fired */
 }
+void __fastcall controls_shot_direction(BYTE *unit) { PX_BEGIN(px); controls_shot_direction_px(unit); PX_END(px, PR_CHOOKS); }   /* timed: stage PR_CHOOKS (exclusive, common.h) */
 
 /* Wrap of FUN_00447c30, which FIRES the shot from the muzzle in direction +0x25 (-> FUN_00445c70).
  * Called from Sarge's update (FUN_004474c0) and 0x43a1b0. The direction is set again here, with
@@ -3020,8 +3035,7 @@ static void throw_track_frame(void)
     }
 }
 
-void __fastcall controls_fire_shot(BYTE *unit)
-{
+static void __fastcall controls_fire_shot_px(BYTE *unit) {
     int tracking = g_throw_pending && unit == SARGE && weapon_is_hold_to_aim(unit);
     int army = tracking ? UID_ARMY_OF(unit) : 0, slot = tracking ? FLOAT_NEXT(army) : 0;
     if (tracking) { g_track_px = g_throw_wx; g_track_py = g_throw_wy; }
@@ -3041,10 +3055,11 @@ void __fastcall controls_fire_shot(BYTE *unit)
         int vx = S.cursor_x + CAMERA_X - m[0], vy = S.cursor_y + CAMERA_Y - m[1];
         if (vx || vy) *(short *)(unit + 0x2c6) = (short)facing_toward(vx, vy);
     }
-    controls_fire_shot_original(unit);
+    PX_GAME(controls_fire_shot_original(unit));
     if (flame) *(short *)(unit + 0x2c6) = body_facing;
     if (tracking && army >= 0 && army < 4) throw_track_start(unit, army, slot);
 }
+void __fastcall controls_fire_shot(BYTE *unit) { PX_BEGIN(px); controls_fire_shot_px(unit); PX_END(px, PR_CHOOKS); }   /* timed: stage PR_CHOOKS (exclusive, common.h) */
 
 /* ---------------------------------------------------------------- keeping the pointer in the window
  * While playing in a window the pointer is kept inside the window (ClipCursor), so the game keeps
@@ -3150,7 +3165,7 @@ static void squad_move(BYTE *obj, int flag, int arg, float mul)
     short speed = OBJ_SPEED(obj), fast = (short)(speed * mul);
     short ox = OBJ_X(obj), oy = OBJ_Y(obj);
     OBJ_SPEED(obj) = fast;
-    controls_move_original(obj, flag, arg);
+    PX_GAME(controls_move_original(obj, flag, arg));
     if (OBJ_SPEED(obj) == fast) OBJ_SPEED(obj) = speed;     /* unless the game set a new speed meanwhile */
     int dx = OBJ_X(obj) - ox, dy = OBJ_Y(obj) - oy;
     if (!dx && !dy) return;
@@ -3172,8 +3187,7 @@ static void squad_move(BYTE *obj, int flag, int arg, float mul)
     }
 }
 
-void __fastcall controls_move(BYTE *obj, int flag, int arg)
-{
+static void __fastcall controls_move_px(BYTE *obj, int flag, int arg) {
     BYTE *u = SARGE;
     float mul = obj && OBJ_SPEED(obj) > 0 ? squad_sprint_speed(obj) : 0;
     if (mul > 1.0f) { squad_move(obj, flag, arg, mul); return; }
@@ -3184,17 +3198,17 @@ void __fastcall controls_move(BYTE *obj, int flag, int arg)
     }
     if (!g_cfg.controls_modern || !u || SARGE_VEHICLE(u) || !obj ||
         OBJ_X(obj) != SARGE_X(u) || OBJ_Y(obj) != SARGE_Y(u) || !OBJ_SPEED(obj)) {
-        controls_move_original(obj, flag, arg);
+        PX_GAME(controls_move_original(obj, flag, arg));
         return;
     }
     /* walking with the minesweeper selected: the game's sweeper walk is slower (mines.c, 2026-11-21) - normal speed */
     float smul = mines_sweeper_walk_mul(u, OBJ_SPEED(obj));
-    if (!S.running && smul <= 1.0f) { controls_move_original(obj, flag, arg); return; }
+    if (!S.running && smul <= 1.0f) { PX_GAME(controls_move_original(obj, flag, arg)); return; }
     float run_mul = (S.running ? g_cfg.controls_run_speed : 1.0f) * smul;
     short speed = OBJ_SPEED(obj), fast = (short)(speed * run_mul);
     OBJ_SPEED(obj) = fast;
     short ox = OBJ_X(obj), oy = OBJ_Y(obj);
-    controls_move_original(obj, flag, arg);
+    PX_GAME(controls_move_original(obj, flag, arg));
     if (OBJ_SPEED(obj) == fast) OBJ_SPEED(obj) = speed;     /* unless the game set a new speed meanwhile */
     /* AnimMove only sets this step (x/y_velocity); the caller checks the DESTINATION and moves. A
      * longer running step can land beyond a thin fence or a wall edge, so every tile along the step
@@ -3224,6 +3238,7 @@ void __fastcall controls_move(BYTE *obj, int flag, int arg)
         if (GetTickCount() - last > 500) { last = GetTickCount(); mlog("controls: running (object %p speed %d -> %d)", obj, speed, fast); }
     }
 }
+void __fastcall controls_move(BYTE *obj, int flag, int arg) { PX_BEGIN(px); controls_move_px(obj, flag, arg); PX_END(px, PR_CHOOKS); }   /* timed: stage PR_CHOOKS (exclusive, common.h) */
 
 /* Modern controls switched on or off in the Gameplay menu. */
 void controls_reset(void)
@@ -3664,7 +3679,7 @@ static void controls_camera_body(void)
         VIEW_W <= 0 || VIEW_H <= 0) {
         have = 0; fhave = 0;
         g_subpx_on = 0;
-        controls_camera_original();
+        PX_GAME(controls_camera_original());
         return;
     }
     double tlx = 0, tly = 0;                   /* wanted lead */
@@ -3781,7 +3796,7 @@ static void controls_camera_body(void)
         DWORD ms = GetTickCount();
         if (ms - logged >= 250) { logged = ms; mlog("camera: sarge %d,%d lead %.0f,%.0f centre %.0f,%.0f", SARGE_X(u), SARGE_Y(u), lx, ly, tx, ty); }
     }
-    controls_camera_original();
+    PX_GAME(controls_camera_original());
     if (L.on && g_cfg.log >= 2 && (CAMERA_X != CAM_CENTRE_X - VIEW_W / 2 || CAMERA_Y != CAM_CENTRE_Y - VIEW_H / 2))
         mlog("lob: camera %d,%d is not centre - half view (%d,%d): the pointer is placed for the wrong camera", CAMERA_X, CAMERA_Y,
              CAM_CENTRE_X - VIEW_W / 2, CAM_CENTRE_Y - VIEW_H / 2);

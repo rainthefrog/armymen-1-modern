@@ -262,11 +262,31 @@ static double pf_now(void)
 }
 static void pf_add(int k, double ms) { g_pf[k] += ms; g_pf_n[k]++; }
 static volatile double g_t_slot, g_t_snap, g_t_draw, g_t_gpu, g_t_present;   /* display thread, last frame (timing trace) */
-extern volatile double g_gt_wget, g_gt_wup, g_gt_atlas; extern volatile int g_gt_dirty_px, g_gt_move_px;   /* gpu.c */
+extern volatile double g_gt_wget, g_gt_wup, g_gt_atlas, g_gt_gpu_ms; extern volatile int g_gt_dirty_px, g_gt_move_px, g_gt_up_kb;   /* gpu.c */
 static volatile LONGLONG g_prof[PR_N];                  /* game thread: QPC ticks per hook this frame (trace) */
 void prof_add(int k, LONGLONG ticks) { if (k >= 0 && k < PR_N) g_prof[k] += ticks; }
-static double g_prof_frame[PR_N];                      /* ... of the last finished frame, in ms */
+/* 2026-11-21 (stutter hunt 2, common.h): the top-level share of the stages (for "rest" = the game's own code) and the
+ * exclusive hook stages, counted in CPU cycles (__rdtsc) and converted with a rate calibrated against QPC */
+int g_prof_depth;                                      /* game thread: PROF stages open */
+unsigned long long g_px_child;                         /* game thread: cycles of the open PX stage's children */
+static LONGLONG g_prof_top;                            /* QPC ticks of top-level PROF stages this frame */
+static unsigned long long g_prof_cyc[PR_N], g_prof_top_cyc; static unsigned g_prof_calls[PR_N];
+void prof_add_top(LONGLONG ticks) { g_prof_top += ticks; }
+void prof_add_cyc(int k, unsigned long long cyc, int top)
+{
+    if (k < 0 || k >= PR_N || cyc > (1ull << 40)) return;    /* (a switch to another core may step the TSC back) */
+    g_prof_cyc[k] += cyc; g_prof_calls[k]++;
+    if (top) g_prof_top_cyc += cyc;
+}
+static double g_prof_frame[PR_N], g_prof_rest_frame;   /* ... of the last finished frame, in ms; rest = work - all stages */
+static unsigned g_prof_calls_frame[PR_N];
 static double g_prof_sum[PR_N]; static int g_prof_sum_n;   /* ... summed over gameplay frames for the 10 s perf line (2026-11-20) */
+static double g_prof_rest_sum, g_prof_rest_max; static unsigned g_prof_calls_sum[PR_N];
+static const char *const PR_NAMES[PR_N] = { "ctl", "regions", "cam", "field", "cells", "blit", "ghost", "hud", "overlay", "shown",
+                                            "h.weap", "h.modern", "h.obj", "h.corners", "h.minimap", "h.rest",
+                                            "c.keys", "c.apply", "c.gp", "c.mod", "o.bars", "o.mpath", "o.mdraw", "path",
+                                            "aware", "patrol", "bullets", "veh", "mines", "allies", "c.hooks", "ui", "dd" };
+#define PR_FIRST_PX PR_AWARE                           /* stages from here on are PX (exclusive; calls per frame shown) */
 static volatile LONGLONG g_refs_ticks;                 /* game thread: QPC ticks in hdworld_note_copy this frame */
 void present_perf_refs(LONGLONG ticks) { g_refs_ticks += ticks; }
 static void pace_report(void);
@@ -286,12 +306,21 @@ static void pf_report(int w, int h)
     }
     mlog("%s ms", line);
     if (g_prof_sum_n) {                        /* the game thread's mod stages, averaged (spike lines show only the worst frames) */
-        static const char *const PN[PR_N] = { "ctl", "regions", "cam", "field", "cells", "blit", "ghost", "hud", "overlay", "shown",
-                                              "h.weap", "h.modern", "h.obj", "h.corners", "h.minimap", "h.rest" };
-        o = wsprintfA(line, "perf game stages (avg ms over %d frames):", g_prof_sum_n);
-        for (int k = 0; k < PR_N; k++) { double a = g_prof_sum[k] / g_prof_sum_n; o += wsprintfA(line + o, " %s %d.%02d", PN[k], (int)a, (int)(a * 100) % 100); g_prof_sum[k] = 0; }
+        char pl[1400];
+        o = wsprintfA(pl, "perf game stages (avg ms over %d frames):", g_prof_sum_n);
+        for (int k = 0; k < PR_N; k++) {
+            double a = g_prof_sum[k] / g_prof_sum_n;
+            o += wsprintfA(pl + o, " %s %d.%02d", PR_NAMES[k], (int)a, (int)(a * 100) % 100);
+            if (k >= PR_FIRST_PX) o += wsprintfA(pl + o, "/%u", g_prof_calls_sum[k] / g_prof_sum_n);   /* calls per frame */
+            g_prof_sum[k] = 0; g_prof_calls_sum[k] = 0;
+        }
+        {   /* rest = the frame's work outside every stage of ours = the game's own code */
+            double a = g_prof_rest_sum / g_prof_sum_n;
+            o += wsprintfA(pl + o, " | rest (game's own) %d.%02d max %d.%d", (int)a, (int)(a * 100) % 100, (int)g_prof_rest_max, (int)(g_prof_rest_max * 10) % 10);
+            g_prof_rest_sum = g_prof_rest_max = 0;
+        }
         g_prof_sum_n = 0;
-        mlog("%s", line);
+        mlog("%s", pl);
     }
     pace_report();
 }
@@ -780,6 +809,13 @@ static void stall_frame(void)                   /* game thread, after that wait:
     InterlockedIncrement(&g_stall_seq);
 }
 
+int present_thread_priority(void)                 /* [display] thread_priority (1 = raised, see present_request) */
+{
+    static int v = -1;
+    if (v < 0) v = GetPrivateProfileIntA("display", "thread_priority", 1, mod_ini_path()) != 0;
+    return v;
+}
+
 void present_request(DDraw *dd, int wait)
 {
     g_target = dd;
@@ -790,6 +826,19 @@ void present_request(DDraw *dd, int wait)
         g_shown = CreateEventA(NULL, FALSE, FALSE, NULL);
         g_quit = 0;
         g_thread = CreateThread(NULL, 0, display_thread, NULL, 0, NULL);
+        /* thread priorities (2026-11-21, stutter hunt 2; [display] thread_priority, default 1, 0 = Windows defaults):
+         * the user's log had tiny copies taking 3-10 ms ("hdworld: slow copy 9.6 ms 5x17") and the display missing
+         * refreshes while its own work was small - the threads were waiting for a CPU (other programs busy, e.g.
+         * containers). The display thread (mostly asleep, then latency-critical: snapshot + draw right after the
+         * refresh) gets HIGHEST, the game thread ABOVE_NORMAL (4+ processors only: it is busy during loading). The HD
+         * art loader (hdworld.c) stays normal: lower, it could starve under load and the HD art would come late. */
+        if (g_thread && present_thread_priority()) {
+            SYSTEM_INFO si; GetSystemInfo(&si);
+            SetThreadPriority(g_thread, THREAD_PRIORITY_HIGHEST);
+            if (si.dwNumberOfProcessors >= 4) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+            mlog("present: thread priorities: display highest, game %s ([display] thread_priority=0: Windows defaults)",
+                 si.dwNumberOfProcessors >= 4 ? "above normal" : "normal (fewer than 4 processors)");
+        }
     }
     SetEvent(g_wake);
     /* end of a game frame: wait (bounded) until it is on screen. This paces the game to the
@@ -803,8 +852,26 @@ void present_request(DDraw *dd, int wait)
         t_refs = (double)g_refs_ticks * 1000.0 / (double)fq.QuadPart;
         if (prev) { pf_add(PF_GAME, t_frame); pf_add(PF_REFS, t_refs); }
         g_refs_ticks = 0;
-        for (int k = 0; k < PR_N; k++) { g_prof_frame[k] = (double)g_prof[k] * 1000.0 / (double)fq.QuadPart; g_prof[k] = 0; }
-        if (prev && layout_view_is_gameplay()) { for (int k = 0; k < PR_N; k++) g_prof_sum[k] += g_prof_frame[k]; g_prof_sum_n++; }
+        /* TSC rate (cycles per ms) against the QPC, calibrated over the run */
+        static unsigned long long tsc0; static double qpc0, cyc_ms;
+        unsigned long long tsc = __rdtsc();
+        if (!tsc0) { tsc0 = tsc; qpc0 = tw; }
+        else if (tw - qpc0 > 200.0 && tsc > tsc0) cyc_ms = (double)(tsc - tsc0) / (tw - qpc0);
+        double top = (double)g_prof_top * 1000.0 / (double)fq.QuadPart;
+        for (int k = 0; k < PR_N; k++) {
+            g_prof_frame[k] = (double)g_prof[k] * 1000.0 / (double)fq.QuadPart + (cyc_ms > 0 ? (double)g_prof_cyc[k] / cyc_ms : 0);
+            g_prof_calls_frame[k] = g_prof_calls[k];
+            g_prof[k] = 0; g_prof_cyc[k] = 0; g_prof_calls[k] = 0;
+        }
+        if (cyc_ms > 0) top += (double)g_prof_top_cyc / cyc_ms;
+        g_prof_top = 0; g_prof_top_cyc = 0;
+        g_prof_rest_frame = prev ? t_frame - t_wait - top : 0;   /* t_wait is still the previous frame's wait here */
+        if (g_prof_rest_frame < 0) g_prof_rest_frame = 0;
+        if (prev && layout_view_is_gameplay()) {
+            for (int k = 0; k < PR_N; k++) { g_prof_sum[k] += g_prof_frame[k]; g_prof_calls_sum[k] += g_prof_calls_frame[k]; }
+            g_prof_rest_sum += g_prof_rest_frame; if (g_prof_rest_frame > g_prof_rest_max) g_prof_rest_max = g_prof_rest_frame;
+            g_prof_sum_n++;
+        }
         prev = tw;
     }
     t_wait_prev = t_wait; t_wait = 0;          /* t_frame spans the previous frame's wait */
@@ -848,7 +915,7 @@ void present_request(DDraw *dd, int wait)
         if (clock_tracing() || spike) {
             LARGE_INTEGER now, fq;
             QueryPerformanceCounter(&now); QueryPerformanceFrequency(&fq);
-            char info[160], line[600];
+            char info[160], line[1400];
             controls_trace_info(info, sizeof info);
             /* frame = since the last frame; work = the game's own (frame - its wait); refs = our reference copying;
              * wait = for the display to take the frame; display thread: slot = waiting for a free present slot,
@@ -858,12 +925,13 @@ void present_request(DDraw *dd, int wait)
                       clock_game_ms(), (int)(t_frame * 10), (int)((t_frame - t_wait_prev) * 10), (int)(t_refs * 10), (int)(t_wait * 10),
                       (int)(g_t_slot * 10), (int)(g_t_snap * 10), (int)(g_t_draw * 10), (int)(g_t_gpu * 10), (int)(g_t_present * 10), info);
             {                                        /* where the game thread's work went (x0.1 ms) */
-                static const char *const PN[PR_N] = { "ctl", "regions", "cam", "field", "cells", "blit", "ghost", "hud", "overlay", "shown",
-                                                      "h.weap", "h.modern", "h.obj", "h.corners", "h.minimap", "h.rest" };
                 int o = lstrlenA(line);
-                o += wsprintfA(line + o, " | wget %d wup %d atlas %d mapKpx %d movedKpx %d", (int)(g_gt_wget * 10), (int)(g_gt_wup * 10), (int)(g_gt_atlas * 10), g_gt_dirty_px / 1000, g_gt_move_px / 1000);
+                /* upKB: the world uploads of the last drawn frame; gpums: the graphics card's own time for it (x0.1 ms, -1 = unknown) */
+                o += wsprintfA(line + o, " | wget %d wup %d atlas %d mapKpx %d movedKpx %d upKB %d gpums %d", (int)(g_gt_wget * 10), (int)(g_gt_wup * 10), (int)(g_gt_atlas * 10), g_gt_dirty_px / 1000, g_gt_move_px / 1000,
+                               g_gt_up_kb, g_gt_gpu_ms >= 0 ? (int)(g_gt_gpu_ms * 10) : -1);
                 o += wsprintfA(line + o, " |");
-                for (int k = 0; k < PR_N && o < 560; k++) o += wsprintfA(line + o, " %s %d", PN[k], (int)(g_prof_frame[k] * 10));
+                for (int k = 0; k < PR_N && o < 1300; k++) o += wsprintfA(line + o, " %s %d", PR_NAMES[k], (int)(g_prof_frame[k] * 10));
+                if (o < 1360) o += wsprintfA(line + o, " | rest %d", (int)(g_prof_rest_frame * 10));   /* the game's own code */
             }
             if (clock_tracing()) clock_trace_frame(line); else mlog("spike: %s", line);
         }
