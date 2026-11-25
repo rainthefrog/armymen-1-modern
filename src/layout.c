@@ -954,15 +954,20 @@ void layout_group_cycle(int g)
  * 64ths (64 = 1x) and goes in HALF steps - the largest of 1, 1.5, 2, 2.5, 3 at which 640x480 fits. Whole steps
  * left every window below 960 game pixels high (e.g. 1534x808) with the small 1x menu and its small text.
  * [display] menu_scale: 0 = auto, 1..3 fixed. */
-int layout_menu_scale(void)
+int layout_menu_scale_value(void)
 {
     static int cfg = -1;
     if (cfg < 0) cfg = GetPrivateProfileIntA("display", "menu_scale", 0, mod_ini_path());
-    if (!layout_active() || !game_menu_up()) return 0;
+    if (!layout_active()) return 0;
     int hx = g_cfg.width * 2 / LAYOUT_DESIGN_W, hy = g_cfg.height * 2 / LAYOUT_DESIGN_H;   /* halves that fit */
     int h = cfg > 0 ? cfg * 2 : hx < hy ? hx : hy;
     h = h < 2 ? 2 : h > 6 ? 6 : h;
     return h * 32;
+}
+int layout_menu_scale(void)
+{
+    if (!layout_active() || !game_menu_up()) return 0;
+    return layout_menu_scale_value();
 }
 /* design point -> game screen point (k from layout_menu_scale, 64ths). Every edge goes through this, so
  * neighbouring pictures and fills meet without gaps at the half steps too. */

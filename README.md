@@ -32,9 +32,9 @@ WINEDLLOVERRIDES="ddraw=n,b" %command%
 
 ## Screenshots
 
-| Command & stance radial | Consolidated Mod Settings |
+| Command & stance radial | In-game Mod Settings (fully configurable) |
 |---|---|
-| ![Command radial](docs/images/gallery/03-command-radial.png) | ![Mod Settings](docs/images/gallery/04-mod-settings.png) |
+| ![Command radial](docs/images/gallery/03-command-radial.png) | ![In-game Mod Settings](docs/images/gallery/04-mod-settings.png) |
 
 **[See more screenshots →](docs/SCREENSHOTS.md)** (minimap & route guidance, equipment & combat overlays, vehicle interaction, and the optional classic centered-HUD preset).
 

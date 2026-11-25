@@ -23,12 +23,13 @@ world-space route line and tactical alerts.
 
 Shows the mouse-driven squad and air-support radial. Opening the radial over Sarge changes it to the stance wheel.
 
-## Consolidated Mod Settings
+## In-game Mod Settings
 
-![Mod Settings](images/gallery/04-mod-settings.png)
+![In-game Mod Settings](images/gallery/04-mod-settings.png)
 
-Shows the in-game settings screen, sliders, tester logging option, display/audio grouping and the simplified page
-navigation. Additional pages cover HUD/map, combat and modern-control features.
+Shows the configurable in-game Mod Settings menu with per-feature toggles, sliders for game speed and zoom,
+diagnostic logging, and tabs for Display, HUD/Map, Combat, and Modern-control features—so every feature can be
+enabled, tuned, or turned off without editing files.
 
 ## Equipment and combat overlays
 

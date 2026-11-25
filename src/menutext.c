@@ -146,7 +146,8 @@ int menutext_capture(void *surface, int x, int y, const char *text, int font, in
     int centre = NO_CENTRE;
     int have_centre = button_centre(text, x, y, &centre);
     Label l = { { 0 }, x, y, sz.cx, sz.cy, font, NO_CENTRE, 1.0f, LABEL_COLOUR };
-    int k = layout_view_is_gameplay() ? layout_menu_scale() : 0;
+    /* mm_init() publishes sliders before SCRN_FULL is set (game_menu_up() still 0), so use layout_menu_scale_value() */
+    int k = layout_view_is_gameplay() ? layout_menu_scale_value() : 0;
     if (k) {                                                    /* an in-game menu: x k around the centre (layout.c) */
         int qx = x + sz.cx, qy = y + sz.cy, cyy = y;
         layout_menu_place(k, &l.x, &l.y); layout_menu_place(k, &qx, &qy);
@@ -203,7 +204,8 @@ void menutext_set_sliders(const MtSlider *s, int n, int state)
     if (n > MT_SLIDERS) n = MT_SLIDERS;
     MtSlider t[MT_SLIDERS];
     memset(t, 0, sizeof t);
-    int k = layout_view_is_gameplay() ? layout_menu_scale() : 0;
+    /* mm_init() publishes sliders before SCRN_FULL is set (game_menu_up() still 0), so use layout_menu_scale_value() */
+    int k = layout_view_is_gameplay() ? layout_menu_scale_value() : 0;
     for (int i = 0; i < n; i++) {
         t[i] = s[i];
         t[i].fk = 1.0f;
@@ -499,7 +501,8 @@ int menutext_overlay(int dw, int dh, int pw, int ph, const uint32_t **pix, unsig
     }
     if (g_tip[0] && ni < IT_MAX) {                         /* the hover info box: under the row (above it near the bottom) */
         RECT rr = g_tip_row; float fk = 1.0f;
-        int k = layout_view_is_gameplay() ? layout_menu_scale() : 0;
+        /* mm_init() publishes sliders before SCRN_FULL is set (game_menu_up() still 0), so use layout_menu_scale_value() */
+    int k = layout_view_is_gameplay() ? layout_menu_scale_value() : 0;
         if (k) { int x0 = rr.left, y0 = rr.top, x1 = rr.right, y1 = rr.bottom; layout_menu_place(k, &x0, &y0); layout_menu_place(k, &x1, &y1); SetRect(&rr, x0, y0, x1, y1); fk = k / 64.0f; }
         char l1[160], *l2 = NULL; lstrcpynA(l1, g_tip, sizeof l1);
         char *bar = strchr(l1, '|'); if (bar) { *bar = 0; l2 = bar + 1; }

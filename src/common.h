@@ -972,6 +972,7 @@ void controls_replay_fire(int tx, int ty);
 int  weapons_select_type(int type);
 
 /* update.c: built-in GitHub Releases updater */
+int  layout_menu_scale_value(void);         /* layout.c: in-game menu scale (64ths) even before SCRN_FULL is published */
 void update_cleanup(void);
 void update_check_async(int manual);
 int  update_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);
