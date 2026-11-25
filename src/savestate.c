@@ -1370,7 +1370,11 @@ void savestate_install(void)
 {
     const char *ini = mod_ini_path();
     char b[64];
-    C.enabled = !g_cfg.classic_gameplay && GetPrivateProfileIntA("savestate", "enabled", 1, ini);
+    /* The replacement heap is still experimental.  A complete Desert 1 run exposed a reproducible null-address
+     * crash while the game built the mission-win screen; the same transition is clean on the game's CRT heap.
+     * Keep the feature available for focused testing, but never replace every game allocation unless the player
+     * explicitly opts in. */
+    C.enabled = !g_cfg.classic_gameplay && GetPrivateProfileIntA("savestate", "enabled", 0, ini);
     g_cfg.quicksave = C.enabled;
     C.slots = GetPrivateProfileIntA("savestate", "slots", 3, ini);
     if (C.slots < 1) C.slots = 1;

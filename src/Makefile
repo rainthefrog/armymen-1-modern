@@ -1,5 +1,5 @@
 # Build: make            (inside the armymen-re:2 image; output ddraw.dll)
-MOD_VERSION  ?= 0.1.0
+MOD_VERSION  ?= 0.1.1
 MOD_REPO_URL ?= https://github.com/rainthefrog/armymen-1-modern
 CC      = i686-w64-mingw32-gcc
 CFLAGS  = -O2 -std=gnu11 -Wall -Wno-unused-parameter -Wno-unused-function -DMOD_VERSION="\"$(MOD_VERSION)\"" -DMOD_REPO_URL="\"$(MOD_REPO_URL)\""

@@ -212,21 +212,38 @@ static void push(Op *ops, int *n, const Op *op)
 }
 
 /* surface.c: a blit of s (part sr) to d at dr (same size). */
-/* The last whole-screen picture drawn (an index into the catalogue): modern.c lets any key / click leave the
- * title screen (Title_legal.bmp, after the intro videos; the game takes only Esc there - user 2026-11-17). */
-static volatile int g_last_big = -1;
+/* Title_legal.bmp follows the intro movies and the game accepts only Esc there.  Detect it from the original
+ * picture, independently of the optional HD catalogue: portable builds deliberately leave HD art off, but a
+ * click must still advance to the main menu. */
+static volatile int g_title_legal;
+static int title_legal_surface(Surf *s)
+{
+    static uint32_t *samples; static int sw, sh, tried;
+    if (!s || s->w != 640 || s->h != 480 || !s->bits || !g_dd || !g_dd->pal) return 0;
+    if (!tried) {
+        char path[MAX_PATH];
+        tried = 1;
+        hdart_game_path(path, MAX_PATH, "Screens\\Title_legal.bmp");
+        samples = original_samples(path, &sw, &sh);
+    }
+    if (!samples || sw != s->w || sh != s->h) return 0;
+    Pal *p = g_dd->pal; int hit = 0, n = 0;
+    for (int y = 0; y < sh; y += GRID)
+        for (int x = 0; x < sw; x += GRID, n++) {
+            BYTE c = s->bits[(size_t)y * s->pitch + x];
+            uint32_t rgb = (uint32_t)p->e[c].peRed << 16 | (uint32_t)p->e[c].peGreen << 8 | p->e[c].peBlue;
+            hit += close_enough(rgb, samples[n]);
+        }
+    return n && hit * 100 / n >= 95;
+}
 int hdsprites_showing(const char *name)
 {
-    int id = g_last_big;
-    if (id < 0 || id >= g_n) return 0;
-    char low[MAX_PATH]; lstrcpynA(low, g_e[id].path, sizeof low); CharLowerA(low);
-    return strstr(low, name) != NULL;
+    return name && strstr(name, "title_legal") && g_title_legal;
 }
 
 void hdsprites_note_blit(Surf *d, RECT dr, Surf *s, RECT sr, int keyed, DWORD lo, DWORD hi)
 {
-    if (!g_cfg.hd_sprites || !d || !s || s == d) return;
-    if (!d->is_primary) hdsprites_dirty(d);              /* d got new content */
+    if (!d || !s || s == d) return;
     /* d was filled FROM THE SCREEN (the game saving what is under the mouse cursor): never one of the game's
      * pictures. The 16x16 save surface over a flat green menu matched the 16x16 HUD tile Hud_018_d10 (>= 95 % of
      * the samples), and putting it back painted that tile's HD art into the menu where the pointer had been
@@ -236,8 +253,14 @@ void hdsprites_note_blit(Surf *d, RECT dr, Surf *s, RECT sr, int keyed, DWORD lo
     int to_back = !d->is_primary && d->w == g_cfg.width && d->h == g_cfg.height;   /* the game picture being built */
     if (!to_screen && !to_back) return;
     if (dr.right - dr.left != sr.right - sr.left || dr.bottom - dr.top != sr.bottom - sr.top) return;
+    if (dr.right - dr.left >= 600 && dr.bottom - dr.top >= 400) {
+        int title = title_legal_surface(s);
+        if (title && !g_title_legal && g_cfg.log) mlog("startup: Title_legal screen detected (HD art is %s)", g_cfg.hd_sprites ? "on" : "off");
+        g_title_legal = title;
+    }
+    if (!g_cfg.hd_sprites) return;
+    if (!d->is_primary) hdsprites_dirty(d);              /* d got new content */
     int id = surface_id(s);
-    if (dr.right - dr.left >= 600 && dr.bottom - dr.top >= 400) g_last_big = id;   /* a whole screen picture (-1 = unknown) */
     if (id < 0) return;
     Op op = { dr, sr, s, id, keyed, lo, hi, 64 };
     if (to_screen) push(g_screen_ops, &g_screen_n, &op);

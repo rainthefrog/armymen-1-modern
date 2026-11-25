@@ -55,6 +55,6 @@ layout option disabled. Widescreen rendering remains active while the original H
 
 ## Features that do not have a meaningful still image
 
-Audio replacement, persistent quicksave data, high-refresh timing, crash prevention, weapon carry-over between
+Audio replacement, high-refresh timing, crash prevention, weapon carry-over between
 missions, health regeneration, vehicle bail-out, collision recovery and AI behavior changes are behavioral features.
 They are covered in the mod description rather than represented by misleading static screenshots.

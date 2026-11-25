@@ -479,6 +479,7 @@ int modern_message(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     int title = !layout_view_is_gameplay() && !view_is_video() && hdsprites_showing("title_legal");
     if (!modern_on(MOD_SKIP_VIDEO) || !(view_is_video() || hdvideo_playing() || title)) return 0;
     if ((msg == WM_KEYDOWN && wp != VK_RETURN && wp != VK_ESCAPE) || msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN) {
+        if (g_cfg.log) mlog("startup: %s skips %s", msg == WM_KEYDOWN ? "key" : "click", title ? "Title_legal" : "video");
         PostMessageA(h, WM_KEYDOWN, VK_ESCAPE, 0x00010001);
         PostMessageA(h, WM_KEYUP, VK_ESCAPE, 0xC0010001);
         return 1;

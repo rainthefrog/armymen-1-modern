@@ -10,8 +10,8 @@ art style.
 *Extended widescreen battlefield, sliced/scaled HUD groups, six-slot weapon panel, pinned objective, mission route, enemy awareness marks, and enlarged minimap.*
 
 Highlights include true widescreen and ultrawide play, modern mouse/WASD controls, a scalable HUD, improved minimap,
-mission-route guidance, expanded weapons and equipment, squad and vehicle improvements, enemy awareness, persistent
-quicksaves, optional Army Men II audio and extensive stability fixes.
+mission-route guidance, expanded weapons and equipment, squad and vehicle improvements, enemy awareness, optional
+Army Men II audio and extensive stability fixes.
 
 ## Install
 
@@ -48,8 +48,8 @@ editor). Settings changed in game are saved to `armymen-mod.ini`; advanced users
 - **Modern HUD layout** controls the sliced/scaled widescreen HUD. Turn it off for the original centered 1× HUD.
 - **Logging** writes `armymen-mod.log` beside the DLL for tester reports. The previous run is retained as
   `armymen-mod.prev.log`.
-- **Session recording** is off by default in release builds and can be turned on in `armymen-mod.ini` with
-  `[debug] record_runs=1` (`Ctrl+Shift+B` drops a bookmark; see [scripts/rec2test.py](scripts/rec2test.py)).
+- **Session recording** is on by default in release builds and can be turned off in `armymen-mod.ini` with
+  `[debug] record_runs=0` (`Ctrl+Shift+B` drops a bookmark; see [scripts/rec2test.py](scripts/rec2test.py)).
 - **Built-in updater** checks GitHub Releases on startup (can be toggled in **Gameplay > Check for updates at start**
   or `[update] check=0` in `armymen-mod.ini`), verifies `ddraw.dll.sha256`, swaps `ddraw.dll` in place, and restarts
   the game.
@@ -58,7 +58,7 @@ editor). Settings changed in game are saved to `armymen-mod.ini`; advanced users
 
 - [Full mod description](docs/MOD_DESCRIPTION.md)
 - [Screenshot gallery](docs/SCREENSHOTS.md)
-- [Release notes](docs/release-notes/v0.1.0.md)
+- [Release notes](docs/release-notes/v0.1.1.md)
 
 ## License
 

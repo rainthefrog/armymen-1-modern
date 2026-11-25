@@ -3,7 +3,7 @@
 Army Men Modern is a drop-in modernization mod for the original 1998 PC game. It keeps the campaign, missions,
 art direction and core tactical action intact while making the game comfortable on current Windows systems and
 modern displays. It adds widescreen rendering, mouse-driven controls, clearer tactical feedback, expanded squad
-and vehicle systems, persistent quicksaves, optional Army Men II audio, and a large collection of gameplay and
+and vehicle systems, optional Army Men II audio, and a large collection of gameplay and
 stability improvements.
 
 The mod runs through a replacement `ddraw.dll`; the original `Armymen.exe` remains unmodified. Most additions can
@@ -134,18 +134,14 @@ instead presents the stance controls.
   feedback and camera following—including helicopters.
 - Vehicles retain their ability to crush breakable fences; optional on-foot fence breaking is also available.
 
-## Saving, configuration and accessibility
+## Configuration and accessibility
 
-- Persistent quicksave and quickload files store the complete live mission state, including units, vehicles,
-  projectiles, scripts, weapons, timers and generated surfaces.
-- Three slots by default, selectable while playing. Saves survive quitting, and loading from campaign selection can
-  launch the saved mission automatically.
 - In-game Mod Settings pages expose display, HUD, modern-control, combat, audio and minimap options.
 - Nearly all additions are controlled through the documented `armymen-mod.ini` file.
 - Adjustable game speed and pause hotkeys are available for accessibility, testing and relaxed play.
 - Optional original-art CRT presentation and optional HD presentation can be selected independently.
 - A **Classic gameplay** preset disables the gameplay, control, tactical-overlay, expanded-equipment, squad,
-  vehicle, quicksave and replacement-audio additions while retaining the modern renderer.
+  vehicle and replacement-audio additions while retaining the modern renderer.
 - A separate **Modern HUD layout** switch can be disabled to keep the original HUD centered at 1× size, including
   when the Classic gameplay preset is active.
 
