@@ -3,6 +3,12 @@
 Army Men Modern updates the original 1998 PC game for current systems while preserving its campaign, missions and
 art style.
 
+> **Bring your own game:** this repository and its releases contain no Army Men assets or executables. All screenshots
+> below use the original Army Men artwork (`hd_world=0`, `hd_sprites=0`).
+
+![Widescreen battlefield and modern HUD](docs/images/gallery/01-widescreen-hud.png)
+*Extended widescreen battlefield, sliced/scaled HUD groups, six-slot weapon panel, pinned objective, mission route, enemy awareness marks, and enlarged minimap.*
+
 Highlights include true widescreen and ultrawide play, modern mouse/WASD controls, a scalable HUD, improved minimap,
 mission-route guidance, expanded weapons and equipment, squad and vehicle improvements, enemy awareness, persistent
 quicksaves, optional Army Men II audio and extensive stability fixes.
@@ -23,6 +29,14 @@ For Proton/Bazzite, add this launch option:
 ```text
 WINEDLLOVERRIDES="ddraw=n,b" %command%
 ```
+
+## Screenshots
+
+| Command & stance radial | Consolidated Mod Settings |
+|---|---|
+| ![Command radial](docs/images/gallery/03-command-radial.png) | ![Mod Settings](docs/images/gallery/04-mod-settings.png) |
+
+**[See more screenshots →](docs/SCREENSHOTS.md)** (minimap & route guidance, equipment & combat overlays, vehicle interaction, and the optional classic centered-HUD preset).
 
 ## Options
 
