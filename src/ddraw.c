@@ -11,7 +11,7 @@ struct Config g_cfg = { 1024, 540, 1, 1 };
  * later armymen-mod.ini, but do not advertise missing assets as enabled when the DLL is used on its own. */
 #ifdef ARMYMEN_PORTABLE
 #define DEFAULT_HD_ART 0
-#define DEFAULT_RECORD_RUNS 0
+#define DEFAULT_RECORD_RUNS 1
 #else
 #define DEFAULT_HD_ART 1
 #define DEFAULT_RECORD_RUNS 1
