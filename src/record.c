@@ -197,6 +197,10 @@ static int g_cheat_kill_idx;
 static unsigned g_rec_run;
 static int g_mission_open, g_mission_idx;
 static unsigned g_cur_run;
+/* run of the last closed segment: a closed mission is not re-opened as a new segment while the game is still on the
+ * same run (mission-over screen -> gameplay view again before the next part loads, 2026-11-25). The next mission /
+ * restart / Play Again gets a new run from gameplay.c and opens its own segment. */
+static unsigned g_closed_run = (unsigned)-1;
 static int g_cur_sc, g_cur_mi, g_cur_won;
 static DWORD g_cur_t0;
 static int g_cur_moves, g_cur_pickups, g_cur_fires, g_cur_kills;
@@ -363,6 +367,7 @@ static void close_mission(const char *reason)
          g_cur_moves, g_cur_pickups, g_cur_fires, g_cur_kills);
     g_mission_open = 0;
     g_cur_won = 0;
+    g_closed_run = g_cur_run;
 }
 
 static void open_mission(unsigned run, int sc, int mi, int x, int y, int hp, int max_hp, int wt, int wa)
@@ -935,6 +940,7 @@ static void record_gameplay_frame(void)
     DWORD now = clock_game_ms();
 
     if (!g_have_sarge) {
+        if (run == g_closed_run) return;          /* that mission's segment is finished; wait for the next run */
         BYTE *w = SARGE_WEAPON(s);
         int wt = w && !IsBadReadPtr(w, 0x10) ? W_TYPE(w) : -1;
         int wa = w && !IsBadReadPtr(w, 0x10) ? W_AMMO(w) : 0;
