@@ -952,6 +952,8 @@ void record_init(void);
 void record_shutdown(void);
 int  record_active(void);
 void record_frame(void);
+void record_screen_note(void);
+void record_note_mission_won(void);
 void record_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);
 void record_note_walk_target(int tx, int ty, int sprint, DWORD veh_uid);
 void record_note_weapon_pickup(int type, int ammo_before, int ammo_after, int box, int wx, int wy, DWORD uid, int merge);

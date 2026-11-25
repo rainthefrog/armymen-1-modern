@@ -192,8 +192,13 @@ static int g_nvh_alive;
 static struct { DWORD uid; DWORD at; } g_cheat_kills[CHEAT_KILL_RING];
 static int g_cheat_kill_idx;
 
-/* Per-mission Sarge tracking */
+/* Per-mission Sarge & lifecycle tracking */
 static unsigned g_rec_run;
+static int g_mission_open, g_mission_idx;
+static unsigned g_cur_run;
+static int g_cur_sc, g_cur_mi, g_cur_won;
+static DWORD g_cur_t0;
+static int g_cur_moves, g_cur_pickups, g_cur_fires, g_cur_kills;
 static int g_last_sx, g_last_sy, g_last_hp, g_last_pose, g_last_sprint, g_last_wtype, g_last_wammo;
 static DWORD g_last_veh_uid, g_last_move_ms;
 static int g_was_moving, g_have_sarge;
@@ -324,9 +329,64 @@ void record_init(void)
     mlog("record: session recording active -> %s (keep=%d)", g_rec_path, keep);
 }
 
+static void close_mission(const char *reason)
+{
+    if (!g_fp || !g_mission_open) return;
+    DWORD dur = GetTickCount() - g_cur_t0;
+    BYTE *s = SARGE;
+    int sx = (s && !IsBadReadPtr(s, 8)) ? SARGE_X(s) : g_last_sx;
+    int sy = (s && !IsBadReadPtr(s, 8)) ? SARGE_Y(s) : g_last_sy;
+    int hp = (s && !IsBadReadPtr(s, 0x20)) ? SARGE_HEALTH(s) : g_last_hp;
+    rec_emit(1,
+        "\"e\":\"mission_end\",\"idx\":%d,\"run\":%u,\"scenario\":%d,\"mission\":%d,\"reason\":\"%s\","
+        "\"won\":%d,\"duration_ms\":%lu,\"wx\":%d,\"wy\":%d,\"hp\":%d,"
+        "\"moves\":%d,\"pickups\":%d,\"fires\":%d,\"kills\":%d",
+        g_mission_idx, g_cur_run, g_cur_sc, g_cur_mi, reason ? reason : "end",
+        g_cur_won ? 1 : 0, dur, sx, sy, hp,
+        g_cur_moves, g_cur_pickups, g_cur_fires, g_cur_kills);
+    mlog("record: mission #%d ended (mission %d, reason=%s, won=%d, %lu ms, moves=%d pickups=%d fires=%d kills=%d)",
+         g_mission_idx, g_cur_mi, reason ? reason : "end", g_cur_won, dur,
+         g_cur_moves, g_cur_pickups, g_cur_fires, g_cur_kills);
+    g_mission_open = 0;
+    g_cur_won = 0;
+}
+
+static void open_mission(unsigned run, int sc, int mi, int x, int y, int hp, int max_hp, int wt, int wa)
+{
+    g_mission_idx++;
+    g_mission_open = 1;
+    g_cur_run = run; g_cur_sc = sc; g_cur_mi = mi;
+    g_cur_won = 0;
+    g_cur_t0 = GetTickCount();
+    g_cur_moves = g_cur_pickups = g_cur_fires = g_cur_kills = 0;
+    rec_emit(1, "\"e\":\"mission_start\",\"idx\":%d,\"run\":%u,\"scenario\":%d,\"mission\":%d,\"wx\":%d,\"wy\":%d,\"hp\":%d,\"max_hp\":%d,\"weapon\":%d,\"ammo\":%d",
+             g_mission_idx, run, sc, mi, x, y, hp, max_hp, wt, wa);
+    mlog("record: mission #%d started (run %u, scenario %d, mission %d at %d,%d)", g_mission_idx, run, sc, mi, x, y);
+}
+
+void record_note_mission_won(void)
+{
+    if (!g_fp || !g_mission_open) return;
+    g_cur_won = 1;
+    rec_emit(1, "\"e\":\"mission_won\",\"idx\":%d,\"run\":%u,\"scenario\":%d,\"mission\":%d",
+             g_mission_idx, g_cur_run, g_cur_sc, g_cur_mi);
+}
+
+void record_screen_note(void)
+{
+    if (!g_fp || !g_mission_open) return;
+    if (!layout_view_is_gameplay()) {
+        const char *reason = g_cur_won ? "won" : (g_last_hp <= 0 ? "failed" : "menu");
+        close_mission(reason);
+        g_have_sarge = 0;
+        g_ntr_alive = g_nvh_alive = 0;
+    }
+}
+
 void record_shutdown(void)
 {
     if (!g_fp) return;
+    if (g_mission_open) close_mission(g_cur_won ? "won" : "exit");
     rec_emit(1, "\"e\":\"session_end\",\"events\":%u,\"duration_ms\":%lu", g_events, GetTickCount() - g_t0);
     EnterCriticalSection(&g_cs);
     if (g_fp) { fclose(g_fp); g_fp = NULL; }
@@ -354,6 +414,7 @@ void record_note_walk_target(int tx, int ty, int sprint, DWORD veh_uid)
 void record_note_weapon_pickup(int type, int ammo_before, int ammo_after, int box, int wx, int wy, DWORD uid, int merge)
 {
     if (!g_fp) return;
+    if (g_mission_open) g_cur_pickups++;
     rec_emit(1, "\"e\":\"weapon_pickup\",\"type\":%d,\"name\":\"%s\",\"ammo_before\":%d,\"ammo_after\":%d,\"box\":%d,\"wx\":%d,\"wy\":%d,\"uid\":\"%08lx\",\"merge\":%d",
              type, weapon_name(type), ammo_before, ammo_after, box, wx, wy, uid, merge ? 1 : 0);
 }
@@ -375,6 +436,7 @@ void record_note_weapon_drop(int type, int wx, int wy)
 void record_note_weapon_fire(int type, int ammo, int wx, int wy, int facing, int tx, int ty, DWORD target_uid)
 {
     if (!g_fp) return;
+    if (g_mission_open) g_cur_fires++;
     if (target_uid)
         rec_emit(0, "\"e\":\"weapon_fire\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"wx\":%d,\"wy\":%d,\"facing\":%d,\"tx\":%d,\"ty\":%d,\"target_uid\":\"%08lx\"",
                  type, weapon_name(type), ammo, wx, wy, facing, tx, ty, target_uid);
@@ -643,6 +705,7 @@ static void track_enemies(void)
         int x = T_X(t), y = T_Y(t);
         if (x <= 0 || y <= 0 || x > 4095 || y > 4095) { x = g_tr_alive[i].x; y = g_tr_alive[i].y; }
         int cheat = was_cheat_kill(g_tr_alive[i].uid);
+        if (g_mission_open) g_cur_kills++;
         rec_emit(1, "\"e\":\"enemy_kill\",\"kind\":\"soldier\",\"uid\":\"%08lx\",\"army\":%d,\"class\":%d,\"name\":\"%s\",\"weapon\":%d,\"wx\":%d,\"wy\":%d,\"sx\":%d,\"sy\":%d,\"via\":\"%s\"",
                  g_tr_alive[i].uid, g_tr_alive[i].army, g_tr_alive[i].cls, trooper_class_name(g_tr_alive[i].cls),
                  g_tr_alive[i].wt, x, y, sx, sy, cheat ? "cheat" : "combat");
@@ -657,6 +720,7 @@ static void track_enemies(void)
         if (IsBadReadPtr(v, 0x70) || UID_OF(v) != g_vh_alive[i].uid || (VEH_HEALTH(v) > 0 && VEH_STATE(v) == 1)) continue;
         int x = VEH_X(v), y = VEH_Y(v);
         if (x <= 0 || y <= 0 || x > 4095 || y > 4095) { x = g_vh_alive[i].x; y = g_vh_alive[i].y; }
+        if (g_mission_open) g_cur_kills++;
         rec_emit(1, "\"e\":\"enemy_kill\",\"kind\":\"vehicle\",\"uid\":\"%08lx\",\"army\":%d,\"class\":%d,\"name\":\"vehicle_%d\",\"wx\":%d,\"wy\":%d,\"sx\":%d,\"sy\":%d,\"via\":\"combat\"",
                  g_vh_alive[i].uid, g_vh_alive[i].army, g_vh_alive[i].cls, g_vh_alive[i].cls, x, y, sx, sy);
     }
@@ -676,6 +740,12 @@ static void record_gameplay_frame(void)
     int s_ok = s && !IsBadReadPtr(s, 0x2d4);
 
     if (run != g_rec_run) {
+        if (g_mission_open) {
+            const char *reason = g_cur_won ? "won" :
+                                 (sc == g_cur_sc && mi == g_cur_mi) ? "restart" :
+                                 (sc == g_cur_sc && mi > g_cur_mi)  ? "next_part" : "next_mission";
+            close_mission(reason);
+        }
         g_rec_run = run;
         g_ntr_alive = g_nvh_alive = 0;
         g_have_sarge = 0;
@@ -684,8 +754,7 @@ static void record_gameplay_frame(void)
             BYTE *w = SARGE_WEAPON(s);
             int wt = w && !IsBadReadPtr(w, 0x10) ? W_TYPE(w) : -1;
             int wa = w && !IsBadReadPtr(w, 0x10) ? W_AMMO(w) : 0;
-            rec_emit(1, "\"e\":\"mission_start\",\"run\":%u,\"scenario\":%d,\"mission\":%d,\"wx\":%d,\"wy\":%d,\"hp\":%d,\"max_hp\":%d,\"weapon\":%d,\"ammo\":%d",
-                     run, sc, mi, SARGE_X(s), SARGE_Y(s), SARGE_HEALTH(s), SARGE_MAX(s), wt, wa);
+            open_mission(run, sc, mi, SARGE_X(s), SARGE_Y(s), SARGE_HEALTH(s), SARGE_MAX(s), wt, wa);
             g_last_sx = SARGE_X(s); g_last_sy = SARGE_Y(s);
             g_last_hp = SARGE_HEALTH(s);
             g_last_pose = SARGE_STATE(s);
@@ -715,8 +784,7 @@ static void record_gameplay_frame(void)
         BYTE *w = SARGE_WEAPON(s);
         int wt = w && !IsBadReadPtr(w, 0x10) ? W_TYPE(w) : -1;
         int wa = w && !IsBadReadPtr(w, 0x10) ? W_AMMO(w) : 0;
-        rec_emit(1, "\"e\":\"mission_start\",\"run\":%u,\"scenario\":%d,\"mission\":%d,\"wx\":%d,\"wy\":%d,\"hp\":%d,\"max_hp\":%d,\"weapon\":%d,\"ammo\":%d",
-                 run, sc, mi, x, y, hp, max_hp, wt, wa);
+        open_mission(run, sc, mi, x, y, hp, max_hp, wt, wa);
         g_last_sx = x; g_last_sy = y; g_last_hp = hp; g_last_pose = pose;
         g_last_sprint = sprint; g_last_veh_uid = vuid; g_last_wtype = wt; g_last_wammo = wa;
         g_last_move_ms = now; g_have_sarge = 1;
@@ -756,6 +824,7 @@ static void record_gameplay_frame(void)
     int stopped   = g_was_moving && dist2 >= 4 && dist2 < 24 * 24 && dt >= 450;
 
     if (moved_far || jumped || state_chg || stopped) {
+        if (g_mission_open) g_cur_moves++;
         if (vuid)
             rec_emit(0, "\"e\":\"move\",\"wx\":%d,\"wy\":%d,\"facing\":%d,\"pose\":%d,\"sprint\":%d,\"hp\":%d,\"veh\":\"%08lx\"",
                      x, y, facing, pose, sprint, hp, vuid);

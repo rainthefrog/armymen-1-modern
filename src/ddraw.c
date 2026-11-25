@@ -449,6 +449,7 @@ void dd_present(DDraw *dd, int frame_end)
 {
     missionpath_screen_note();                      /* missionpath.c: restart vs fresh entry (menus seen) */
     gameplay_run(NULL, NULL);                       /* gameplay.c: notes every mission (re)start (also seen during loading) */
+    record_screen_note();                           /* record.c: closes active mission segment when returning to menus */
     if (!dd->primary || !dd->hwnd) return;
     if (dd->coop & DDSCL_FULLSCREEN) make_fullscreen_window(dd);
     if (frame_end) music_frame();                   /* music.c: [audio] am2_music switched -> restart the playing music */
