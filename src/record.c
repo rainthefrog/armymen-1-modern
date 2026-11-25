@@ -352,9 +352,11 @@ static void close_mission(const char *reason)
     if (!g_fp || !g_mission_open) return;
     DWORD dur = GetTickCount() - g_cur_t0;
     BYTE *s = SARGE;
-    int sx = (s && !IsBadReadPtr(s, 8)) ? SARGE_X(s) : g_last_sx;
-    int sy = (s && !IsBadReadPtr(s, 8)) ? SARGE_Y(s) : g_last_sy;
-    int hp = (s && !IsBadReadPtr(s, 0x20)) ? SARGE_HEALTH(s) : g_last_hp;
+    /* the next map may already be loading (Sarge zeroed / not placed yet): fall back to the last position seen */
+    int s_ok = s && !IsBadReadPtr(s, 0x20) && SARGE_X(s) > 0 && SARGE_Y(s) > 0;
+    int sx = s_ok ? SARGE_X(s) : g_last_sx;
+    int sy = s_ok ? SARGE_Y(s) : g_last_sy;
+    int hp = s_ok ? SARGE_HEALTH(s) : g_last_hp;
     rec_emit(1,
         "\"e\":\"mission_end\",\"idx\":%d,\"run\":%u,\"scenario\":%d,\"mission\":%d,\"reason\":\"%s\","
         "\"won\":%d,\"duration_ms\":%lu,\"wx\":%d,\"wy\":%d,\"hp\":%d,"
@@ -606,6 +608,17 @@ static const char *screen_state_name(int st)
         case 3: return "callsign";
         case 4: return "mission_select";
         case 5: return "gameplay";
+        case 7: return "options";
+        case 8: return "controls";
+        case 9: return "audio";
+        case 10: return "about";
+        case 11: return "pause_menu";
+        case 12: return "play_controls";
+        case 13: return "play_audio";
+        case 14: return "mod_settings";
+        case 15: return "quit";
+        case 16: return "mission_over";
+        case 17: case 18: case 19: case 20: return "key_config";
         default:
             if (layout_view_is_gameplay()) return game_menu_up() ? "pause_menu" : "briefing";
             return "menu";
