@@ -358,8 +358,16 @@ void __fastcall capture_sarge_in(BYTE *s, BYTE *v)
         return;
     }
     capture_sarge_in_original(s, v);
-    if (s && v && SARGE_VEHICLE(s) == v && UID_ARMY(UID(v)) != UID_ARMY(UID(s)) && !g_cap.v && capture_allowed())
-        capture(s, v);
+    if (s && v && SARGE_VEHICLE(s) == v) {
+        if (UID_ARMY(UID(v)) != UID_ARMY(UID(s)) && !g_cap.v && capture_allowed()) {
+            DWORD orig_uid = UID(v);
+            capture(s, v);
+            record_note_vehicle("capture", orig_uid, UID_ARMY(orig_uid), (int)((orig_uid >> 16) & 0x3f) - 1, *(short *)(v + 4), *(short *)(v + 6), ITEM_HEALTH(v));
+        } else {
+            DWORD vuid = UID(v);
+            record_note_vehicle("enter", vuid, UID_ARMY(vuid), (int)((vuid >> 16) & 0x3f) - 1, *(short *)(v + 4), *(short *)(v + 6), ITEM_HEALTH(v));
+        }
+    }
 }
 
 /* ---- vehicle_bailout (2026-11-20, user: "if the vehicle gets destroyed - kick sarge out. dont kill him")
@@ -415,8 +423,16 @@ void __fastcall capture_sarge_out(BYTE *s)
     BYTE *v = s ? SARGE_VEHICLE(s) : NULL;
     int wrecked = v && VEH_STATE(v) == VEH_DYING;
     capture_sarge_out_original(s);
-    if (v && v == g_cap.v && SARGE_VEHICLE(s) != v) release();
-    if (wrecked && SARGE_VEHICLE(s) != v) bail_out(s, v);
+    if (v && SARGE_VEHICLE(s) != v) {
+        DWORD vuid = v == g_cap.v ? g_cap.uid : UID(v);
+        if (v == g_cap.v) release();
+        if (wrecked) {
+            bail_out(s, v);
+            record_note_vehicle("bailout", vuid, UID_ARMY(vuid), (int)((vuid >> 16) & 0x3f) - 1, *(short *)(s + 4), *(short *)(s + 6), ITEM_HEALTH(s));
+        } else {
+            record_note_vehicle("exit", vuid, UID_ARMY(vuid), (int)((vuid >> 16) & 0x3f) - 1, *(short *)(s + 4), *(short *)(s + 6), ITEM_HEALTH(v));
+        }
+    }
 }
 
 void __fastcall capture_unit_enter(BYTE *unit, BYTE *v)

@@ -132,6 +132,7 @@ typedef void (__fastcall *MineLayFn)(BYTE *weapon, int army, DWORD point);
 static int g_on = -1;
 static int enabled(void)
 {
+    if (g_cfg.classic_gameplay) return 0;
     if (g_on < 0) g_on = GetPrivateProfileIntA("controls", "mine_click", 1, mod_ini_path()) != 0;
     return g_on && g_cfg.controls_modern;
 }
@@ -305,6 +306,7 @@ typedef void (__fastcall *MuzzleFn)(BYTE *unit, short *out);
 static int g_sw_on = -1;
 static int sweeper_enabled(void)
 {
+    if (g_cfg.classic_gameplay) return 0;
     if (g_sw_on < 0) g_sw_on = GetPrivateProfileIntA("controls", "sweeper_click", 1, mod_ini_path()) != 0;
     return g_sw_on && g_cfg.controls_modern;
 }
@@ -598,6 +600,26 @@ static void take_mine(BYTE *u, BYTE *o, int pickup)
 }
 static void sweep_take(BYTE *u, BYTE *o) { take_mine(u, o, 0); }
 
+/* Selected sweeper + right click: collect every laid mine inside the detector ring.  Unlike the original
+ * hold-fire sweep, a mine that cannot fit is left safely on the ground instead of being destroyed. */
+int mines_collect_in_range(void)
+{
+    BYTE *u = SARGE;
+    if (!sweeper_active(u) || !SARGE_WEAPON(u) || W_TYPE(SARGE_WEAPON(u)) != TYPE_SWEEPER) return 0;
+    int sx = SARGE_X(u), sy = SARGE_Y(u), collected = 0, left = 0;
+    for (int i = 0; i < OBJECT_COUNT; i++) {
+        BYTE *o = object(i);
+        if (!laid_mine(o) || dist(sx, sy, OBJ_X(o), OBJ_Y(o)) > SWEEP_RADIUS) continue;
+        if (sweep_plan(o) != SWEEP_COLLECT) { left++; continue; }
+        take_mine(u, o, 0);
+        collected++;
+    }
+    if (collected) PLAY_SOUND(SND_WEAPON_ACTIVATE, NULL);
+    mlog("sweeper: right click collected %d mine(s) in range%s", collected,
+         left ? "; inventory full, remaining mines left in place" : "");
+    return 1;                                      /* consume the click even when the ring is empty */
+}
+
 /* every frame: the detector (reveal + beeps), the disarm walk */
 static int sweeper_frame(BYTE *u, DWORD now, int walking)
 {
@@ -876,6 +898,7 @@ static void __fastcall mines_lay_px(BYTE *weapon, int army, DWORD point) {
              after < before ? "mine laid" : "NO mine laid (no free charge)",
              snap((short)LOWORD(point)), snap((short)HIWORD(point)), asked ? "clicked, game would have used" : "the game's spot",
              (short)LOWORD(game_point), (short)HIWORD(game_point), SARGE_X(u), SARGE_Y(u), before, after, total, ammo, ammo > 0 ? ammo - 1 : 0);
+        if (after < before) record_note_mine_lay(W_TYPE(weapon), snap((short)LOWORD(point)), snap((short)HIWORD(point)), ammo > 0 ? ammo - 1 : 0);
     }
 }
 void __fastcall mines_lay(BYTE *weapon, int army, DWORD point) { PX_BEGIN(px); mines_lay_px(weapon, army, point); PX_END(px, PR_MINES); }   /* timed: stage PR_MINES (exclusive, common.h) */

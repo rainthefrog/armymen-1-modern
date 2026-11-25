@@ -157,6 +157,10 @@ struct Config {
     int mm_sarge;             /* [hud] minimap_sarge: Sarge highlighted on the minimap */
     int mm_contrast;          /* [hud] minimap_contrast: darker, higher-contrast map picture */
     int mm_hover;             /* [hud] minimap_hover: details of the blip under the pointer */
+    int classic_gameplay;     /* [preset] classic_gameplay: original rules/controls; modern renderer + optional HUD layout remain */
+    int modern_hud_layout;    /* [hud] modern_layout: sliced/scaled HUD; 0 = original centred 1x HUD */
+    int record_runs;          /* [debug] record_runs: automatic .jsonl run recording (off in portable/release by default) */
+    int update_check;         /* [update] check: check GitHub Releases for a newer ddraw.dll at start */
 };
 
 /* view.c: where the shown part of the screen (the view, in game pixels) goes in the window. */
@@ -881,6 +885,7 @@ typedef struct { short x, y; char own, in_range, safe; } SweepMark;   /* safe: d
 int mines_sweep_info(SweepInfo *si);       /* modern.c: the sweeper is carried (detector state, the mine under the pointer) */
 int mines_sweep_marks(SweepMark *m, int max, int x0, int y0, int x1, int y1);   /* modern.c: visible laid mines in a world box */
 int mines_sweep_hud(int *count, int *nearest);   /* weapons.c: the sweeper box lamp */
+int mines_collect_in_range(void);                /* controls.c: selected sweeper + right click collects every mine in its detector radius */
 int mines_free_charges(BYTE *weapon);       /* weapons.c: real free charges of a mine weapon (ammo cap for the top-up) */
 float mines_sweeper_walk_mul(BYTE *sarge, int speed);   /* controls.c controls_move: speed factor for Sarge walking with the sweeper selected (1 = none) */
 void __fastcall mines_step(BYTE *mine, DWORD *who);    /* mines.c: FUN_004398d0 rewrite (something moved onto a laid mine) */
@@ -941,3 +946,33 @@ int surf_purge(int (*needed)(Surf *s));     /* surface.c: destroy zombies no qui
 int surf_count_not_in(const SurfRef *list, int n);   /* surface.c: alive surfaces made after that save */
 Surf *surf_new(DDraw *dd, int w, int h, DWORD caps);   /* surface.c: a surface for a load from a save file */
 int surf_list_all(Surf **out, int max);       /* surface.c: every surface held (incl. zombies) */
+
+/* record.c: automatic manual-test session recorder & semantic replayer */
+void record_init(void);
+void record_shutdown(void);
+int  record_active(void);
+void record_frame(void);
+void record_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+void record_note_walk_target(int tx, int ty, int sprint, DWORD veh_uid);
+void record_note_weapon_pickup(int type, int ammo_before, int ammo_after, int box, int wx, int wy, DWORD uid, int merge);
+void record_note_weapon_select(int type, int ammo, int slot, int box);
+void record_note_weapon_drop(int type, int wx, int wy);
+void record_note_weapon_fire(int type, int ammo, int wx, int wy, int facing, int tx, int ty, DWORD target_uid);
+void record_note_mine_lay(int type, int wx, int wy, int ammo);
+void record_note_cheat_kill(DWORD uid);
+void record_note_vehicle(const char *action, DWORD uid, int army, int cls, int wx, int wy, int hp);
+void record_note_order(const char *mode, int wx, int wy, DWORD unit_uid, const char *via);
+void record_note_medkit(const char *action, int wx, int wy, int kits, int hp_before, int hp_after);
+void record_note_setting(const char *section, const char *key, const char *val);
+void record_note_cheat(const char *name, int wx, int wy, const char *detail);
+void record_note_savestate(const char *action, int slot, int ok);
+void record_note_exception(DWORD code, void *at, const char *module, DWORD offset);
+void controls_replay_walk(int wx, int wy, int sprint);
+void controls_replay_fire(int tx, int ty);
+int  weapons_select_type(int type);
+
+/* update.c: built-in GitHub Releases updater */
+void update_cleanup(void);
+void update_check_async(int manual);
+int  update_message(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+const char *update_version(void);

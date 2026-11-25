@@ -150,4 +150,5 @@ kill $XPID 2>/dev/null
 echo "done; game pid was $GPID"
 cp "$GAMEDIR"/armymen-mod.log "$OUT/" 2>/dev/null
 cp "$GAMEDIR"/armymen-mod.ini "$OUT/armymen-mod.after.ini" 2>/dev/null   # what the run wrote (bindings, switches)
+if [ -d "$GAMEDIR/recordings" ]; then mkdir -p "$OUT/recordings"; cp "$GAMEDIR"/recordings/*.jsonl "$OUT/recordings/" 2>/dev/null; fi
 ls -la "$OUT"

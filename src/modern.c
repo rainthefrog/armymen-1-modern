@@ -78,7 +78,7 @@ static void load(void)
 
 }
 
-int modern_on(int f) { if (!g_loaded) load(); return f >= 0 && f < MOD_COUNT && FEATURES[f].on; }
+int modern_on(int f) { if (g_cfg.classic_gameplay) return 0; if (!g_loaded) load(); return f >= 0 && f < MOD_COUNT && FEATURES[f].on; }
 int modern_count(void) { return MOD_COUNT; }
 const char *modern_name(int f) { return f >= 0 && f < MOD_COUNT ? FEATURES[f].name : ""; }
 char modern_size(int f) { return f >= 0 && f < MOD_COUNT ? FEATURES[f].size : ' '; }
@@ -1220,6 +1220,7 @@ static void modern_draw_body(Surf *b)
                     }
                     box(qx - 1, qy - 1, qx + 2, qy + 2, c);
                 } else { box(qx - 2, qy - 2, qx + 3, qy + 3, C_BLACK); box(qx - 1, qy - 1, qx + 2, qy + 2, C_GREEN); }
+                if (si.count) text(qx + 10, qy + 8, "RIGHT CLICK: COLLECT ALL", C_YELLOW, 1);
             }
             int ppx, ppy;
             if (si.hover) {

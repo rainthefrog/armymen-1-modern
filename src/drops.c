@@ -133,7 +133,7 @@ static const char *weapon_name(int wt)
 
 static void __cdecl drops_load_objects(void)
 {
-    g_on = GetPrivateProfileIntA("gameplay", "weapon_drops", 1, mod_ini_path());
+    g_on = !g_cfg.classic_gameplay && GetPrivateProfileIntA("gameplay", "weapon_drops", 1, mod_ini_path());
     int pool = GetPrivateProfileIntA("gameplay", "weapon_drop_pool", 8, mod_ini_path());
     if (pool > 32) pool = 32;
     int ammo = GetPrivateProfileIntA("gameplay", "weapon_drop_ammo", 0, mod_ini_path());   /* 0 = the game's default */

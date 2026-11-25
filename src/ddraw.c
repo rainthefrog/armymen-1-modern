@@ -6,6 +6,16 @@
 #include <stdlib.h>
 
 struct Config g_cfg = { 1024, 540, 1, 1 };
+
+/* The one-file release deliberately ships without the optional HD pack. Keep every HD path available for a
+ * later armymen-mod.ini, but do not advertise missing assets as enabled when the DLL is used on its own. */
+#ifdef ARMYMEN_PORTABLE
+#define DEFAULT_HD_ART 0
+#define DEFAULT_RECORD_RUNS 0
+#else
+#define DEFAULT_HD_ART 1
+#define DEFAULT_RECORD_RUNS 1
+#endif
 HMODULE g_self;
 static FILE *g_log;
 
@@ -66,6 +76,8 @@ void config_load(void)
     if (g_cfg.controls_run_speed < 1.0f || g_cfg.controls_run_speed > 4.0f) g_cfg.controls_run_speed = 1.6f;
     g_cfg.six_weapons = GetPrivateProfileIntA("controls", "six_weapons", 1, ini);
     g_cfg.cheat_keys = GetPrivateProfileIntA("debug", "cheat_keys", 0, ini);   /* test aids (Ctrl+T/I/B/G): off unless set */
+    g_cfg.record_runs = GetPrivateProfileIntA("debug", "record_runs", DEFAULT_RECORD_RUNS, ini) != 0;
+    g_cfg.update_check = GetPrivateProfileIntA("update", "check", 1, ini) != 0;
     g_cfg.health_regen = GetPrivateProfileIntA("gameplay", "health_regen", 1, ini);
     g_cfg.shoot_over = GetPrivateProfileIntA("gameplay", "shoot_over", 1, ini);
     g_cfg.cover_enemies = GetPrivateProfileIntA("gameplay", "cover_enemies", 1, ini);
@@ -124,10 +136,10 @@ void config_load(void)
     g_cfg.button_press = GetPrivateProfileIntA("display", "button_press", 1, ini);
     g_cfg.smooth_scroll = GetPrivateProfileIntA("display", "smooth_scroll", 1, ini);
     g_cfg.clock_lock = GetPrivateProfileIntA("clock", "lock_to_display", 1, ini);
-    g_cfg.hd_menus = GetPrivateProfileIntA("display", "hd_menus", 1, ini);
-    g_cfg.hd_sprites = GetPrivateProfileIntA("display", "hd_sprites", 1, ini);
-    g_cfg.hd_world = GetPrivateProfileIntA("display", "hd_world", 1, ini);
-    g_cfg.hd_videos = GetPrivateProfileIntA("display", "hd_videos", 1, ini);
+    g_cfg.hd_menus = GetPrivateProfileIntA("display", "hd_menus", DEFAULT_HD_ART, ini);
+    g_cfg.hd_sprites = GetPrivateProfileIntA("display", "hd_sprites", DEFAULT_HD_ART, ini);
+    g_cfg.hd_world = GetPrivateProfileIntA("display", "hd_world", DEFAULT_HD_ART, ini);
+    g_cfg.hd_videos = GetPrivateProfileIntA("display", "hd_videos", DEFAULT_HD_ART, ini);
     g_cfg.regen_delay_ms = GetPrivateProfileIntA("gameplay", "regen_delay_ms", 6000, ini);
     GetPrivateProfileStringA("gameplay", "regen_full_s", "90", buf, sizeof buf, ini);
     g_cfg.regen_full_s = (float)atof(buf);
@@ -138,6 +150,26 @@ void config_load(void)
     g_cfg.controls_camera_smooth_ms = (float)atof(buf);
     if (g_cfg.controls_camera_smooth_ms < 0.0f || g_cfg.controls_camera_smooth_ms > 2000.0f) g_cfg.controls_camera_smooth_ms = 120.0f;
     if (g_cfg.controls_fire_interval_ms < 0) g_cfg.controls_fire_interval_ms = 0;
+    g_cfg.classic_gameplay = GetPrivateProfileIntA("preset", "classic_gameplay", 0, ini) != 0;
+    g_cfg.modern_hud_layout = GetPrivateProfileIntA("hud", "modern_layout", 1, ini) != 0;
+    if (!g_cfg.modern_hud_layout) {
+        g_cfg.hud_corners = 0;
+        g_cfg.hud_corner_scale = g_cfg.hud_minimap_scale = g_cfg.hud_centre_scale = g_cfg.hud_air_scale = 1.0f;
+    }
+    if (g_cfg.classic_gameplay) {
+        g_cfg.controls_modern = g_cfg.six_weapons = g_cfg.health_regen = 0;
+        g_cfg.shoot_over = g_cfg.cover_enemies = g_cfg.corner_shots = g_cfg.leg_hits = 0;
+        g_cfg.height_rules = HEIGHTS_ORIGINAL; g_cfg.longer_range = g_cfg.fix_squash = 0;
+        g_cfg.drive_enemy_vehicles = g_cfg.vehicle_bailout = g_cfg.vehicle_reverse = g_cfg.turret_smooth = 0;
+        g_cfg.vehicle_unstick = g_cfg.sarge_unstick = g_cfg.break_fences = g_cfg.enemy_awareness = 0;
+        g_cfg.squad_sprint = g_cfg.patrol_marches = g_cfg.ally_regen = g_cfg.ally_heal = g_cfg.ally_health_bars = 0;
+        g_cfg.ally_health_x = 100; g_cfg.am2_sounds = g_cfg.am2_music = 0;
+        g_cfg.menu_text = g_cfg.radio_overlay = g_cfg.see_interior = g_cfg.fronts_order = g_cfg.air_layer = 0;
+        g_cfg.map_edge_fog = g_cfg.pin_objective = g_cfg.target_sector = g_cfg.target_area = g_cfg.mission_path = 0;
+        g_cfg.mm_blips = g_cfg.mm_sarge = g_cfg.mm_contrast = g_cfg.mm_hover = 0;
+        g_cfg.crt = g_cfg.see_through = g_cfg.see_enemies = g_cfg.button_press = 0;
+        g_cfg.hd_menus = g_cfg.hd_sprites = g_cfg.hd_world = g_cfg.hd_videos = 0;
+    }
     /* [display] resolution = a standard size (layout.c presets) or "custom" for width/height/scale */
     char res[32];
     GetPrivateProfileStringA("display", "resolution", "1080p", res, sizeof res, ini);
@@ -172,13 +204,14 @@ void config_load(void)
         MoveFileExA(lp, pp, MOVEFILE_REPLACE_EXISTING);
         g_log = fopen(lp, "w");
     }
-    mlog("armymen-mod ddraw.dll built " __DATE__ " " __TIME__);
+    mlog("armymen-mod ddraw.dll v%s built " __DATE__ " " __TIME__, update_version());
     mlog("armymen-mod ddraw.dll loaded; resolution %s: game size %dx%d x%d (%dx%d on screen), %s, vsync %d",
          res, g_cfg.width, g_cfg.height, g_cfg.scale, g_cfg.width * g_cfg.scale, g_cfg.height * g_cfg.scale,
          g_cfg.windowed ? "windowed" : "fullscreen", g_cfg.vsync);
     mlog("clock: speed %.2f hotkeys %d", g_cfg.clock_speed, g_cfg.clock_keys);
     mlog("display: videos fill the window %d, borderless fullscreen %d", g_cfg.video_fit, g_cfg.borderless_fs);
     mlog("controls: %s", g_cfg.controls_modern ? "modern (mouse aim, WASD)" : "classic");
+    mlog("preset: classic gameplay %d, modern HUD layout %d", g_cfg.classic_gameplay, g_cfg.modern_hud_layout);
     mlog("mouse: fix %d follow_windows_pointer %d sensitivity %.2f use_windows_speed %d", g_cfg.mouse_fix,
          g_cfg.mouse_pointer, g_cfg.mouse_sens, g_cfg.mouse_winspeed);
 }
@@ -330,6 +363,7 @@ static LONG CALLBACK crash_report(EXCEPTION_POINTERS *e)
         }
         mlog("EXCEPTION stack code words:%s", found ? line : " none");
     }
+    if (!guarded) record_note_exception(code, at, name, (DWORD)((BYTE *)at - (BYTE *)m));
     if (guarded) {
         mlog("GUARDED: the fault above was inside \"%s\" - call abandoned, the game goes on", g_guard->what);
         c->Eip = (DWORD)(uintptr_t)guard_land;
@@ -365,10 +399,14 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID res)
         mlog("DPI awareness: %s", dpi);
         report_compat_layers();
         patches_apply();
+        update_cleanup();
+        record_init();
         guard_self_test(mod_ini_path());
         hdsprites_start();                          /* upscaled pictures: read the catalogue on its own thread */
         hdworld_start();                            /* upscaled battlefield: open hdworld.pak */
+        update_check_async(0);                      /* background GitHub Releases check (if [update] check=1) */
     } else if (reason == DLL_PROCESS_DETACH) {
+        record_shutdown();
         if (g_log) fclose(g_log);
     }
     return TRUE;
@@ -520,6 +558,8 @@ static LRESULT CALLBACK wndproc_hook(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     /* the game PAUSES while its window is inactive (WM_ACTIVATEAPP 0 -> gpGame flags 1, the frame loop stops: no
      * picture, no sound bookkeeping) - logged, so a frozen stretch in a log can be matched (2026-11-21, win-pause hunt) */
     if (msg == WM_ACTIVATEAPP) mlog("window: %s", wp ? "game active again" : "game INACTIVE (another program in front) - the game pauses itself");
+    if (update_message(h, msg, wp, lp)) return 0;
+    record_message(h, msg, wp, lp);
     if (screenbtn_message(h, msg, wp)) return 0;
     if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_MOUSEMOVE) modmenu_slider_mouse(msg, lp);                       /* screenbtn.c: a pressed button acts (release / timer) */
     if (msg == WM_SYSKEYDOWN && wp == VK_F4) { mlog("window: Alt+F4 - closing"); PostMessageA(h, WM_CLOSE, 0, 0); return 0; }

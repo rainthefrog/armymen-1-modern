@@ -1,0 +1,26 @@
+name: CI
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make gcc-mingw-w64-i686
+      - name: Build release (portable) ddraw.dll
+        run: |
+          make -C src clean
+          make -C src portable
+      - name: Build dev ddraw.dll
+        run: |
+          make -C src clean
+          make -C src
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ddraw-dev
+          path: src/ddraw.dll
+          if-no-files-found: error

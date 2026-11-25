@@ -181,6 +181,7 @@ void __fastcall orders_command_click(int confirm)
              dist, un, UNIT_ORDER(un), UNIT_GOAL_X(un), UNIT_GOAL_Y(un), COMMAND_CURSOR);
     else
         mlog("orders: %s at %d,%d (%d px from Sarge); command cursor %d mode %d", mode_name(mode), wx, wy, dist, COMMAND_CURSOR, COMMAND_MODE);
+    record_note_order(mode_name(mode), wx, wy, un ? *(DWORD *)un : 0, g_own_call ? "minimap" : "field");
 }
 
 /* the command click at a world spot (minimap): the game cursor is spot - camera for the call */

@@ -107,6 +107,9 @@ static Row g_rows[] = {
     { "Squad: medkits heal them", &g_cfg.ally_heal, "gameplay", "ally_heal" },
     { "Squad: health bars",       &g_cfg.ally_health_bars, "hud", "ally_health_bars" },
     { "Quicksave keys",           &g_cfg.quicksave, "savestate", "enabled" },             /* savestate.c (2026-11-21); the heap part needs a restart */
+    { "Diagnostic logging",       &g_cfg.log, "debug", "log" },                           /* tester log; 0/1 here, higher detail remains an ini option */
+    { "Classic gameplay (restart)", &g_cfg.classic_gameplay, "preset", "classic_gameplay" },
+    { "Modern HUD layout (restart)", &g_cfg.modern_hud_layout, "hud", "modern_layout" },
 };
 #define ROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 #define SPEED_ROW ROWS                 /* game speed */
@@ -154,6 +157,7 @@ static void click_row(int row)
     if (r->value == &g_cfg.height_rules) { height_rules_next(); return; }   /* three values (modded: ini only) */
     *r->value = !*r->value;
     WritePrivateProfileStringA(r->section, r->key, *r->value ? "1" : "0", mod_ini_path());
+    record_note_setting(r->section, r->key, *r->value ? "1" : "0");
     mlog("panel: %s %d", r->name, *r->value);
     if (r->value == &g_cfg.am2_music) music_option_switched();   /* music.c: restart the playing music with the new choice now */
 }

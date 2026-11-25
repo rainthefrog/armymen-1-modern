@@ -1,8 +1,12 @@
 # build output
 *.o
-ddraw.dll
+*.dll
 # stray editor / patch leftovers
 *.new
 
+# local run recordings
+recordings/
+
 # Wine test output (test/run.sh, test/run-menu.sh)
-test/out/
+test/
+deliverables/

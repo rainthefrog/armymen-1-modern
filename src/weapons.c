@@ -168,7 +168,28 @@ static int activate(BYTE *u, int b)
     int ok = SELECT_SLOT(u, c);
     RESET_THROW_CHARGE();
     remember(u);
+    if (ok && w.type) record_note_weapon_select(*(int *)w.type, W_AMMO(w.type), c, b);
     return ok;
+}
+
+int weapons_select_type(int type)
+{
+    BYTE *u = SARGE;
+    if (!u || SARGE_VEHICLE(u)) return 0;
+    if (six()) {
+        for (int b = 0; b < boxes(); b++) {
+            Weapon w = box_weapon(u, b);
+            if (w.type && *(int *)w.type == type) return activate(u, b);
+        }
+        return 0;
+    }
+    for (int c = 0; c < SLOTS; c++) {
+        if (SLOT_TYPE(u, c) && *(int *)SLOT_TYPE(u, c) == type) {
+            CUR_SLOT(u) = -1;
+            return SELECT_SLOT(u, c);
+        }
+    }
+    return 0;
 }
 
 /* ---------------------------------------------------------------- carry-over to the next part
@@ -214,6 +235,7 @@ static struct { int valid, scen, mission, cur_slot, cur_box, n; CarryItem w[CARR
 static int carry_on(void)
 {
     static int cfg = -1;
+    if (g_cfg.classic_gameplay) return 0;
     if (cfg < 0) cfg = GetPrivateProfileIntA("controls", "carry_weapons", 1, mod_ini_path());
     return cfg && six();
 }
@@ -398,7 +420,8 @@ static void merge_ammo(BYTE *u, void *item, int arg, int dup_box)
     }
     Weapon dup = slot_of_box(dup_box) == c ? held : g_store[dup_box];
     BYTE *rec = ITEM_WEAPON(item);
-    int total = W_AMMO(dup.type) + W_AMMO(rec);
+    int before_ammo = W_AMMO(dup.type);
+    int total = before_ammo + W_AMMO(rec);
     if (total > MAX_AMMO) total = MAX_AMMO;
     W_AMMO(dup.type) = (short)total;
     int charges = *(int *)dup.type == TYPE_MINE || *(int *)dup.type == TYPE_EXPLOSIVE;   /* nMaxAmmo = their array length */
@@ -408,6 +431,7 @@ static void merge_ammo(BYTE *u, void *item, int arg, int dup_box)
     SLOT_TYPE(u, c) = held.type; SLOT_ITEM(u, c) = held.item;
     if (cur >= 0 && cur < SLOTS && CUR_SLOT(u) != cur) { CUR_SLOT(u) = -1; SELECT_SLOT(u, cur); }
     if (g_cfg.log >= 2) mlog("weapons: type %d ammo added, now %d", ITEM_TYPE(item), total);
+    record_note_weapon_pickup(ITEM_TYPE(item), before_ammo, total, dup_box, *(short *)(u + 4), *(short *)(u + 6), *(DWORD *)item, 1);
     remember(u);
 }
 
@@ -426,7 +450,15 @@ static void __fastcall weapons_touch_px(BYTE *unit, void *item, int arg) {
     valid(u);
     sync(u);
     int c = ITEM_CATEGORY(item), type = ITEM_TYPE(item);
-    if (c == 0) { PX_GAME(weapons_touch_original(unit, item, arg)); remember(u); return; }   /* auto rifle upgrade, ammo, health ... */
+    if (c == 0) {
+        int before = SLOT_TYPE(u, 0) ? *(int *)SLOT_TYPE(u, 0) : -1;
+        PX_GAME(weapons_touch_original(unit, item, arg));
+        int after = SLOT_TYPE(u, 0) ? *(int *)SLOT_TYPE(u, 0) : -1;
+        if (after != before || type == 22)
+            record_note_weapon_pickup(type, 0, safe_item(item) ? W_AMMO(ITEM_WEAPON(item)) : 0, 0, *(short *)(u + 4), *(short *)(u + 6), *(DWORD *)item, 0);
+        remember(u);
+        return;
+    }   /* auto rifle upgrade, ammo, health ... */
 
     int dup = carried_box(u, type);
     if (dup >= 0) {                              /* the same weapon again: take its ammo */
@@ -448,6 +480,7 @@ static void __fastcall weapons_touch_px(BYTE *unit, void *item, int arg) {
                 W_AMMO(rec) = (short)(got - take); W_AMMO(d.type) = (short)(have + take);
                 OBJ_F70(item) |= OF_SAVE_C;                /* the pack keeps its lowered ammo / charges in the army file */
                 if (g_cfg.log >= 1) mlog("weapons: type %d topped up %d -> %d (cap %d), %d left in the pack", type, have, have + take, cap, got - take);
+                record_note_weapon_pickup(type, have, have + take, dup, *(short *)(u + 4), *(short *)(u + 6), *(DWORD *)item, 1);
                 remember(u);
                 return;
             }
@@ -461,6 +494,7 @@ static void __fastcall weapons_touch_px(BYTE *unit, void *item, int arg) {
             OBJ_F70(item) |= OF_SAVE_C;                    /* the pack keeps its lowered ammo in the army file (a reload gave it all back) */
             if (W_MAX_AMMO(d.type) < MAX_AMMO) W_MAX_AMMO(d.type) = MAX_AMMO;
             if (g_cfg.log >= 1) mlog("weapons: type %d topped up %d -> %d (cap), %d left in the pack", type, have, MAX_AMMO, have + got - MAX_AMMO);
+            record_note_weapon_pickup(type, have, MAX_AMMO, dup, *(short *)(u + 4), *(short *)(u + 6), *(DWORD *)item, 1);
             remember(u);
             return;
         }
@@ -485,6 +519,7 @@ static void __fastcall weapons_touch_px(BYTE *unit, void *item, int arg) {
     g_slot_box[c] = b;
     if (stashed && cur == c) activate(u, old_box);   /* keep using the weapon that was in use */
     if (g_cfg.log >= 2) mlog("weapons: picked up type %d (kind %d) into box %c%d", type, c, box_col(b) ? 'B' : 'A', box_row(b) + 1);
+    record_note_weapon_pickup(type, 0, safe_item(item) ? W_AMMO(ITEM_WEAPON(item)) : 0, b, *(short *)(u + 4), *(short *)(u + 6), *(DWORD *)item, 0);
     remember(u);
 }
 void __fastcall weapons_touch(BYTE *unit, void *item, int arg) { PX_BEGIN(px); weapons_touch_px(unit, item, arg); PX_END(px, PR_CHOOKS); }   /* timed: stage PR_CHOOKS (exclusive, common.h) */
@@ -502,6 +537,7 @@ void weapons_frame(void)
     if (g_carry_pending && layout_view_is_gameplay()) { g_carry_pending = 0; carry_apply(u); }   /* in play: after the game's own restore */
     for (int c = 1; c < SLOTS; c++) {
         if (!g_seen[c] || SLOT_ITEM(u, c)) continue;          /* no drop */
+        if (safe_item(g_seen[c])) record_note_weapon_drop(ITEM_TYPE(g_seen[c]), *(short *)(u + 4), *(short *)(u + 6));
         g_slot_box[c] = -1;
         for (int b = 1; b < boxes(); b++) {
             if (!g_store[b].item || ITEM_CATEGORY(g_store[b].item) != c) continue;

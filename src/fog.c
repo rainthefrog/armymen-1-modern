@@ -36,6 +36,7 @@
 
 static BYTE g_level[LEVELS][256];
 static BYTE *g_built_from;
+static BYTE g_fog_ink[3];                    /* dark neutral mist, matched to the current mission palette */
 
 static const double FACTOR[LEVELS] = { 1.0, 0.82, 0.64, 0.48, 0.34, 0.2, 0.08 };
 static DWORD g_pal_sum;
@@ -62,6 +63,16 @@ static int build_levels(void)
             }
             g_level[lv][i] = (BYTE)best;
         }
+    static const BYTE mist[3][3] = { { 17, 21, 20 }, { 25, 30, 28 }, { 35, 40, 37 } };
+    for (int k = 0; k < 3; k++) {
+        int best = 0, best_d = 1 << 30;
+        for (int j = 0; j < 256; j++) {
+            int dr = p->e[j].peRed - mist[k][0], dg = p->e[j].peGreen - mist[k][1], db = p->e[j].peBlue - mist[k][2];
+            int d = 3 * dr * dr + 4 * dg * dg + 2 * db * db;
+            if (d < best_d) { best_d = d; best = j; }
+        }
+        g_fog_ink[k] = (BYTE)best;
+    }
     g_pal_sum = sum;
     g_built_from = (BYTE *)1;
     return 1;
@@ -80,8 +91,37 @@ static int level_at(int d, int x, int y)
     return lv < LEVELS ? lv : LEVELS - 1;
 }
 
+/* The bottom-camera allowance lifts the last playable rows clear of the HUD.  The map files have spare rows below
+ * boundrect, but they are working space rather than scenery (map makers may park objects there).  Cover that exposed
+ * strip with an opaque fog bank: a short dithered blend at the edge, then softly mottled neutral mist.  The HUD is
+ * drawn over this later. */
+static void draw_bottom_skirt(Surf *b)
+{
+    if (!controls_map_bottom_room() || !b || !b->bits || !layout_view_is_gameplay() || !build_levels()) return;
+    int w = SCREEN_R - SCREEN_L, h = SCREEN_B - SCREEN_T;
+    if (w > b->w) w = b->w;
+    if (h > b->h) h = b->h;
+    int edge = BOUND_B - SCREEN_T;
+    if (edge <= 0 || edge >= h) return;
+    BYTE *edge_row = b->bits + (size_t)(edge - 1) * b->pitch;
+    for (int y = edge; y < h; y++) {
+        int d = y - edge;
+        BYTE *dst = b->bits + (size_t)y * b->pitch;
+        for (int x = 0; x < w; x++) {
+            int wave = ((x * 13 + y * 7 + ((x >> 4) ^ (y >> 3)) * 11) & 31);
+            int ink = wave < 7 ? 2 : wave < 19 ? 1 : 0;
+            /* Fade the ground into the fog over 12 rows; after that no unused map pixel remains visible. */
+            if (d < 12 && BAYER[y & 3][x & 3] >= d * 16 / 12)
+                dst[x] = g_level[3 + d / 6][edge_row[x]];
+            else
+                dst[x] = g_fog_ink[ink];
+        }
+    }
+}
+
 void fog_draw(Surf *b)
 {
+    draw_bottom_skirt(b);
     if (!g_cfg.map_edge_fog || !b || !b->bits || !layout_view_is_gameplay()) return;
     int bl = BOUND_L, bt = BOUND_T, br = BOUND_R, bb = BOUND_B;
     if (br - bl < 64 || bb - bt < 64) return;

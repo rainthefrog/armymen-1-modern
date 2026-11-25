@@ -1370,7 +1370,7 @@ void savestate_install(void)
 {
     const char *ini = mod_ini_path();
     char b[64];
-    C.enabled = GetPrivateProfileIntA("savestate", "enabled", 1, ini);
+    C.enabled = !g_cfg.classic_gameplay && GetPrivateProfileIntA("savestate", "enabled", 1, ini);
     g_cfg.quicksave = C.enabled;
     C.slots = GetPrivateProfileIntA("savestate", "slots", 3, ini);
     if (C.slots < 1) C.slots = 1;

@@ -1,0 +1,47 @@
+name: Release
+# Pushing a version tag (v0.1.0, ...) builds the single-file portable ddraw.dll with MOD_VERSION set from the tag,
+# generates ddraw.dll.sha256, and publishes a GitHub Release using docs/release-notes/<tag>.md as the release body.
+#
+# - Tags starting with v0. (or containing -) are marked as GitHub prereleases (alpha/beta). The mod's built-in
+#   updater reads /releases?per_page=5, so it automatically detects and installs both prereleases and full releases.
+# - The workflow stops before building if docs/release-notes/<tag>.md is missing.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release notes present
+        run: test -s "docs/release-notes/${GITHUB_REF_NAME}.md" || { echo "::error::docs/release-notes/${GITHUB_REF_NAME}.md is missing"; exit 1; }
+      - name: Install MinGW cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make gcc-mingw-w64-i686
+      - name: Build single-file release ddraw.dll (portable profile)
+        run: make -C src portable MOD_VERSION="${GITHUB_REF_NAME#v}" MOD_REPO_URL="https://github.com/${{ github.repository }}"
+      - name: Checksum
+        run: |
+          mkdir -p dist
+          cp src/ddraw.dll dist/ddraw.dll
+          (cd dist && sha256sum ddraw.dll > ddraw.dll.sha256)
+          cat dist/ddraw.dll.sha256
+      - name: Determine prerelease flag
+        id: meta
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            v0.*|*-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)        echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Army Men Modern ${{ github.ref_name }}
+          body_path: docs/release-notes/${{ github.ref_name }}.md
+          prerelease: ${{ steps.meta.outputs.prerelease }}
+          files: |
+            dist/ddraw.dll
+            dist/ddraw.dll.sha256

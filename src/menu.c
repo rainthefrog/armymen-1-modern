@@ -20,6 +20,8 @@
 #define ID_MODERN   0xA101
 #define ID_REGEN    0xA102
 #define ID_SHOOT    0xA103
+#define ID_UPD_NOW  0xA108
+#define ID_UPD_AUTO 0xA109
 #define ID_HD       0xA110
 #define ID_CRT      0xA111
 #define ID_FOG      0xA112
@@ -35,9 +37,10 @@ typedef struct { int id; const char *label; int *value; const char *section, *ke
 static int g_hd_shown;              /* menu state of "Upscaled art" (any of the three on) */
 
 static Item g_gameplay[] = {
-    { ID_MODERN, "&Modern controls (mouse aim, move, run)", &g_cfg.controls_modern, NULL, NULL },
-    { ID_REGEN,  "&Health regeneration (slow, stops while under fire)", &g_cfg.health_regen, "gameplay", "health_regen" },
-    { ID_SHOOT,  "&Shoot over fences and walls", &g_cfg.shoot_over, "gameplay", "shoot_over" },
+    { ID_MODERN,   "&Modern controls (mouse aim, move, run)", &g_cfg.controls_modern, NULL, NULL },
+    { ID_REGEN,    "&Health regeneration (slow, stops while under fire)", &g_cfg.health_regen, "gameplay", "health_regen" },
+    { ID_SHOOT,    "&Shoot over fences and walls", &g_cfg.shoot_over, "gameplay", "shoot_over" },
+    { ID_UPD_AUTO, "Check for &updates at start", &g_cfg.update_check, "update", "check" },
 };
 static Item g_graphics[] = {
     { ID_HD,      "&Upscaled art (sprites, terrain, pictures, wide menus)", &g_hd_shown, NULL, NULL },
@@ -66,6 +69,7 @@ static void refresh_menu(HMENU m, Item *items, int n)
 static void refresh(void)
 {
     refresh_menu(g_menu_gameplay, g_gameplay, N(g_gameplay));
+    if (g_menu_gameplay) EnableMenuItem(g_menu_gameplay, ID_UPD_NOW, MF_BYCOMMAND | MF_ENABLED);
     refresh_menu(g_menu_graphics, g_graphics, N(g_graphics));
 }
 
@@ -86,6 +90,8 @@ void menu_install(HWND h)
     HMENU bar = GetMenu(h);
     if (!bar || GetMenuState(bar, ID_MODERN, MF_BYCOMMAND) != (UINT)-1) return;   /* none, or already there */
     g_menu_gameplay = build(g_gameplay, N(g_gameplay));
+    AppendMenuA(g_menu_gameplay, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(g_menu_gameplay, MF_STRING, ID_UPD_NOW, "Check for Updates...");
     g_menu_graphics = build(g_graphics, N(g_graphics));
     refresh();
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_menu_gameplay, "Game&play");
@@ -130,6 +136,7 @@ static void toggle_item(Item *it)
 int menu_command(HWND h, int id)
 {
     if (id < ID_FIRST || id > ID_LAST) return 0;
+    if (id == ID_UPD_NOW) { update_check_async(1); return 1; }
     for (int i = 0; i < N(g_gameplay); i++) if (g_gameplay[i].id == id) toggle_item(&g_gameplay[i]);
     for (int i = 0; i < N(g_graphics); i++) if (g_graphics[i].id == id) toggle_item(&g_graphics[i]);
     return 1;

@@ -2013,10 +2013,34 @@ static int debug_fence_route(BYTE *u, int *x, int *y, DWORD now)
 }
 
 static int g_tap_override, g_tap_wx, g_tap_wy;   /* mines.c: this tap walks here instead of the pointer (a mine to disarm) */
+static int g_rep_walk_req, g_rep_walk_wx, g_rep_walk_wy, g_rep_walk_sprint;
+static int g_rep_fire_req, g_rep_fire_tx, g_rep_fire_ty;
+
+void controls_replay_walk(int wx, int wy, int sprint)
+{
+    g_rep_walk_req = 1;
+    g_rep_walk_wx = wx;
+    g_rep_walk_wy = wy;
+    g_rep_walk_sprint = sprint ? 1 : 0;
+}
+
+void controls_replay_fire(int tx, int ty)
+{
+    g_rep_fire_req = 1;
+    g_rep_fire_tx = tx;
+    g_rep_fire_ty = ty;
+}
+
 static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer, int left, int fire_was,
                            int right_hold, int right_tap, int kx, int ky, DWORD now)
 {
     int dbg_x, dbg_y, dbg_tap = debug_fence_route(u, &dbg_x, &dbg_y, now);
+    int rep_tap = g_rep_walk_req;
+    if (rep_tap) {
+        g_rep_walk_req = 0;
+        dbg_x = g_rep_walk_wx; dbg_y = g_rep_walk_wy;
+        dbg_tap = 1;
+    }
     if ((right_tap && pointer) || dbg_tap) {
         S.stuck = 0; S.check_at = 0; S.detour_until = now;
         S.going = 1;
@@ -2024,7 +2048,8 @@ static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer,
         S.target_y = dbg_tap ? dbg_y : g_tap_override ? g_tap_wy : py + CAMERA_Y;
         g_tap_override = 0;
         S.going_since = now;
-        if (dbg_tap) S.route_run = g_debug_route_run;
+        if (rep_tap) S.route_run = g_rep_walk_sprint;
+        else if (dbg_tap) S.route_run = g_debug_route_run;
         /* on a vehicle: walk to it and climb in */
         S.enter = vehicle_at(S.target_x, S.target_y);
         if (S.enter) {
@@ -2042,6 +2067,7 @@ static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer,
                     }
                 }
             }
+            if (!rep_tap) record_note_walk_target(S.target_x, S.target_y, S.route_run, *(DWORD *)S.enter);
             if (try_enter_vehicle(u, S.enter)) { S.going = 0; S.enter = NULL; return; }
             if (g_cfg.log >= 2) mlog("controls: walking to vehicle %p at %d,%d", S.enter, S.target_x, S.target_y);
         }
@@ -2053,6 +2079,7 @@ static void modern_on_foot(BYTE *u, int sx, int sy, int px, int py, int pointer,
             /* a route around walls and fences (Army Men II walks a clicked spot with path finding) */
             S.nwp = path_find(SARGE_X(u), SARGE_Y(u), S.target_x, S.target_y, S.wp, (int)(sizeof S.wp / sizeof *S.wp));
             S.wpi = 0;
+            if (!rep_tap && !S.enter) record_note_walk_target(S.target_x, S.target_y, S.route_run, 0);
         }
     }
 
@@ -2473,6 +2500,10 @@ static void apply_modern_controls(void)
         static int rsel;
         if (right && !S.right_was_down && pointer && field && !veh) {
             if (allies_cancel("right click")) rsel = 1;   /* allies.c: right click puts the medkit away (no shot) */
+            else if (mines_collect_in_range()) {
+                rsel = 1;                                /* selected sweeper: collect the whole detector ring, never fire/destroy */
+                S.going = 0; S.nwp = 0; S.route_run = 0; S.running = 0;
+            }
             else {
                 BYTE *un = own_unit_at(px + CAMERA_X, py + CAMERA_Y);
                 if (un) { SELECT_UNIT(un); rsel = 1; mlog("controls: right click selected unit %p", un); }
@@ -2661,6 +2692,8 @@ static void kill_nearest_enemy(BYTE *u)
     if (!best) { mlog("cheat: no enemy soldier on the map"); return; }
     short from[2] = { (short)SARGE_X(u), (short)SARGE_Y(u) };
     mlog("cheat: kill enemy soldier %p at %d,%d (health %d; Sarge %d,%d, picked near %d,%d)", best, *(short *)(best + 4), *(short *)(best + 6), *(short *)(best + 0x1c), SARGE_X(u), SARGE_Y(u), ox, oy);
+    record_note_cheat_kill(*(DWORD *)best);
+    record_note_cheat("kill", *(short *)(best + 4), *(short *)(best + 6), "");
     ITEM_DAMAGE(best, 1000, DMGTYPE_BULLET, from, *(DWORD *)u);
 }
 
@@ -2679,10 +2712,12 @@ static void cheat_keys(void)
         if (on_field) { CURSOR_X = cx; CURSOR_Y = cy; }
         mlog("cheat: teleport %d,%d -> %d,%d%s", x, y, SARGE_X(u), SARGE_Y(u),
              x == SARGE_X(u) && y == SARGE_Y(u) ? " (refused: ground not passable)" : "");
+        record_note_cheat("teleport", SARGE_X(u), SARGE_Y(u), "");
     }
     if (i && !i_was && u && layout_view_is_gameplay()) {
         CHEAT_INVULNERABLE();
         mlog("cheat: invulnerable %s", INVULNERABLE ? "ON" : "OFF");
+        record_note_cheat("invulnerable", SARGE_X(u), SARGE_Y(u), INVULNERABLE ? "ON" : "OFF");
     }
     /* Ctrl+G (testing): the current weapon becomes a grenade, again = mortar, again = bazooka, with the game's own
      * table values (AI_WTBL at 0x505044, 24 bytes per type: +0x10 damage, +0x14 / +0x16 velocities) */
@@ -2769,6 +2804,14 @@ static void controls_dispatch_body(void)
     if (g_cfg.cheat_keys) cheat_keys();
     throw_track_frame();
     if (g_cfg.controls_modern) { PROF_BEGIN(ta); apply_modern_controls(); PROF_END(ta, PR_C_APPLY); }
+    if (g_rep_fire_req && SARGE && layout_view_is_gameplay() && !MENU_CURSOR_SHOWN) {
+        BYTE *ru = SARGE;
+        int vx = g_rep_fire_tx - SARGE_X(ru), vy = g_rep_fire_ty - SARGE_Y(ru);
+        S.cursor_x = g_rep_fire_tx - CAMERA_X; S.cursor_y = g_rep_fire_ty - CAMERA_Y; S.have_cursor = 1;
+        if (vx || vy) set_facing(ru, facing_toward(vx, vy));
+        INPUT |= INPUT_FIRE | INPUT_FIRE_PRESSED;
+        g_rep_fire_req = 0;
+    }
     { PROF_BEGIN(tg); gameplay_frame(); PROF_END(tg, PR_C_GAMEPLAY); }   /* gameplay.c: health regeneration */
     { PROF_BEGIN(tm); modern_frame(); PROF_END(tm, PR_C_MODERN); }       /* modern.c: mission stats, half damage, aware_frame */
     resize_poll();                                   /* resize.c: a fullscreen switch made in a menu */
@@ -3111,7 +3154,17 @@ static void __fastcall controls_fire_shot_px(BYTE *unit) {
     if (tracking) { g_track_px = g_throw_wx; g_track_py = g_throw_wy; }
     throw_at_pointer_fire(unit);
     aim_shot_at_cursor(unit, "(fire)");
-    if (unit == SARGE) modern_note_shot();          /* modern.c: mission stats */
+    if (unit == SARGE) {
+        modern_note_shot();          /* modern.c: mission stats */
+        BYTE *sw = *(BYTE **)(unit + 0x20);
+        int wt = sw && !IsBadReadPtr(sw, 0x10) ? *(int *)sw : -1;
+        int wa = sw && !IsBadReadPtr(sw, 0x10) ? *(short *)(sw + 0x0c) : 0;
+        int tx = S.have_cursor ? S.cursor_x + CAMERA_X : SARGE_X(unit);
+        int ty = S.have_cursor ? S.cursor_y + CAMERA_Y : SARGE_Y(unit);
+        BYTE *ht = controls_hover_target();
+        DWORD tuid = ht && !IsBadReadPtr(ht, 4) ? *(DWORD *)ht : 0;
+        record_note_weapon_fire(wt, wa, SARGE_X(unit), SARGE_Y(unit), facing_of(unit), tx, ty, tuid);
+    }
     if (unit == SARGE && g_cfg.log >= 2) mlog("controls: SHOT weapon %d direction %d facing %d (pointer at %d) state %d distance %d at %lu", SARGE_WEAPON_TYPE(unit),
                                              *(BYTE *)(unit + 0x25), facing_of(unit), S.have_cursor ? facing_toward(S.cursor_x + CAMERA_X - SARGE_X(unit), S.cursor_y + CAMERA_Y - SARGE_Y(unit)) : -1,
                                              SARGE_STATE(unit), *(short *)(unit + 0x28), GetTickCount());

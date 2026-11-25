@@ -90,6 +90,7 @@ void gameplay_frame(void)
     patrol_frame();                              /* patrol.c: enemy marches patrol between post and goal */
     allies_frame();                              /* allies.c: the player's soldiers regenerate, medkit state */
     drops_frame();                               /* drops.c: enemy soldiers drop their weapon where they die */
+    record_frame();                              /* record.c: automatic run recording & semantic replay */
     vehicle_regen();
     static BYTE *who;
     static int last_hp, since_hurt_ms;

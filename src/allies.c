@@ -368,6 +368,7 @@ static int __fastcall allies_pickup_test_px(BYTE *item, BYTE *sarge) {
     int pct = W_HEAL_PCT(OBJ_WEAPON(item));
     K.pct[K.n++] = (short)(pct > 0 ? pct : KIT_PCT_FALLBACK);
     mlog("allies: medkit picked up at full health (%d %% of max) - %d carried", pct, K.n);
+    record_note_medkit("pickup", SARGE_X(item), SARGE_Y(item), K.n, HEALTH(sarge), HEALTH(sarge));
     return 1;                                                           /* the game's pickup takes it */
 }
 int __fastcall allies_pickup_test(BYTE *item, BYTE *sarge) { PX_BEGIN(px); int r_ = allies_pickup_test_px(item, sarge); PX_END(px, PR_ALLIES); return r_; }   /* timed: stage PR_ALLIES (exclusive, common.h) */
@@ -396,6 +397,7 @@ static void heal_soldier(BYTE *t)
     if (to > mx) to = mx;
     set_health(t, to);
     mlog("allies: medkit used on trooper %p at %d,%d: health %d -> %d / %d (+%d %%), %d kit(s) left", t, SARGE_X(t), SARGE_Y(t), hp, to, mx, kit_pct(), K.n - 1);
+    record_note_medkit("use_ally", SARGE_X(t), SARGE_Y(t), K.n - 1, hp, to);
     use_kit();
 }
 
@@ -502,7 +504,7 @@ int allies_heal_info(HealInfo *hi)
 #define TENT_PCT           10                             /* HEAL ME 10 */
 #define TENT_EVERY_MS      1500                           /* TRIGGERDELAY 1.5 gsmedtime */
 
-static int tent_on(void) { static int v = -1; if (v < 0) v = GetPrivateProfileIntA("gameplay", "tent_heals_allies", 1, mod_ini_path()) != 0; return v; }
+static int tent_on(void) { static int v = -1; if (g_cfg.classic_gameplay) return 0; if (v < 0) v = GetPrivateProfileIntA("gameplay", "tent_heals_allies", 1, mod_ini_path()) != 0; return v; }
 
 static struct { BYTE *t; int ms; } g_tent[REGEN_SLOTS];   /* per soldier on the pad: game ms since his last tent heal (-1 = off it) */
 static int g_tent_pad = -2;                                /* -2 = not looked up this run, -1 = no tent pad in this mission */
