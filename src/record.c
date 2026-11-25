@@ -42,6 +42,7 @@
 #define SARGE_WEAPON(u)   (*(BYTE **)((u) + 0x20))
 #define SARGE_STATE(u)    (*(int *)((u) + 0x68))
 #define SARGE_FACING(u)   (*(short *)((u) + 0x2c6) & 255)
+#define SARGE_FACING16    (*(volatile WORD *)0x69753c)
 #define SARGE_VEHICLE(u)  (*(BYTE **)((u) + 0x2d0))
 #define CAMERA_X          (*(short *)0x4e2de8)
 #define CAMERA_Y          (*(short *)0x4e2dea)
@@ -202,6 +203,19 @@ static int g_cur_moves, g_cur_pickups, g_cur_fires, g_cur_kills;
 static int g_last_sx, g_last_sy, g_last_hp, g_last_pose, g_last_sprint, g_last_wtype, g_last_wammo;
 static DWORD g_last_veh_uid, g_last_move_ms;
 static int g_was_moving, g_have_sarge;
+static int g_stop_idx, g_is_stopped;
+static DWORD g_stop_t0;
+static int g_stop_x, g_stop_y;
+
+static void set_sarge_facing(BYTE *u, int f)
+{
+    if (!u || IsBadReadPtr(u, 0x2d4)) return;
+    f &= 255;
+    *(short *)(u + 0x2c6) = (short)f;
+    *(int *)(u + 0x88) = f;
+    *(int *)(u + 0x74) = f;
+    SARGE_FACING16 = (WORD)(f * 256 + 8);
+}
 
 /* Mouse button down timestamps for hold duration */
 static DWORD g_btn_down_ms[5];
@@ -359,9 +373,16 @@ static void open_mission(unsigned run, int sc, int mi, int x, int y, int hp, int
     g_cur_won = 0;
     g_cur_t0 = GetTickCount();
     g_cur_moves = g_cur_pickups = g_cur_fires = g_cur_kills = 0;
+    g_stop_idx = 1;
+    g_is_stopped = 1;
+    g_was_moving = 0;
+    g_stop_t0 = g_cur_t0;
+    g_stop_x = x; g_stop_y = y;
     rec_emit(1, "\"e\":\"mission_start\",\"idx\":%d,\"run\":%u,\"scenario\":%d,\"mission\":%d,\"wx\":%d,\"wy\":%d,\"hp\":%d,\"max_hp\":%d,\"weapon\":%d,\"ammo\":%d",
              g_mission_idx, run, sc, mi, x, y, hp, max_hp, wt, wa);
-    mlog("record: mission #%d started (run %u, scenario %d, mission %d at %d,%d)", g_mission_idx, run, sc, mi, x, y);
+    rec_emit(1, "\"e\":\"sarge_stop\",\"stop_idx\":%d,\"wx\":%d,\"wy\":%d,\"facing\":0,\"pose\":0,\"hp\":%d",
+             g_stop_idx, x, y, hp);
+    mlog("record: mission #%d started (run %u, scenario %d, mission %d at %d,%d, stop #1)", g_mission_idx, run, sc, mi, x, y);
 }
 
 void record_note_mission_won(void)
@@ -404,33 +425,43 @@ void record_note_walk_target(int tx, int ty, int sprint, DWORD veh_uid)
     int sx = s && !IsBadReadPtr(s, 8) ? SARGE_X(s) : 0;
     int sy = s && !IsBadReadPtr(s, 8) ? SARGE_Y(s) : 0;
     if (veh_uid)
-        rec_emit(0, "\"e\":\"walk_target\",\"tx\":%d,\"ty\":%d,\"sprint\":%d,\"veh\":\"%08lx\",\"sx\":%d,\"sy\":%d",
-                 tx, ty, sprint ? 1 : 0, veh_uid, sx, sy);
+        rec_emit(0, "\"e\":\"walk_target\",\"tx\":%d,\"ty\":%d,\"sprint\":%d,\"veh\":\"%08lx\",\"sx\":%d,\"sy\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"modern_walk_target\"",
+                 tx, ty, sprint ? 1 : 0, veh_uid, sx, sy, g_stop_idx, g_is_stopped ? 1 : 0);
     else
-        rec_emit(0, "\"e\":\"walk_target\",\"tx\":%d,\"ty\":%d,\"sprint\":%d,\"sx\":%d,\"sy\":%d",
-                 tx, ty, sprint ? 1 : 0, sx, sy);
+        rec_emit(0, "\"e\":\"walk_target\",\"tx\":%d,\"ty\":%d,\"sprint\":%d,\"sx\":%d,\"sy\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"modern_walk_target\"",
+                 tx, ty, sprint ? 1 : 0, sx, sy, g_stop_idx, g_is_stopped ? 1 : 0);
 }
 
 void record_note_weapon_pickup(int type, int ammo_before, int ammo_after, int box, int wx, int wy, DWORD uid, int merge)
 {
     if (!g_fp) return;
     if (g_mission_open) g_cur_pickups++;
-    rec_emit(1, "\"e\":\"weapon_pickup\",\"type\":%d,\"name\":\"%s\",\"ammo_before\":%d,\"ammo_after\":%d,\"box\":%d,\"wx\":%d,\"wy\":%d,\"uid\":\"%08lx\",\"merge\":%d",
-             type, weapon_name(type), ammo_before, ammo_after, box, wx, wy, uid, merge ? 1 : 0);
+    int mod_only = (box >= 3);
+    if (mod_only)
+        rec_emit(1, "\"e\":\"weapon_pickup\",\"type\":%d,\"name\":\"%s\",\"ammo_before\":%d,\"ammo_after\":%d,\"box\":%d,\"wx\":%d,\"wy\":%d,\"uid\":\"%08lx\",\"merge\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"six_weapons\"",
+                 type, weapon_name(type), ammo_before, ammo_after, box, wx, wy, uid, merge ? 1 : 0, g_stop_idx, g_is_stopped ? 1 : 0);
+    else
+        rec_emit(1, "\"e\":\"weapon_pickup\",\"type\":%d,\"name\":\"%s\",\"ammo_before\":%d,\"ammo_after\":%d,\"box\":%d,\"wx\":%d,\"wy\":%d,\"uid\":\"%08lx\",\"merge\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                 type, weapon_name(type), ammo_before, ammo_after, box, wx, wy, uid, merge ? 1 : 0, g_stop_idx, g_is_stopped ? 1 : 0);
 }
 
 void record_note_weapon_select(int type, int ammo, int slot, int box)
 {
     if (!g_fp) return;
-    rec_emit(0, "\"e\":\"weapon_select\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"slot\":%d,\"box\":%d",
-             type, weapon_name(type), ammo, slot, box);
+    int mod_only = (slot >= 3 || box >= 3);
+    if (mod_only)
+        rec_emit(0, "\"e\":\"weapon_select\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"slot\":%d,\"box\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"six_weapons\"",
+                 type, weapon_name(type), ammo, slot, box, g_stop_idx, g_is_stopped ? 1 : 0);
+    else
+        rec_emit(0, "\"e\":\"weapon_select\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"slot\":%d,\"box\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                 type, weapon_name(type), ammo, slot, box, g_stop_idx, g_is_stopped ? 1 : 0);
 }
 
 void record_note_weapon_drop(int type, int wx, int wy)
 {
     if (!g_fp) return;
-    rec_emit(1, "\"e\":\"weapon_drop\",\"type\":%d,\"name\":\"%s\",\"wx\":%d,\"wy\":%d",
-             type, weapon_name(type), wx, wy);
+    rec_emit(1, "\"e\":\"weapon_drop\",\"type\":%d,\"name\":\"%s\",\"wx\":%d,\"wy\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+             type, weapon_name(type), wx, wy, g_stop_idx, g_is_stopped ? 1 : 0);
 }
 
 void record_note_weapon_fire(int type, int ammo, int wx, int wy, int facing, int tx, int ty, DWORD target_uid)
@@ -438,18 +469,18 @@ void record_note_weapon_fire(int type, int ammo, int wx, int wy, int facing, int
     if (!g_fp) return;
     if (g_mission_open) g_cur_fires++;
     if (target_uid)
-        rec_emit(0, "\"e\":\"weapon_fire\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"wx\":%d,\"wy\":%d,\"facing\":%d,\"tx\":%d,\"ty\":%d,\"target_uid\":\"%08lx\"",
-                 type, weapon_name(type), ammo, wx, wy, facing, tx, ty, target_uid);
+        rec_emit(0, "\"e\":\"weapon_fire\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"wx\":%d,\"wy\":%d,\"facing\":%d,\"tx\":%d,\"ty\":%d,\"target_uid\":\"%08lx\",\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                 type, weapon_name(type), ammo, wx, wy, facing, tx, ty, target_uid, g_stop_idx, g_is_stopped ? 1 : 0);
     else
-        rec_emit(0, "\"e\":\"weapon_fire\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"wx\":%d,\"wy\":%d,\"facing\":%d,\"tx\":%d,\"ty\":%d",
-                 type, weapon_name(type), ammo, wx, wy, facing, tx, ty);
+        rec_emit(0, "\"e\":\"weapon_fire\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"wx\":%d,\"wy\":%d,\"facing\":%d,\"tx\":%d,\"ty\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                 type, weapon_name(type), ammo, wx, wy, facing, tx, ty, g_stop_idx, g_is_stopped ? 1 : 0);
 }
 
 void record_note_mine_lay(int type, int wx, int wy, int ammo)
 {
     if (!g_fp) return;
-    rec_emit(1, "\"e\":\"mine_lay\",\"type\":%d,\"name\":\"%s\",\"wx\":%d,\"wy\":%d,\"ammo\":%d",
-             type, weapon_name(type), wx, wy, ammo);
+    rec_emit(1, "\"e\":\"mine_lay\",\"type\":%d,\"name\":\"%s\",\"wx\":%d,\"wy\":%d,\"ammo\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+             type, weapon_name(type), wx, wy, ammo, g_stop_idx, g_is_stopped ? 1 : 0);
 }
 
 void record_note_cheat_kill(DWORD uid)
@@ -475,8 +506,19 @@ static int was_cheat_kill(DWORD uid)
 void record_note_vehicle(const char *action, DWORD uid, int army, int cls, int wx, int wy, int hp)
 {
     if (!g_fp) return;
-    rec_emit(1, "\"e\":\"vehicle_%s\",\"uid\":\"%08lx\",\"army\":%d,\"class\":%d,\"wx\":%d,\"wy\":%d,\"hp\":%d",
-             action, uid, army, cls, wx, wy, hp);
+    int mod_only = 0;
+    const char *mod_feat = NULL;
+    if (!strcmp(action, "bailout")) {
+        mod_only = 1; mod_feat = "vehicle_bailout";
+    } else if ((!strcmp(action, "enter") || !strcmp(action, "capture")) && army != 0) {
+        mod_only = 1; mod_feat = "drive_enemy_vehicles";
+    }
+    if (mod_only)
+        rec_emit(1, "\"e\":\"vehicle_%s\",\"uid\":\"%08lx\",\"army\":%d,\"class\":%d,\"wx\":%d,\"wy\":%d,\"hp\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"%s\"",
+                 action, uid, army, cls, wx, wy, hp, g_stop_idx, g_is_stopped ? 1 : 0, mod_feat);
+    else
+        rec_emit(1, "\"e\":\"vehicle_%s\",\"uid\":\"%08lx\",\"army\":%d,\"class\":%d,\"wx\":%d,\"wy\":%d,\"hp\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                 action, uid, army, cls, wx, wy, hp, g_stop_idx, g_is_stopped ? 1 : 0);
 }
 
 void record_note_order(const char *mode, int wx, int wy, DWORD unit_uid, const char *via)
@@ -485,8 +527,13 @@ void record_note_order(const char *mode, int wx, int wy, DWORD unit_uid, const c
     char m[32], v[32];
     json_escape(mode, m, sizeof m);
     json_escape(via, v, sizeof v);
-    rec_emit(1, "\"e\":\"order\",\"mode\":\"%s\",\"wx\":%d,\"wy\":%d,\"unit_uid\":\"%08lx\",\"via\":\"%s\"",
-             m, wx, wy, unit_uid, v);
+    int mod_only = !strcmp(via, "hud");
+    if (mod_only)
+        rec_emit(1, "\"e\":\"order\",\"mode\":\"%s\",\"wx\":%d,\"wy\":%d,\"unit_uid\":\"%08lx\",\"via\":\"%s\",\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"modern_hud\"",
+                 m, wx, wy, unit_uid, v, g_stop_idx, g_is_stopped ? 1 : 0);
+    else
+        rec_emit(1, "\"e\":\"order\",\"mode\":\"%s\",\"wx\":%d,\"wy\":%d,\"unit_uid\":\"%08lx\",\"via\":\"%s\",\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                 m, wx, wy, unit_uid, v, g_stop_idx, g_is_stopped ? 1 : 0);
 }
 
 void record_note_medkit(const char *action, int wx, int wy, int kits, int hp_before, int hp_after)
@@ -494,8 +541,13 @@ void record_note_medkit(const char *action, int wx, int wy, int kits, int hp_bef
     if (!g_fp) return;
     char a[32];
     json_escape(action, a, sizeof a);
-    rec_emit(1, "\"e\":\"medkit\",\"action\":\"%s\",\"wx\":%d,\"wy\":%d,\"kits\":%d,\"hp_before\":%d,\"hp_after\":%d",
-             a, wx, wy, kits, hp_before, hp_after);
+    int mod_only = !strcmp(action, "use") || !strcmp(action, "use_ally");
+    if (mod_only)
+        rec_emit(1, "\"e\":\"medkit\",\"action\":\"%s\",\"wx\":%d,\"wy\":%d,\"kits\":%d,\"hp_before\":%d,\"hp_after\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"medkit_use\"",
+                 a, wx, wy, kits, hp_before, hp_after, g_stop_idx, g_is_stopped ? 1 : 0);
+    else
+        rec_emit(1, "\"e\":\"medkit\",\"action\":\"%s\",\"wx\":%d,\"wy\":%d,\"kits\":%d,\"hp_before\":%d,\"hp_after\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                 a, wx, wy, kits, hp_before, hp_after, g_stop_idx, g_is_stopped ? 1 : 0);
 }
 
 void record_note_setting(const char *section, const char *key, const char *val)
@@ -514,7 +566,8 @@ void record_note_cheat(const char *name, int wx, int wy, const char *detail)
     char n[48], d[128];
     json_escape(name, n, sizeof n);
     json_escape(detail ? detail : "", d, sizeof d);
-    rec_emit(1, "\"e\":\"cheat\",\"name\":\"%s\",\"wx\":%d,\"wy\":%d,\"detail\":\"%s\"", n, wx, wy, d);
+    rec_emit(1, "\"e\":\"cheat\",\"name\":\"%s\",\"wx\":%d,\"wy\":%d,\"detail\":\"%s\",\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"cheat\"",
+             n, wx, wy, d, g_stop_idx, g_is_stopped ? 1 : 0);
 }
 
 void record_note_savestate(const char *action, int slot, int ok)
@@ -522,7 +575,7 @@ void record_note_savestate(const char *action, int slot, int ok)
     if (!g_fp) return;
     char a[24];
     json_escape(action, a, sizeof a);
-    rec_emit(1, "\"e\":\"savestate\",\"action\":\"%s\",\"slot\":%d,\"ok\":%d", a, slot, ok ? 1 : 0);
+    rec_emit(1, "\"e\":\"savestate\",\"action\":\"%s\",\"slot\":%d,\"ok\":%d,\"mod\":1,\"mod_feature\":\"savestate\"", a, slot, ok ? 1 : 0);
 }
 
 void record_note_exception(DWORD code, void *at, const char *module, DWORD offset)
@@ -537,6 +590,98 @@ void record_note_exception(DWORD code, void *at, const char *module, DWORD offse
     gameplay_run(&sc, &mi);
     rec_emit(1, "\"e\":\"exception\",\"code\":\"0x%08lx\",\"at\":\"%p\",\"mod\":\"%s\",\"off\":\"0x%lx\",\"scenario\":%d,\"mission\":%d,\"wx\":%d,\"wy\":%d",
              code, at, mod, offset, sc, mi, sx, sy);
+}
+
+static const char *screen_state_name(int st)
+{
+    switch (st) {
+        case 0: return "title";
+        case 1: return "main_menu";
+        case 2: return "campaign_select";
+        case 3: return "callsign";
+        case 4: return "mission_select";
+        case 5: return "gameplay";
+        default:
+            if (layout_view_is_gameplay()) return game_menu_up() ? "pause_menu" : "briefing";
+            return "menu";
+    }
+}
+
+void record_note_button_click(void *bptr)
+{
+    if (!g_fp || !bptr) return;
+    BYTE *btn = (BYTE *)bptr;
+    if (IsBadReadPtr(btn, 0x310)) return;
+
+    DWORD data = *(DWORD *)(btn + 0x38);
+    void *cb = *(void **)(btn + 0x30);
+    const short *pb = (const short *)(btn + 0x2fc); /* SBOX: x, y, cx, cy */
+    int bx = pb[0], by = pb[1], bw = pb[2], bh = pb[3];
+
+    int st = missionpath_screen_state();
+    const char *sname = screen_state_name(st);
+
+    char label[64] = "";
+    const char *txt = (const char *)(btn + 0x44);
+    if (!IsBadReadPtr(txt, 4) && (unsigned char)txt[0] >= 0x20 && (unsigned char)txt[0] <= 0x7e) {
+        size_t j = 0;
+        for (size_t i = 0; txt[i] && j + 1 < sizeof label; i++) {
+            if ((unsigned char)txt[i] >= 0x20 && (unsigned char)txt[i] <= 0x7e)
+                label[j++] = txt[i];
+        }
+        label[j] = 0;
+    }
+
+    char item[64] = "";
+    int is_mod = 0;
+    const char *mod_feat = NULL;
+
+    /* Check if this is a mod menu button */
+    if (st < 0 || layout_view_is_gameplay()) {
+        if (!strcmp(label, "Mod Settings") || !strcmp(label, "In-game Mod Settings")) {
+            is_mod = 1; mod_feat = "mod_menu";
+            snprintf(item, sizeof item, "MOD_SETTINGS");
+        }
+    }
+
+    if (!item[0] && label[0]) {
+        size_t j = 0;
+        for (size_t i = 0; label[i] && j + 1 < sizeof item; i++) {
+            char c = label[i];
+            if (c >= 'a' && c <= 'z') c -= 32;
+            if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) item[j++] = c;
+            else if (j > 0 && item[j - 1] != '_') item[j++] = '_';
+        }
+        if (j > 0 && item[j - 1] == '_') j--;
+        item[j] = 0;
+    }
+
+    if (!item[0]) {
+        if (cb == (void *)0x463e80) {
+            if (data == 1 || (bx >= 40 && bx <= 200)) snprintf(item, sizeof item, "CAMPAIGN_DESERT");
+            else if (data == 2 || (bx >= 220 && bx <= 380)) snprintf(item, sizeof item, "CAMPAIGN_ALPINE");
+            else if (data == 3 || (bx >= 400 && bx <= 560)) snprintf(item, sizeof item, "CAMPAIGN_BAYOU");
+            else snprintf(item, sizeof item, "CAMPAIGN_BTN_%lu", data);
+        } else if (cb == (void *)0x4640a0) {
+            snprintf(item, sizeof item, "SCENARIO_SELECT_%lu", data);
+        } else {
+            snprintf(item, sizeof item, "BTN_%s_%d_%d", sname, bx, by);
+        }
+    }
+
+    char item_esc[80], lab_esc[80];
+    json_escape(item, item_esc, sizeof item_esc);
+    json_escape(label, lab_esc, sizeof lab_esc);
+
+    if (is_mod) {
+        rec_emit(1, "\"e\":\"menu_click\",\"item\":\"%s\",\"label\":\"%s\",\"screen\":%d,\"screen_name\":\"%s\",\"box\":[%d,%d,%d,%d],\"data\":%lu,\"mod\":1,\"mod_feature\":\"%s\"",
+                 item_esc, lab_esc, st, sname, bx, by, bw, bh, data, mod_feat ? mod_feat : "mod_menu");
+    } else {
+        rec_emit(1, "\"e\":\"menu_click\",\"item\":\"%s\",\"label\":\"%s\",\"screen\":%d,\"screen_name\":\"%s\",\"box\":[%d,%d,%d,%d],\"data\":%lu,\"mod\":0",
+                 item_esc, lab_esc, st, sname, bx, by, bw, bh, data);
+    }
+    mlog("record: menu click on \"%s\" (label=\"%s\", screen %d [%s], box=[%d,%d,%d,%d], mod=%d)",
+         item, label, st, sname, bx, by, bw, bh, is_mod);
 }
 
 /* ---- window message hook for UI clicks, hotkeys, and Ctrl+Shift+B bookmark */
@@ -572,8 +717,8 @@ void record_message(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             int sy = s && !IsBadReadPtr(s, 8) ? SARGE_Y(s) : 0;
             int hp = s && !IsBadReadPtr(s, 0x20) ? SARGE_HEALTH(s) : 0;
             g_bookmarks++;
-            rec_emit(1, "\"e\":\"bookmark\",\"n\":%d,\"scenario\":%d,\"mission\":%d,\"wx\":%d,\"wy\":%d,\"hp\":%d",
-                     g_bookmarks, sc, mi, sx, sy, hp);
+            rec_emit(1, "\"e\":\"bookmark\",\"n\":%d,\"scenario\":%d,\"mission\":%d,\"wx\":%d,\"wy\":%d,\"hp\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"bookmark\"",
+                     g_bookmarks, sc, mi, sx, sy, hp, g_stop_idx, g_is_stopped ? 1 : 0);
             mlog("record: bookmark #%d at mission %d (%d,%d, hp %d)", g_bookmarks, mi, sx, sy, hp);
             return;
         }
@@ -585,8 +730,8 @@ void record_message(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         char kbuf[24];
         const char *kn = vk_to_name((int)wp, kbuf, sizeof kbuf);
         int mods = (ctrl ? 1 : 0) | (shift ? 2 : 0) | (alt ? 4 : 0);
-        rec_emit(0, "\"e\":\"key\",\"vk\":%u,\"name\":\"%s\",\"mods\":%d,\"ctx\":\"%s\"",
-                 (unsigned)wp, kn, mods, in_play ? "play" : "menu");
+        rec_emit(0, "\"e\":\"key\",\"vk\":%u,\"name\":\"%s\",\"mods\":%d,\"ctx\":\"%s\",\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                 (unsigned)wp, kn, mods, in_play ? "play" : "menu", g_stop_idx, g_is_stopped ? 1 : 0);
         return;
     }
 
@@ -609,8 +754,8 @@ void record_message(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             mouse_real_cursor(&gx, &gy);
             const char *ctx = click_context(&scr);
             int delta = GET_WHEEL_DELTA_WPARAM(wp);
-            rec_emit(0, "\"e\":\"ui_click\",\"btn\":\"wheel\",\"delta\":%d,\"gx\":%d,\"gy\":%d,\"ctx\":\"%s\",\"screen\":%d",
-                     delta > 0 ? 1 : -1, gx, gy, ctx, scr);
+            rec_emit(0, "\"e\":\"ui_click\",\"btn\":\"wheel\",\"delta\":%d,\"gx\":%d,\"gy\":%d,\"ctx\":\"%s\",\"screen\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"wheel\"",
+                     delta > 0 ? 1 : -1, gx, gy, ctx, scr, g_stop_idx, g_is_stopped ? 1 : 0);
             return;
         }
         default: return;
@@ -633,10 +778,13 @@ void record_message(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         const char *ctx = click_context(&scr);
         if (!strcmp(ctx, "field")) {
             int wx = gx + CAMERA_X, wy = gy + CAMERA_Y;
-            rec_emit(0, "\"e\":\"ui_click\",\"btn\":\"%s\",\"gx\":%d,\"gy\":%d,\"ctx\":\"%s\",\"wx\":%d,\"wy\":%d",
-                     bname, gx, gy, ctx, wx, wy);
+            rec_emit(0, "\"e\":\"ui_click\",\"btn\":\"%s\",\"gx\":%d,\"gy\":%d,\"ctx\":\"%s\",\"wx\":%d,\"wy\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"battlefield_click\"",
+                     bname, gx, gy, ctx, wx, wy, g_stop_idx, g_is_stopped ? 1 : 0);
+        } else if (!strcmp(ctx, "hud")) {
+            rec_emit(1, "\"e\":\"ui_click\",\"btn\":\"%s\",\"gx\":%d,\"gy\":%d,\"ctx\":\"%s\",\"screen\":%d,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"modern_hud\"",
+                     bname, gx, gy, ctx, scr, g_stop_idx, g_is_stopped ? 1 : 0);
         } else {
-            rec_emit(1, "\"e\":\"ui_click\",\"btn\":\"%s\",\"gx\":%d,\"gy\":%d,\"ctx\":\"%s\",\"screen\":%d",
+            rec_emit(1, "\"e\":\"ui_click\",\"btn\":\"%s\",\"gx\":%d,\"gy\":%d,\"ctx\":\"%s\",\"screen\":%d,\"mod\":0",
                      bname, gx, gy, ctx, scr);
         }
     } else if (g_btn_down_ms[btn]) {
@@ -706,9 +854,14 @@ static void track_enemies(void)
         if (x <= 0 || y <= 0 || x > 4095 || y > 4095) { x = g_tr_alive[i].x; y = g_tr_alive[i].y; }
         int cheat = was_cheat_kill(g_tr_alive[i].uid);
         if (g_mission_open) g_cur_kills++;
-        rec_emit(1, "\"e\":\"enemy_kill\",\"kind\":\"soldier\",\"uid\":\"%08lx\",\"army\":%d,\"class\":%d,\"name\":\"%s\",\"weapon\":%d,\"wx\":%d,\"wy\":%d,\"sx\":%d,\"sy\":%d,\"via\":\"%s\"",
-                 g_tr_alive[i].uid, g_tr_alive[i].army, g_tr_alive[i].cls, trooper_class_name(g_tr_alive[i].cls),
-                 g_tr_alive[i].wt, x, y, sx, sy, cheat ? "cheat" : "combat");
+        if (cheat)
+            rec_emit(1, "\"e\":\"enemy_kill\",\"kind\":\"soldier\",\"uid\":\"%08lx\",\"army\":%d,\"class\":%d,\"name\":\"%s\",\"weapon\":%d,\"wx\":%d,\"wy\":%d,\"sx\":%d,\"sy\":%d,\"via\":\"cheat\",\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"cheat_kill\"",
+                     g_tr_alive[i].uid, g_tr_alive[i].army, g_tr_alive[i].cls, trooper_class_name(g_tr_alive[i].cls),
+                     g_tr_alive[i].wt, x, y, sx, sy, g_stop_idx, g_is_stopped ? 1 : 0);
+        else
+            rec_emit(1, "\"e\":\"enemy_kill\",\"kind\":\"soldier\",\"uid\":\"%08lx\",\"army\":%d,\"class\":%d,\"name\":\"%s\",\"weapon\":%d,\"wx\":%d,\"wy\":%d,\"sx\":%d,\"sy\":%d,\"via\":\"combat\",\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                     g_tr_alive[i].uid, g_tr_alive[i].army, g_tr_alive[i].cls, trooper_class_name(g_tr_alive[i].cls),
+                     g_tr_alive[i].wt, x, y, sx, sy, g_stop_idx, g_is_stopped ? 1 : 0);
     }
 
     /* Newly destroyed enemy vehicles */
@@ -721,8 +874,8 @@ static void track_enemies(void)
         int x = VEH_X(v), y = VEH_Y(v);
         if (x <= 0 || y <= 0 || x > 4095 || y > 4095) { x = g_vh_alive[i].x; y = g_vh_alive[i].y; }
         if (g_mission_open) g_cur_kills++;
-        rec_emit(1, "\"e\":\"enemy_kill\",\"kind\":\"vehicle\",\"uid\":\"%08lx\",\"army\":%d,\"class\":%d,\"name\":\"vehicle_%d\",\"wx\":%d,\"wy\":%d,\"sx\":%d,\"sy\":%d,\"via\":\"combat\"",
-                 g_vh_alive[i].uid, g_vh_alive[i].army, g_vh_alive[i].cls, g_vh_alive[i].cls, x, y, sx, sy);
+        rec_emit(1, "\"e\":\"enemy_kill\",\"kind\":\"vehicle\",\"uid\":\"%08lx\",\"army\":%d,\"class\":%d,\"name\":\"vehicle_%d\",\"wx\":%d,\"wy\":%d,\"sx\":%d,\"sy\":%d,\"via\":\"combat\",\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                 g_vh_alive[i].uid, g_vh_alive[i].army, g_vh_alive[i].cls, g_vh_alive[i].cls, x, y, sx, sy, g_stop_idx, g_is_stopped ? 1 : 0);
     }
 
     memcpy(g_tr_alive, g_tr_now, sizeof g_tr_now[0] * (size_t)nt);
@@ -750,6 +903,7 @@ static void record_gameplay_frame(void)
         g_ntr_alive = g_nvh_alive = 0;
         g_have_sarge = 0;
         g_was_moving = 0;
+        g_is_stopped = 0;
         if (s_ok && SARGE_X(s) > 0 && SARGE_Y(s) > 0) {
             BYTE *w = SARGE_WEAPON(s);
             int wt = w && !IsBadReadPtr(w, 0x10) ? W_TYPE(w) : -1;
@@ -797,8 +951,14 @@ static void record_gameplay_frame(void)
         int wt = w && !IsBadReadPtr(w, 0x10) ? W_TYPE(w) : -1;
         int wa = w && !IsBadReadPtr(w, 0x10) ? W_AMMO(w) : 0;
         if (wt >= 0 && wt != g_last_wtype) {
-            rec_emit(0, "\"e\":\"weapon_select\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"slot\":%d,\"box\":-1",
-                     wt, weapon_name(wt), wa, (int)(*(signed char *)(s + 0x2c4)));
+            int slot = (int)(*(signed char *)(s + 0x2c4));
+            int mod_only = (slot >= 3);
+            if (mod_only)
+                rec_emit(0, "\"e\":\"weapon_select\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"slot\":%d,\"box\":-1,\"stop_idx\":%d,\"stopped\":%d,\"mod\":1,\"mod_feature\":\"six_weapons\"",
+                         wt, weapon_name(wt), wa, slot, g_stop_idx, g_is_stopped ? 1 : 0);
+            else
+                rec_emit(0, "\"e\":\"weapon_select\",\"type\":%d,\"name\":\"%s\",\"ammo\":%d,\"slot\":%d,\"box\":-1,\"stop_idx\":%d,\"stopped\":%d,\"mod\":0",
+                         wt, weapon_name(wt), wa, slot, g_stop_idx, g_is_stopped ? 1 : 0);
             g_last_wtype = wt; g_last_wammo = wa;
         } else {
             g_last_wammo = wa;
@@ -814,16 +974,39 @@ static void record_gameplay_frame(void)
         g_last_hp = hp;
     }
 
-    /* Movement breadcrumb sampling */
+    /* Movement breadcrumb and stop sampling */
     int dx = x - g_last_sx, dy = y - g_last_sy;
     int dist2 = dx * dx + dy * dy;
     DWORD dt = now - g_last_move_ms;
+
+    if (g_is_stopped && dist2 >= 16 * 16) {
+        g_is_stopped = 0;
+        g_was_moving = 1;
+        g_last_sx = x; g_last_sy = y;
+        g_last_move_ms = now;
+    }
+
     int moved_far = dist2 >= 24 * 24 && dt >= 120;
     int jumped    = dist2 >= 64 * 64;
     int state_chg = (sprint != g_last_sprint) || (vuid != g_last_veh_uid);
-    int stopped   = g_was_moving && dist2 >= 4 && dist2 < 24 * 24 && dt >= 450;
+    int stopped   = g_was_moving && (dist2 < 16 * 16) && dt >= 350;
 
-    if (moved_far || jumped || state_chg || stopped) {
+    if (stopped) {
+        g_stop_idx++;
+        g_is_stopped = 1;
+        g_was_moving = 0;
+        g_stop_x = x; g_stop_y = y;
+        g_stop_t0 = now;
+        if (vuid)
+            rec_emit(1, "\"e\":\"sarge_stop\",\"stop_idx\":%d,\"wx\":%d,\"wy\":%d,\"facing\":%d,\"pose\":%d,\"hp\":%d,\"veh\":\"%08lx\"",
+                     g_stop_idx, x, y, facing, pose, hp, vuid);
+        else
+            rec_emit(1, "\"e\":\"sarge_stop\",\"stop_idx\":%d,\"wx\":%d,\"wy\":%d,\"facing\":%d,\"pose\":%d,\"hp\":%d",
+                     g_stop_idx, x, y, facing, pose, hp);
+        g_last_sx = x; g_last_sy = y;
+        g_last_pose = pose; g_last_sprint = sprint; g_last_veh_uid = vuid;
+        g_last_move_ms = now;
+    } else if (moved_far || jumped || state_chg) {
         if (g_mission_open) g_cur_moves++;
         if (vuid)
             rec_emit(0, "\"e\":\"move\",\"wx\":%d,\"wy\":%d,\"facing\":%d,\"pose\":%d,\"sprint\":%d,\"hp\":%d,\"veh\":\"%08lx\"",
@@ -834,7 +1017,8 @@ static void record_gameplay_frame(void)
         g_last_sx = x; g_last_sy = y;
         g_last_pose = pose; g_last_sprint = sprint; g_last_veh_uid = vuid;
         g_last_move_ms = now;
-        g_was_moving = moved_far || jumped;
+        g_was_moving = 1;
+        g_is_stopped = 0;
     }
 }
 
@@ -846,6 +1030,7 @@ enum {
     RS_NONE = 0,
     RS_MOVE,
     RS_WALK_TARGET,
+    RS_STOP,
     RS_WEAPON_PICKUP,
     RS_WEAPON_SELECT,
     RS_WEAPON_FIRE,
@@ -860,6 +1045,7 @@ typedef struct {
     DWORD gt;
     int wx, wy, tx, ty;
     int wtype, sprint, army, cls;
+    int facing;
     DWORD uid;
 } ReplayStep;
 
@@ -940,7 +1126,13 @@ static void replay_init(void)
         }
         ReplayStep st = { 0 };
         st.gt = (DWORD)(gt > 0 ? gt : 0);
-        if (!strcmp(ev, "move")) {
+        st.facing = -1;
+        if (!strcmp(ev, "sarge_stop") || !strcmp(ev, "stop")) {
+            st.kind = RS_STOP;
+            json_int(line, "wx", &st.wx); json_int(line, "wy", &st.wy);
+            json_int(line, "facing", &st.facing);
+            json_int(line, "stop_idx", &st.cls);
+        } else if (!strcmp(ev, "move")) {
             st.kind = RS_MOVE;
             json_int(line, "wx", &st.wx); json_int(line, "wy", &st.wy);
             json_int(line, "sprint", &st.sprint);
@@ -1101,6 +1293,18 @@ static void replay_frame(void)
     if (veh && !IsBadReadPtr(veh, 8)) { sx = VEH_X(veh); sy = VEH_Y(veh); }
 
     switch (st->kind) {
+        case RS_STOP: {
+            if (!veh) {
+                PLACE_UNIT(u, st->wx, st->wy);
+                if (st->facing >= 0) set_sarge_facing(u, st->facing);
+            } else {
+                PLACE_UNIT(veh, st->wx, st->wy);
+            }
+            g_rep.ok_moves++;
+            mlog("replay: step %d teleported Sarge to stop at %d,%d (facing %d)", g_rep.idx, st->wx, st->wy, st->facing);
+            replay_advance(now);
+            break;
+        }
         case RS_MOVE:
         case RS_WALK_TARGET: {
             int dx = st->wx - sx, dy = st->wy - sy;
@@ -1110,8 +1314,13 @@ static void replay_frame(void)
                 replay_advance(now);
                 break;
             }
-            if (g_rep.teleport && !veh) {
-                PLACE_UNIT(u, st->wx, st->wy);
+            if (g_rep.teleport) {
+                if (!veh) {
+                    PLACE_UNIT(u, st->wx, st->wy);
+                    if (st->facing >= 0) set_sarge_facing(u, st->facing);
+                } else {
+                    PLACE_UNIT(veh, st->wx, st->wy);
+                }
                 g_rep.ok_moves++;
                 replay_advance(now);
                 break;

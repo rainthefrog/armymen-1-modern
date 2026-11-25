@@ -967,6 +967,7 @@ void record_note_order(const char *mode, int wx, int wy, DWORD unit_uid, const c
 void record_note_medkit(const char *action, int wx, int wy, int kits, int hp_before, int hp_after);
 void record_note_setting(const char *section, const char *key, const char *val);
 void record_note_cheat(const char *name, int wx, int wy, const char *detail);
+void record_note_button_click(void *btn);
 void record_note_savestate(const char *action, int slot, int ok);
 void record_note_exception(DWORD code, void *at, const char *module, DWORD offset);
 void controls_replay_walk(int wx, int wy, int sprint);

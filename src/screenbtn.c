@@ -42,6 +42,7 @@ void screenbtn_lbuttondown(HWND h, int inside) { g_in_lbuttondown = inside; g_hw
 
 int __fastcall screenbtn_set_state(BYTE *btn, int state)
 {
+    if (state == BUTTON_CLICKED && btn) record_note_button_click(btn);
     /* only on the full-screen menus: over a mission (the mission-over radio, briefings) the game runs its own loop and
      * the release / timer may never reach us - the held CONTINUE never fired and the game stayed locked (2026-11-20,
      * user: "mission 2 freeze is repeatable. the voice clip plays and it stays locked") */

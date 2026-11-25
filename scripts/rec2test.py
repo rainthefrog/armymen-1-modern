@@ -105,29 +105,137 @@ def split_missions(events):
     return segments
 
 
+def format_action(ev):
+    e = ev.get("e", "")
+    mod = ev.get("mod", 0)
+    feat = ev.get("mod_feature")
+    tag = f"[MOD-ONLY: {feat}]" if mod else "[VANILLA]"
+
+    if e == "weapon_select":
+        desc = f"weapon_select {ev.get('name')} (slot {ev.get('slot')}, ammo {ev.get('ammo')})"
+    elif e == "weapon_fire":
+        desc = f"weapon_fire {ev.get('name')} -> target ({ev.get('tx')},{ev.get('ty')})"
+    elif e == "weapon_pickup":
+        desc = f"weapon_pickup {ev.get('name')} (box {ev.get('box')}, ammo {ev.get('ammo_before')}->{ev.get('ammo_after')})"
+    elif e == "weapon_drop":
+        desc = f"weapon_drop {ev.get('name')}"
+    elif e == "mine_lay":
+        desc = f"mine_lay {ev.get('name')} (ammo left: {ev.get('ammo')})"
+    elif e == "enemy_kill":
+        desc = f"enemy_kill {ev.get('kind')} {ev.get('name')} at ({ev.get('wx')},{ev.get('wy')}) via {ev.get('via')}"
+    elif e in ("vehicle_enter", "vehicle_capture", "vehicle_exit", "vehicle_bailout"):
+        desc = f"{e} uid={ev.get('uid', '')} (army {ev.get('army', 0)})"
+    elif e == "order":
+        desc = f"order {ev.get('mode')} via {ev.get('via')}"
+    elif e == "medkit":
+        desc = f"medkit {ev.get('action')} (kits: {ev.get('kits')})"
+    elif e == "cheat":
+        desc = f"cheat {ev.get('name')} {ev.get('detail', '')}"
+    elif e == "menu_click":
+        desc = f"menu_click '{ev.get('item')}' (label: '{ev.get('label')}') on {ev.get('screen_name')}"
+    else:
+        desc = f"{e}"
+    return tag, desc
+
+
+def extract_stops_and_actions(events):
+    stops = []
+    cur_stop = None
+    action_types = {
+        "weapon_select", "weapon_fire", "weapon_pickup", "weapon_drop",
+        "mine_lay", "enemy_kill", "vehicle_enter", "vehicle_capture",
+        "vehicle_exit", "vehicle_bailout", "order", "medkit", "cheat",
+    }
+    for ev in events:
+        e = ev.get("e")
+        if e in ("sarge_stop", "stop"):
+            cur_stop = {
+                "idx": ev.get("stop_idx", len(stops) + 1),
+                "wx": ev.get("wx", 0),
+                "wy": ev.get("wy", 0),
+                "facing": ev.get("facing", 0),
+                "hp": ev.get("hp", 0),
+                "veh": ev.get("veh"),
+                "t": ev.get("t", 0),
+                "actions": [],
+            }
+            stops.append(cur_stop)
+        elif e in action_types:
+            if cur_stop is None:
+                cur_stop = {
+                    "idx": 1,
+                    "wx": ev.get("wx", ev.get("sx", 0)),
+                    "wy": ev.get("wy", ev.get("sy", 0)),
+                    "facing": ev.get("facing", 0),
+                    "hp": 0,
+                    "veh": None,
+                    "t": ev.get("t", 0),
+                    "actions": [],
+                }
+                stops.append(cur_stop)
+            cur_stop["actions"].append(ev)
+    return stops
+
+
 def summarize(path: Path, events):
     counts = Counter(ev.get("e", "?") for ev in events)
     sess = next((ev for ev in events if ev.get("e") == "session_start"), {})
     segments = split_missions(events)
     bookmarks = [ev for ev in events if ev.get("e") == "bookmark"]
     exceptions = [ev for ev in events if ev.get("e") == "exception"]
+    menu_clicks = [ev for ev in events if ev.get("e") == "menu_click"]
     dur_ms = events[-1].get("t", 0) if events else 0
+
+    action_types = {
+        "weapon_select", "weapon_fire", "weapon_pickup", "weapon_drop",
+        "mine_lay", "enemy_kill", "vehicle_enter", "vehicle_capture",
+        "vehicle_exit", "vehicle_bailout", "order", "medkit", "cheat",
+    }
 
     print(f"=== {path} ===")
     print(f"  Build:     {sess.get('build', '?')} (portable={sess.get('portable', '?')})")
     print(f"  Duration:  {dur_ms / 1000.0:.1f} s  ({len(events)} events)")
     print("  Counts:    " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+
+    if menu_clicks:
+        print(f"  Menu Navigation ({len(menu_clicks)} item(s) clicked):")
+        for i, mc in enumerate(menu_clicks, 1):
+            tag = f"[MOD-ONLY: {mc.get('mod_feature')}]" if mc.get("mod") else "[VANILLA]"
+            lbl = f" (label: \"{mc.get('label')}\")" if mc.get("label") else ""
+            print(f"    {i}. [{mc.get('screen_name')}] -> {mc.get('item')}{lbl} {tag}")
+
     if segments:
         print(f"  Missions ({len(segments)}):")
         for seg in segments:
             sc = Counter(ev.get("e", "?") for ev in seg["events"])
             dur_s = max(0.0, (seg["end_t"] - seg["start_t"]) / 1000.0)
             outcome = "won" if seg["won"] else seg["reason"]
+            n_stops = sum(1 for ev in seg["events"] if ev.get("e") in ("sarge_stop", "stop"))
             print(
                 f"    #{seg['idx']}: mission {seg['mission']} ({mission_label(seg['mission'])}, run {seg['run']}) "
                 f"[{seg['start_t']/1000:.1f}s..{seg['end_t']/1000:.1f}s, {dur_s:.1f}s, {outcome}] "
-                f"moves={sc['move']+sc['walk_target']} pickups={sc['weapon_pickup']} fires={sc['weapon_fire']} kills={sc['enemy_kill']}"
+                f"stops={n_stops} moves={sc['move']+sc['walk_target']} pickups={sc['weapon_pickup']} fires={sc['weapon_fire']} kills={sc['enemy_kill']}"
             )
+
+            stops = extract_stops_and_actions(seg["events"])
+            if stops:
+                print(f"      Stops & Actions ({len(stops)} stops):")
+                for st in stops:
+                    veh_s = f" [veh: {st['veh']}]" if st.get("veh") else ""
+                    print(f"        Stop #{st['idx']} at ({st['wx']},{st['wy']}) facing={st['facing']}{veh_s}: {len(st['actions'])} action(s)")
+                    for act in st["actions"]:
+                        tag, desc = format_action(act)
+                        print(f"          - {tag:<22} {desc}")
+
+            all_actions = [ev for ev in seg["events"] if ev.get("e") in action_types]
+            if all_actions:
+                mod_acts = [ev for ev in all_actions if ev.get("mod") == 1]
+                vanilla_acts = [ev for ev in all_actions if ev.get("mod", 0) == 0]
+                v_pct = len(vanilla_acts) * 100 // len(all_actions)
+                m_pct = 100 - v_pct
+                feats = Counter(ev.get("mod_feature", "other") for ev in mod_acts)
+                f_str = f" ({', '.join(f'{k}={v}' for k, v in feats.items())})" if feats else ""
+                print(f"      Action breakdown: {len(all_actions)} total | {len(vanilla_acts)} vanilla ({v_pct}%) | {len(mod_acts)} mod-only ({m_pct}%){f_str}")
     else:
         print("  Missions:  none (menu-only session)")
     if bookmarks:
@@ -223,17 +331,30 @@ def build_ini_overrides(events):
     return overrides
 
 
-def generate_replay_case(events, out_dir: Path, name: str, autokill=1, teleport=0, invuln=1):
+def generate_replay_case(events, out_dir: Path, name: str, autokill=1, teleport=0, invuln=1, stops_only=False, strip_mod=False):
     out_dir.mkdir(parents=True, exist_ok=True)
     case_jsonl = out_dir / f"{name}.jsonl"
     case_sh = out_dir / f"{name}.sh"
 
     replay_types = {
-        "session_start", "mission_start", "mission_won", "mission_end", "move", "walk_target",
-        "weapon_pickup", "weapon_select", "weapon_fire", "mine_lay",
+        "session_start", "mission_start", "mission_won", "mission_end", "sarge_stop", "stop",
+        "move", "walk_target", "weapon_pickup", "weapon_select", "weapon_fire", "mine_lay",
         "enemy_kill", "vehicle_enter", "vehicle_capture", "vehicle_exit", "bookmark",
     }
-    filtered = thin_moves([ev for ev in events if ev.get("e") in replay_types])
+    filtered = [ev for ev in events if ev.get("e") in replay_types]
+
+    if strip_mod:
+        stripped = [ev for ev in filtered if ev.get("mod") == 1]
+        filtered = [ev for ev in filtered if ev.get("mod", 0) == 0]
+        if stripped:
+            feat_cnt = Counter(ev.get("mod_feature", "unknown") for ev in stripped)
+            print(f"  Stripped {len(stripped)} mod-only action(s) for vanilla compatibility: {', '.join(f'{k}={v}' for k, v in feat_cnt.items())}")
+
+    if stops_only:
+        filtered = [ev for ev in filtered if ev.get("e") not in ("move", "walk_target")]
+        teleport = 1
+    else:
+        filtered = thin_moves(filtered)
 
     with case_jsonl.open("w", encoding="utf-8") as f:
         for ev in filtered:
@@ -281,7 +402,8 @@ grep "replay: PASS" "$LOG"
 echo "PASS: {name}"
 """
     case_sh.write_text(sh, encoding="utf-8", newline="\n")
-    print(f"Wrote replay case ({mission_label(mission)}):")
+    stops_s = " [stops-only teleport]" if stops_only else ""
+    print(f"Wrote replay case ({mission_label(mission)}){stops_s}:")
     print(f"  {case_jsonl} ({len(filtered)} events)")
     print(f"  {case_sh}")
     return case_sh
@@ -314,7 +436,16 @@ def generate_clicks_case(events, out_dir: Path, name: str):
             if dt_s >= 0.4:
                 steps.append(f"wait:{min(dt_s, 10.0):.1f}")
 
-        if e == "ui_click":
+        if e == "menu_click":
+            item = ev.get("item", "")
+            sname = ev.get("screen_name", "")
+            box = ev.get("box", [0, 0, 0, 0])
+            gx = box[0] + box[2] // 2 if len(box) >= 4 and box[2] > 0 else 320
+            gy = box[1] + box[3] // 2 if len(box) >= 4 and box[3] > 0 else 240
+            steps.append(f"# Menu: {item} on {sname}")
+            steps.append(f"g:{gx},{gy}")
+            last_t = t
+        elif e == "ui_click":
             btn = ev.get("btn", "L")
             gx, gy = ev.get("gx", 0), ev.get("gy", 0)
             if btn == "L":
@@ -367,12 +498,12 @@ echo "PASS: {name} (UI clicks)"
     return case_sh
 
 
-def generate_split_missions(events, repo_root: Path, prefix: str, mode: str, autokill=1, teleport=0, invuln=1, min_actions=1):
+def generate_split_missions(events, repo_root: Path, prefix: str, mode: str, autokill=1, teleport=0, invuln=1, stops_only=False, strip_mod=False, min_actions=1):
     segments = split_missions(events)
     if not segments:
         raise SystemExit("No mission_start segments found in recording.")
 
-    action_types = {"move", "walk_target", "weapon_pickup", "weapon_select", "weapon_fire", "mine_lay", "enemy_kill", "vehicle_enter", "vehicle_capture", "vehicle_exit", "ui_click", "bookmark"}
+    action_types = {"sarge_stop", "stop", "move", "walk_target", "weapon_pickup", "weapon_select", "weapon_fire", "mine_lay", "enemy_kill", "vehicle_enter", "vehicle_capture", "vehicle_exit", "ui_click", "menu_click", "bookmark"}
     scripts = []
     for seg in segments:
         actions = sum(1 for ev in seg["events"] if ev.get("e") in action_types)
@@ -382,7 +513,7 @@ def generate_split_missions(events, repo_root: Path, prefix: str, mode: str, aut
         case_name = f"{prefix}_{seg['idx']:02d}_m{seg['mission']}"
         out_dir = repo_root / "test" / "cases" / case_name
         if mode in ("replay", "both"):
-            scripts.append(generate_replay_case(seg["events"], out_dir, case_name, autokill=autokill, teleport=teleport, invuln=invuln))
+            scripts.append(generate_replay_case(seg["events"], out_dir, case_name, autokill=autokill, teleport=teleport, invuln=invuln, stops_only=stops_only, strip_mod=strip_mod))
         if mode in ("clicks", "both"):
             scripts.append(generate_clicks_case(seg["events"], out_dir, case_name))
 
@@ -416,6 +547,8 @@ def main():
     ap.add_argument("--split-missions", action="store_true", help="Split each mission segment in the recording into its own test case + suite runner")
     ap.add_argument("--min-actions", type=int, default=1, help="Minimum gameplay actions required to keep a segment with --split-missions (default: 1)")
     ap.add_argument("--mode", choices=("replay", "clicks", "both"), default="replay", help="Test style to generate (default: replay)")
+    ap.add_argument("--stops-only", action="store_true", help="Keep only stationary stop waypoints and actions (teleports between stops, drops intermediate walking breadcrumbs)")
+    ap.add_argument("--strip-mod-actions", action="store_true", help="Strip out actions only available via mods to target the unmodded vanilla game")
     ap.add_argument("--mission", type=int, help="Extract first segment matching this mission ID")
     ap.add_argument("--mission-idx", type=int, help="Extract the Nth (1-based) mission segment from --info")
     ap.add_argument("--run", type=int, help="Extract segment matching this mission run number")
@@ -449,8 +582,10 @@ def main():
         generate_split_missions(
             events, repo_root, args.out, args.mode,
             autokill=0 if args.no_autokill else 1,
-            teleport=1 if args.teleport else 0,
+            teleport=1 if (args.teleport or args.stops_only) else 0,
             invuln=0 if args.no_invuln else 1,
+            stops_only=args.stops_only,
+            strip_mod=args.strip_mod_actions,
             min_actions=args.min_actions,
         )
         return
@@ -466,8 +601,10 @@ def main():
         generate_replay_case(
             sliced, out_dir, args.out,
             autokill=0 if args.no_autokill else 1,
-            teleport=1 if args.teleport else 0,
+            teleport=1 if (args.teleport or args.stops_only) else 0,
             invuln=0 if args.no_invuln else 1,
+            stops_only=args.stops_only,
+            strip_mod=args.strip_mod_actions,
         )
     if args.mode in ("clicks", "both"):
         generate_clicks_case(sliced, out_dir, args.out)
