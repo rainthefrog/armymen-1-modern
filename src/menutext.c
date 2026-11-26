@@ -31,6 +31,7 @@
  * ============================================================================================ */
 #include "common.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #define LABEL_COLOUR  (*(COLORREF *)0x4e9f70)
@@ -342,7 +343,7 @@ static HFONT font_px(int f, float scale_y, float scale_x)
 
 /* one item of the layer: a label or a slider, with the rectangle it covers (window px, shadow included) */
 typedef struct { int kind; RECT r; const TextCov *tc; int tx, ty, cr, cg, cb, sh; MtSlider s; float x0, x1, my, u, kr; const TextCov *vtc; const TextCov *tc2; int tx2, ty2; } Item;   /* kind 0 label, 1 slider, 2 hover info box */
-#define IT_MAX (MT_MAX + MT_SLIDERS + 1)
+#define IT_MAX (MT_MAX + MT_SLIDERS + 2)        /* labels, sliders, hover box, main-menu mod version */
 static Item g_prev[IT_MAX]; static int g_nprev = -1;
 
 static void draw_cov(const TextCov *t, int tx, int ty, int r, int g, int b, int sh, const RECT *clip)
@@ -435,7 +436,9 @@ int menutext_overlay(int dw, int dh, int pw, int ph, const uint32_t **pix, unsig
         if (game_in_play() && !game_menu_up() && (g_n || g_nsl)) menutext_clear();
         if (!g_n && !g_nsl) { g_nprev = -1; return 0; }
     }
-    if (!g_n && !g_nsl) { g_nprev = -1; return 0; }
+    BYTE *screen = SCRN_FULL;
+    int screen_state = screen && !IsBadReadPtr(screen, 8) ? *(int *)(screen + 4) : -1;
+    if (!g_n && !g_nsl && screen_state != 1) { g_nprev = -1; return 0; }
     LONG v = g_ver;
     if (v == built && g_ow == dw && g_oh == dh && g_out && g_nprev >= 0) { *pix = g_out; *ver = (unsigned)v; return 1; }
     int full = g_nprev < 0;
@@ -498,6 +501,25 @@ int menutext_overlay(int dw, int dh, int pw, int ph, const uint32_t **pix, unsig
         int vw = it->vtc ? it->vtc->w + it->sh : 0;
         SetRect(&it->r, (int)(it->x0 - it->kr - 3), (int)(it->my - it->kr - 4), (int)(it->x1 + it->kr + it->u * 4 + vw + 3), (int)(it->my + it->kr + it->u + 4));
         if (it->vtc) { int vh = it->vtc->h / 2 + 2; it->r.top = min(it->r.top, (int)it->my - vh); it->r.bottom = max(it->r.bottom, (int)it->my + vh + it->sh); }
+    }
+    /* The original game's logo/version is part of title2.bmp. Add our identity at runtime instead of modifying
+     * shipped game art; update_version() keeps it in step with the compiled release automatically. */
+    if (screen_state == 1 && ni < IT_MAX) {
+        char name[64];
+        snprintf(name, sizeof name, "MODERN MOD v%s", update_version());
+        HFONT f = font_px(4, sy * 0.78f, sx * 0.78f);
+        const TextCov *t = f ? text_cov(name, f) : NULL;
+        if (t) {
+            Item *it = &items[ni++]; memset(it, 0, sizeof *it);
+            it->kind = 0; it->tc = t;
+            it->cr = 0xd8; it->cg = 0xd2; it->cb = 0x9b;
+            it->sh = (int)(sx * 0.6f + 0.5f); if (it->sh < 1) it->sh = 1;
+            /* title2's visible green main-menu panel ends at about (460,382) in the 640x480 design. Keep the label
+             * inside its lower-right corner, to the right of Quit, rather than branding the whole screen. */
+            it->tx = (int)((444 - vx) * sx) - t->w;
+            it->ty = (int)((370 - vy) * sy) - t->h;
+            SetRect(&it->r, it->tx, it->ty, it->tx + t->w + it->sh, it->ty + t->h + it->sh);
+        }
     }
     if (g_tip[0] && ni < IT_MAX) {                         /* the hover info box: under the row (above it near the bottom) */
         RECT rr = g_tip_row; float fk = 1.0f;
