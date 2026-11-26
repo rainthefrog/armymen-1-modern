@@ -416,6 +416,11 @@ void patches_apply(void)
     hook_call("music: stream refill, wave record (call 0x411ff9) -> music.c", 0x411ff9, 0x4107b0, (void *)music_stub_refill);
     hook_call("music: stream rewind, wave record (call 0x411175) -> music.c", 0x411175, 0x4107b0, (void *)music_stub_rewind);
     hook_call("music: stream restart, wave record (call 0x411043) -> music.c", 0x411043, 0x4107b0, (void *)music_stub_rewind);
+    /* volume.c (2026-11-26, [audio] volume_all; nothing installed while off): the SFX / Music / Voice sliders apply to
+     * every sound - the game's own slider reads return 100, the mod applies the slider per DirectSound buffer (bus by
+     * create site; SetVolume / Play / GetVolume / Release patched in the buffer vtable, CreateSoundBuffer via the
+     * DirectSoundCreate import) */
+    volume_install();
     /* mines.c (2026-11-21, [controls] mine_click): the mine weapon's lay call in FUN_00445c70 (case 11) -> mines_lay,
      * which hands MineLay 0x446600 the tile Sarge's click asked for instead of the muzzle point (else unchanged) */
     hook_call("mines: MineLay (call 0x445f44) -> mines.c", 0x445f44, 0x446600, (void *)mines_lay);

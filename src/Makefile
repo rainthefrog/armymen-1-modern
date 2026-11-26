@@ -1,12 +1,12 @@
 # Build: make            (inside the armymen-re:2 image; output ddraw.dll)
-MOD_VERSION  ?= 0.1.1
+MOD_VERSION  ?= 0.1.2
 MOD_REPO_URL ?= https://github.com/rainthefrog/armymen-1-modern
 CC      = i686-w64-mingw32-gcc
 CFLAGS  = -O2 -std=gnu11 -Wall -Wno-unused-parameter -Wno-unused-function -DMOD_VERSION="\"$(MOD_VERSION)\"" -DMOD_REPO_URL="\"$(MOD_REPO_URL)\""
 LDFLAGS = -shared -static-libgcc -Wl,--kill-at -Wl,--enable-stdcall-fixup
 LIBS    = -ld3d11 -lgdi32 -luser32 -lole32 -lwindowscodecs -lmfplat -lmfreadwrite -lmfuuid -lwininet -lshell32
 
-SRC = ddraw.c bindings.c surface.c present.c view.c layout.c patches.c mouse.c clock.c window.c hud.c fonts.c controls.c menu.c gpu.c gameplay.c weapons.c bullets.c fog.c objectives.c panel.c roofs.c hdart.c hdsprites.c hdworld.c hdvideo.c tips.c resize.c zoom.c par.c pathfind.c debugview.c screenbtn.c modern.c modmenu.c framerate.c menutext.c radio.c missionpath.c capture.c minimap.c vehicles.c barricades.c fences.c aware.c squad.c patrol.c audio.c music.c mines.c deploy.c orders.c allies.c savestate.c drops.c record.c update.c
+SRC = ddraw.c bindings.c surface.c present.c view.c layout.c patches.c mouse.c clock.c window.c hud.c fonts.c controls.c menu.c gpu.c gameplay.c weapons.c bullets.c fog.c objectives.c panel.c roofs.c hdart.c hdsprites.c hdworld.c hdvideo.c tips.c resize.c zoom.c par.c pathfind.c debugview.c screenbtn.c modern.c modmenu.c framerate.c menutext.c radio.c missionpath.c capture.c minimap.c vehicles.c barricades.c fences.c aware.c squad.c patrol.c audio.c music.c volume.c mines.c deploy.c orders.c allies.c savestate.c drops.c record.c update.c
 
 ddraw.dll: $(SRC) common.h ddraw.def
 	$(CC) $(CFLAGS) -o $@ $(SRC) ddraw.def $(LDFLAGS) $(LIBS)

@@ -108,6 +108,7 @@ void config_load(void)
     g_cfg.ally_health_bars = GetPrivateProfileIntA("hud", "ally_health_bars", 1, ini);
     g_cfg.am2_sounds = GetPrivateProfileIntA("audio", "am2_sounds", 0, ini);   /* audio.c (2026-11-21) */
     g_cfg.am2_music = GetPrivateProfileIntA("audio", "am2_music", 0, ini);     /* music.c (2026-11-21) */
+    g_cfg.volume_all = GetPrivateProfileIntA("audio", "volume_all", 1, ini);   /* volume.c (2026-11-26) */
     g_cfg.see_interior = GetPrivateProfileIntA("display", "see_interior", 1, ini);
     g_cfg.fronts_order = GetPrivateProfileIntA("display", "fronts_order", 1, ini);
     g_cfg.air_layer = GetPrivateProfileIntA("display", "air_layer", 1, ini);
@@ -453,6 +454,7 @@ void dd_present(DDraw *dd, int frame_end)
     if (!dd->primary || !dd->hwnd) return;
     if (dd->coop & DDSCL_FULLSCREEN) make_fullscreen_window(dd);
     if (frame_end) music_frame();                   /* music.c: [audio] am2_music switched -> restart the playing music */
+    if (frame_end) volume_frame();                  /* volume.c: a volume slider moved -> re-apply to every live sound */
     present_request(dd, frame_end);
 }
 

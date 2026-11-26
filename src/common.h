@@ -123,6 +123,7 @@ struct Config {
     int ally_health_bars;           /* [hud] ally_health_bars: health bars over the player's hurt soldiers (modern.c) */
     int am2_sounds;                 /* [audio] am2_sounds: Army Men II sound effects from <game>\am2_sounds (audio.c) */
     int am2_music;                  /* [audio] am2_music: Army Men II music from <game>\am2_music (music.c) */
+    int volume_all;                 /* [audio] volume_all: the SFX / Music / Voice sliders apply to every sound (volume.c) */
     int quicksave;                  /* [savestate] enabled: the quicksave / quickload keys work (savestate.c; the heap part is chosen at start-up) */
     int map_edge_fog;               /* [display] map_edge_fog: darkness outside the visible map (fog.c) */
     int hud_corners;                /* [hud] corners: message box / minimap in the bottom corners (layout.c) */
@@ -866,6 +867,10 @@ int __fastcall audio_source_volume(BYTE *src);                           /* audi
 void music_stub_create(void), music_stub_play(void), music_stub_fill(void), music_stub_refill(void), music_stub_rewind(void);   /* music.c: FUN_004107b0 calls of the stream code */
 void music_frame(void);                     /* music.c: dd_present, game thread - restarts the music when [audio] am2_music is switched */
 void music_option_switched(void);           /* music.c: panel.c click_row - the same at once (game thread only) */
+void volume_install(void);                  /* volume.c: patches.c - the sliders apply to every sound ([audio] volume_all) */
+void volume_frame(void);                    /* volume.c: dd_present - a slider moved -> re-apply to every live buffer */
+int __fastcall volume_game_slider(int type);
+void __fastcall volume_set_percent_full(int handle, int percent, int unused);
 int controls_sarge_running(void);                                     /* controls.c: Sarge sprints (modern controls) */
 void squad_debug_follow(void);                                        /* squad.c: testing aid, every player unit follows Sarge */
 /* mines.c (2026-11-21): mine placement with the mouse - a ring round Sarge, left click inside it lays the mine there */
