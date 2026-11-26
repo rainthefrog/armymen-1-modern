@@ -299,6 +299,42 @@ static void lane_clip(double a, double b, double lo, double hi, double *x0, doub
     if (u > *x0) *x0 = u;
     if (v < *x1) *x1 = v;
 }
+/* 2026-11-25 (user: "the mission path is small in regular textures but big in the hd textures. should be big in
+ * both"): without the upscaled battlefield the lane is the same LANE_W band, but the 8-bit picture cannot blend.
+ * The band's runs go into a mask first (1 = edge, 2 = fill; the fill pass overwrites the inside exactly like the
+ * GPU path, so joints between legs stay clean), then lane_mask_flush paints it once: the edge solid, the fill as a
+ * sparse diagonal hatch anchored to the world (no shimmer while scrolling). Constant colours only, so painting the
+ * same frame twice gives the same bytes. px() keeps the interface out and thins the lane under objects. */
+#define LANE_HATCH 3              /* 8-bit fill: every LANE_HATCH-th diagonal */
+static BYTE *g_lmask; static int g_lmask_w, g_lmask_h, g_lm_x0, g_lm_y0, g_lm_x1, g_lm_y1;
+static int lane_mask_begin(int w, int h)
+{
+    static BYTE *buf; static size_t cap;
+    size_t need = (size_t)w * h;
+    if (w <= 0 || h <= 0) return 0;
+    if (need > cap) { BYTE *nb = (BYTE *)realloc(buf, need); if (!nb) return 0; buf = nb; cap = need; memset(buf, 0, cap); }
+    g_lmask = buf; g_lmask_w = w; g_lmask_h = h;
+    g_lm_x0 = w; g_lm_y0 = h; g_lm_x1 = -1; g_lm_y1 = -1;
+    return 1;
+}
+static void px(int x, int y, BYTE c);
+static void lane_mask_flush(BYTE edge, BYTE fillc)
+{
+    BYTE *m = g_lmask;
+    g_lmask = NULL;                                           /* px() below draws for real */
+    if (!m) return;
+    unsigned ox = (unsigned)(CAMERA_X + 0x10000), oy = (unsigned)(CAMERA_Y + 0x10000);
+    for (int y = g_lm_y0; y <= g_lm_y1; y++) {
+        BYTE *row = m + (size_t)y * g_lmask_w;
+        for (int x = g_lm_x0; x < g_lm_x1; x++) {
+            BYTE v = row[x];
+            if (!v) continue;
+            row[x] = 0;
+            if (v == 1) px(x, y, edge);
+            else if (((ox + x) + (oy + y)) % LANE_HATCH == 0) px(x, y, fillc);
+        }
+    }
+}
 /* one run of the band on row y: through the ground-level fill, the interface (HUD) left out */
 static void lane_run(int y, int xa, int xb, BYTE c, int fill)
 {
@@ -315,6 +351,14 @@ static void lane_run(int y, int xa, int xb, BYTE c, int fill)
     if (objectives_box(&ob) && y >= ob.top && y < ob.bottom && xb > ob.left && xa < ob.right) {
         if (xa < ob.left) lane_run(y, xa, ob.left, c, fill);
         if (xb > ob.right) lane_run(y, ob.right, xb, c, fill);
+        return;
+    }
+    if (g_lmask) {                                            /* 8-bit picture: collect, drawn by lane_mask_flush */
+        memset(g_lmask + (size_t)y * g_lmask_w + xa, fill ? 2 : 1, (size_t)(xb - xa));
+        if (y < g_lm_y0) g_lm_y0 = y;
+        if (y > g_lm_y1) g_lm_y1 = y;
+        if (xa < g_lm_x0) g_lm_x0 = xa;
+        if (xb > g_lm_x1) g_lm_x1 = xb;
         return;
     }
     if (g_cfg.hd_world && y < g_hud_top && hdworld_under_fill(b, y, xa, xb, c)) return;
@@ -1029,17 +1073,11 @@ static void modern_draw_body(Surf *b)
             int W = g_cfg.width, H = g_cfg.height;
             if (!g_cfg.hd_world) under_begin(CAMERA_X - 8, CAMERA_Y - 8, CAMERA_X + W + 8, CAMERA_Y + H + 8);
             int R = LANE_W / 2, m = R + 2;
+            int masked = !g_cfg.hd_world && lane_mask_begin(W, H);   /* 8-bit: the same band, painted by lane_mask_flush */
             for (int pass = 0; pass < 2; pass++)            /* the edge colour first at full width, then the fill inside */
             for (int i = 0; i + 1 < n; i++) {
                 int x0, y0, x1, y1; to_screen(mp[i].x, mp[i].y, &x0, &y0); to_screen(mp[i + 1].x, mp[i + 1].y, &x1, &y1);
                 if ((x0 < -m && x1 < -m) || (y0 < -m && y1 < -m) || (x0 >= W + m && x1 >= W + m) || (y0 >= H + m && y1 >= H + m)) continue;
-                if (!g_cfg.hd_world) {                      /* 8-bit only (no blending): the old line, 2 px white + a dark edge */
-                    int tx = abs(x1 - x0) < abs(y1 - y0), ty = !tx, d = mp[i + 1].dashed ? 4 : 0;
-                    if (pass == 0) { line(x0 + 2 * tx, y0 + 2 * ty, x1 + 2 * tx, y1 + 2 * ty, C_PATH_DARK, d); continue; }
-                    line(x0, y0, x1, y1, C_PATH, d);
-                    line(x0 + tx, y0 + ty, x1 + tx, y1 + ty, C_PATH, d);
-                    continue;
-                }
                 float r = pass ? (float)(R - LANE_EDGE) : (float)R;
                 BYTE c = pass ? C_LANE_FILL : C_LANE_EDGE;
                 if (!mp[i + 1].dashed) { lane_piece(x0, y0, x1, y1, 0.0f, 1.0f, 1, r, c, pass); continue; }
@@ -1051,6 +1089,7 @@ static void modern_draw_body(Surf *b)
                     lane_piece(x0, y0, x1, y1, (float)((s + inset) / len), (float)((e - inset) / len), 0, r, c, pass);
                 }
             }
+            if (masked) lane_mask_flush(C_LANE_EDGE, C_LANE_FILL);
             for (int i = 1; i < n; i++) {                   /* waypoint: a solid ring (dark outside, white inside) */
                 if (!mp[i].wp) continue;
                 int wx, wy; to_screen(mp[i].x, mp[i].y, &wx, &wy);
