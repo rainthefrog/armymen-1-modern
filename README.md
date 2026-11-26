@@ -54,6 +54,25 @@ editor). Settings changed in game are saved to `armymen-mod.ini`; advanced users
   or `[update] check=0` in `armymen-mod.ini`), verifies `ddraw.dll.sha256`, swaps `ddraw.dll` in place, and restarts
   the game.
 
+## Optional Army Men II music and sounds
+
+The mod can play Army Men II music and sound effects instead of the originals. The packs are not included; build
+them from your own Army Men II install with [scripts/am2_music.py](scripts/am2_music.py) and
+[scripts/am2_sounds.py](scripts/am2_sounds.py) (usage at the top of each script). Put the folders beside
+`Armymen.exe`:
+
+```text
+<game folder>\
+  Armymen.exe
+  ddraw.dll
+  am2_music\    map.txt + title.wav, bootcamp.wav, ...
+  am2_sounds\   map.txt + the effect .wav files
+```
+
+Turn them on in **Mod Settings > Audio**, in the `F10` panel ("Army Men II music" / "Army Men II sounds"), or in
+`armymen-mod.ini` under `[audio]` with `am2_music=1` / `am2_sounds=1`. Each `map.txt` decides which file replaces
+which track or sound; without it the original audio plays (the log says so).
+
 ## More information
 
 - [Full mod description](docs/MOD_DESCRIPTION.md)
