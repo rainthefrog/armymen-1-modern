@@ -56,10 +56,8 @@ editor). Settings changed in game are saved to `armymen-mod.ini`; advanced users
 
 ## Optional Army Men II music and sounds
 
-The mod can play Army Men II music and sound effects instead of the originals. The packs are not included; build
-them from your own Army Men II install with [scripts/am2_music.py](scripts/am2_music.py) and
-[scripts/am2_sounds.py](scripts/am2_sounds.py) (usage at the top of each script). Put the folders beside
-`Armymen.exe`:
+The mod can play Army Men II music and sound effects instead of the originals. The packs are not included; drop
+the `am2_music` and `am2_sounds` folders beside `Armymen.exe`:
 
 ```text
 <game folder>\
