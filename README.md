@@ -71,6 +71,30 @@ Turn them on in **Mod Settings > Audio**, in the `F10` panel ("Army Men II music
 `armymen-mod.ini` under `[audio]` with `am2_music=1` / `am2_sounds=1`. Each `map.txt` decides which file replaces
 which track or sound; without it the original audio plays (the log says so).
 
+`am2_music\map.txt` - `<AM1 stream id> <missions> <file>`; the first matching line wins, no line = the original
+track. Missions: `*` (any) or a list like `1-3,8` (Desert 1-9, Alpine 10-18, Bayou 19-28, Boot Camp 50):
+
+```text
+2000 *      title.wav      # TITLE_MUSIC - title / main menus
+2001 50     bootcamp.wav   # ALPINE1_MUSIC - Boot Camp
+2001 10-11  homeland.wav   # ALPINE1_MUSIC - Alpine scenario 1
+2001 *      homeland.wav   # ALPINE1_MUSIC - Alpine campaign map screen
+2002 *      igd.wav        # ALPINE2_MUSIC - Alpine high intensity
+2003 1-3    areax.wav      # DESERT1_MUSIC - Desert scenario 1
+2004 *      fortress.wav   # DESERT2_MUSIC - Desert high intensity
+2005 19-20  kitchen.wav    # BAYOU1_MUSIC - Bayou scenario 1
+```
+
+Stream ids: 2000 title, 2001/2002 Alpine low/high, 2003/2004 Desert low/high, 2005-2007 Bayou, 2008 win, 2009 lose.
+
+`am2_sounds\map.txt` - `<AM1 sound id> <file>` (any RIFF PCM wav); a sound without a line keeps the original:
+
+```text
+1001 1001_explosionmortar.wav   # MORTAR_EXPLODE
+1002 1002_explosiongrenade.wav  # GRENADE_EXPLODE
+1004 1004_explosionm80.wav      # BIG_EXPLOSION - air strikes, destroyed vehicles
+```
+
 ## More information
 
 - [Full mod description](docs/MOD_DESCRIPTION.md)
